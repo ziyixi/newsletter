@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+dist/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/install-state.gz
+
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.venv/
+venv/
+uv.lock
+packages/backend/generated/*.py
+packages/backend/generated/*.pyi
+!packages/backend/generated/.gitkeep
+
+# React Email
+.react-email/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+*.tsbuildinfo
+
+# Preview cache
+.cache/
+packages/backend/.cache/

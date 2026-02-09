@@ -1,0 +1,43 @@
+# Dependencies (rebuilt in Docker)
+node_modules/
+packages/*/node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+
+# Generated (rebuilt in Docker)
+packages/backend/generated/*.py
+packages/backend/generated/*.pyi
+
+# Caches
+.cache/
+packages/backend/.cache/
+packages/.cache/
+
+# Environment (secrets passed via -e flags)
+.env
+.env.local
+packages/*/.env
+packages/*/.env.local
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# React Email dev
+.react-email/
+
+# Build artifacts
+*.tsbuildinfo
+dist/

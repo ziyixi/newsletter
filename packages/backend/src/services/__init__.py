@@ -1,0 +1,15 @@
+"""Newsletter backend services — each module fetches one content section."""
+
+from .weather_service import fetch_weather
+from .news_service import fetch_news
+from .stocks_service import fetch_stocks
+from .hn_service import fetch_hn_stories
+from .astronomy_service import fetch_astronomy
+
+__all__ = [
+    "fetch_weather",
+    "fetch_news",
+    "fetch_stocks",
+    "fetch_hn_stories",
+    "fetch_astronomy",
+]

@@ -1,0 +1,15 @@
+{
+  "name": "newsletter",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:email": "yarn workspace email-service dev:email",
+    "dev:server": "yarn workspace email-service dev:server",
+    "send:test": "yarn workspace email-service send:test"
+  },
+  "dependencies": {
+    "yaml": "^2.8.2"
+  }
+}

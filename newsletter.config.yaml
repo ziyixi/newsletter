@@ -1,0 +1,101 @@
+# ═══════════════════════════════════════════════════════════════
+# newsletter.config.yaml — Single source of truth
+#
+# All configurable settings for the newsletter live here.
+# Both the Python backend and the Node.js email-service read
+# from this file (via sync-config / config.py).
+#
+# Secrets (API keys) should NEVER go here — use .env files
+# for local dev and GitHub Secrets for CI/CD.
+# See the README for details.
+# ═══════════════════════════════════════════════════════════════
+
+# ── Newsletter identity ──────────────────────────────────────
+newsletter:
+  title: "每日简报"
+  tagline: "为 {recipientName} 精心策划的晨间资讯"
+
+# ── Recipient ────────────────────────────────────────────────
+# Override per-environment with RECIPIENT_EMAIL / RECIPIENT_NAME
+recipient:
+  name: "子逸"
+  email: "you@example.com"      # placeholder — set in .env
+
+# ── Schedule ─────────────────────────────────────────────────
+schedule:
+  timezone: "America/Los_Angeles"
+  # GitHub Actions cron runs in UTC.  16:00 UTC = 8 AM PST / 9 AM PDT
+  cronUtcHour: 16
+
+# ── Weather (Open-Meteo — free, no API key) ──────────────────
+weather:
+  latitude: 37.3688
+  longitude: -122.0363
+  location: "圣尼维尔，加州"       # display name in Chinese
+
+# ── News (RSS feeds) ────────────────────────────────────────
+news:
+  maxItems: 5
+  feeds:
+    - "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"
+    - "https://feeds.npr.org/1001/rss.xml"
+    - "https://www.aljazeera.com/xml/rss/all.xml"
+    - "https://www.theguardian.com/world/rss"
+    - "https://feeds.bbci.co.uk/news/world/rss.xml"
+
+# ── Stocks (yfinance — free, no API key) ────────────────────
+stocks:
+  symbols:
+    - AAPL
+    - GOOGL
+    - MSFT
+    - TSLA
+    - NVDA
+  # Display names (Chinese) for each symbol
+  names:
+    AAPL: "苹果公司"
+    GOOGL: "谷歌母公司"
+    MSFT: "微软公司"
+    TSLA: "特斯拉"
+    NVDA: "英伟达"
+    AMZN: "亚马逊"
+    META: "Meta"
+    BRK-B: "伯克希尔"
+    TSM: "台积电"
+    V: "Visa"
+
+# ── Hacker News ──────────────────────────────────────────────
+hackerNews:
+  maxStories: 5
+
+# ── Sections (order matters — controls email layout) ─────────
+sections:
+  - id: header
+    label: "Masthead / Header"
+  - id: weather
+    label: "Weather & Astronomy"
+  - id: top-news
+    label: "Top 5 News"
+  - id: hacker-news
+    label: "Hacker News Top Stories"
+  - id: stocks
+    label: "Stock Watchlist"
+  - id: custom-sections
+    label: "Custom / Personal Sections"
+  - id: footer
+    label: "Footer"
+  # ── Add new sections below ──
+  # - id: calendar
+  #   label: "Today's Calendar"
+
+# ── gRPC (internal, rarely changed) ─────────────────────────
+grpc:
+  port: 50051
+
+# ── Secrets reference (NOT stored here) ──────────────────────
+# These are documented for clarity — actual values go in .env
+# or GitHub Secrets.
+#
+#   RESEND_API_KEY      — API key from https://resend.com
+#   RECIPIENT_EMAIL     — where the newsletter is delivered
+#   RECIPIENT_NAME      — name shown in the email greeting
