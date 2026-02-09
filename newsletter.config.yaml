@@ -50,7 +50,7 @@ stocks:
     - VOO
     - GLD
     - SLV
-    - TSLA
+    - GOOGL
     - NVDA
   # Display names (Chinese) for each symbol
   names:
