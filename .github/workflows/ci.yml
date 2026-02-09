@@ -43,6 +43,9 @@ jobs:
       - name: Sync config
         run: node scripts/sync-config.mjs
 
+      - name: Generate proto stubs
+        run: make proto-py
+
       - name: Lint — TypeScript
         run: cd packages/email-service && npx tsc --noEmit
 
