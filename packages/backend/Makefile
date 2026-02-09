@@ -26,7 +26,7 @@ proto:
 		$(PROTO_DIR)/newsletter.proto
 	@touch $(OUT_DIR)/__init__.py
 	@# Fix import path for grpc stub to use package-relative import
-	@sed -i '' 's/^import newsletter_pb2/from generated import newsletter_pb2/' $(OUT_DIR)/newsletter_pb2_grpc.py
+	@sed -i'' -e 's/^import newsletter_pb2/from generated import newsletter_pb2/' $(OUT_DIR)/newsletter_pb2_grpc.py
 	@echo "✅  Proto code generated in $(OUT_DIR)/"
 
 clean:
