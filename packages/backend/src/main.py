@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime
 import sys
 import traceback
+import zoneinfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .config import cfg
@@ -33,7 +34,8 @@ from .services import (
 
 def _date_string() -> str:
     """Generate a Chinese-formatted date string like '2026年2月8日 · 星期日'."""
-    today = datetime.date.today()
+    tz = zoneinfo.ZoneInfo(cfg.timezone)
+    today = datetime.datetime.now(tz=tz).date()
     weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
     weekday = weekdays[today.weekday()]
     return f"{today.year}年{today.month}月{today.day}日 · {weekday}"
