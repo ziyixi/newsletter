@@ -25,7 +25,6 @@ message SendNewsletterRequest {
 
   // Header
   string date           = 3; // e.g. "2026年2月8日 · 星期日"
-  int32  edition_number = 4;
 
   // Sections
   WeatherForecast          weather         = 5;

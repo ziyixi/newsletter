@@ -36,15 +36,6 @@ def _date_string() -> str:
     return f"{today.year}年{today.month}月{today.day}日 · {weekday}"
 
 
-def _edition_number() -> int:
-    """
-    Generate a deterministic edition number based on a start date.
-    Counts days since an epoch (Jan 1, 2025).
-    """
-    epoch = datetime.date(2025, 1, 1)
-    return (datetime.date.today() - epoch).days + 1
-
-
 def _fetch_all() -> dict:
     """Fetch all content sections in parallel."""
     sections: dict[str, object] = {}
@@ -87,8 +78,7 @@ def main() -> None:
     print()
 
     date_str = _date_string()
-    edition = _edition_number()
-    print(f"📅  {date_str}  |  第 {edition} 期")
+    print(f"📅  {date_str}")
     print(f"📬  Recipient: {cfg.recipient_name} <{cfg.recipient_email}>")
     print()
 
@@ -118,7 +108,6 @@ def main() -> None:
         stocks=sections.get("stocks", []),
         hn_stories=sections.get("hn", []),
         date_str=date_str,
-        edition_number=edition,
     )
 
     # ── Send via gRPC ────────────────────────

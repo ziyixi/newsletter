@@ -5,11 +5,10 @@ import { templateConfig } from "../template-config";
 
 interface HeaderProps {
   date: string;
-  editionNumber: number;
   recipientName: string;
 }
 
-export function Header({ date, editionNumber, recipientName }: HeaderProps) {
+export function Header({ date, recipientName }: HeaderProps) {
   const tagline = templateConfig.tagline.replace(
     "{recipientName}",
     recipientName
@@ -17,7 +16,7 @@ export function Header({ date, editionNumber, recipientName }: HeaderProps) {
 
   return (
     <Section style={{ padding: "0" }}>
-      {/* Top bar: date + edition — refined editorial meta */}
+      {/* Top bar: date — refined editorial meta */}
       <table
         width="100%"
         cellPadding={0}
@@ -40,19 +39,7 @@ export function Header({ date, editionNumber, recipientName }: HeaderProps) {
                 {date}
               </Text>
             </td>
-            <td style={{ textAlign: "right" as const }}>
-              <Text
-                style={{
-                  fontFamily: tokens.fontSans,
-                  fontSize: "10px",
-                  color: tokens.inkMuted,
-                  letterSpacing: "1.5px",
-                  margin: "0",
-                }}
-              >
-                第 {editionNumber} 期
-              </Text>
-            </td>
+
           </tr>
         </tbody>
       </table>

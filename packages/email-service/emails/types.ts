@@ -66,7 +66,6 @@ export interface HNStory {
 export interface NewsletterProps {
   recipientName: string;
   date: string;
-  editionNumber: number;
   weather: WeatherForecast;
   topNews: NewsItem[];
   stocks: StockInfo[];

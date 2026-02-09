@@ -9,7 +9,6 @@ import type { NewsletterProps } from "../types";
 export const fakeData: NewsletterProps = {
   recipientName: "子逸",
   date: "2026年2月8日 · 星期日",
-  editionNumber: 142,
 
   // ── Weather (°C) ──────────────────────────
   weather: {

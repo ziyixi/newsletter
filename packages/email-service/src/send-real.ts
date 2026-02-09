@@ -11,12 +11,15 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import "dotenv/config";
+import dotenv from "dotenv";
 import { renderNewsletter, renderNewsletterText } from "./render.js";
 import { sendEmail } from "./send.js";
 import type { NewsletterProps } from "../emails/types";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Load .env from project root
+dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 
 const DEFAULT_JSON = path.resolve(
   __dirname,
@@ -39,7 +42,7 @@ async function main() {
   const props: NewsletterProps = JSON.parse(raw);
 
   console.log(
-    `📰  Rendering: ${props.date} · 第${props.editionNumber}期 · for ${props.recipientName}`
+    `📰  Rendering: ${props.date} · for ${props.recipientName}`
   );
 
   const [html, text] = await Promise.all([
@@ -47,7 +50,7 @@ async function main() {
     renderNewsletterText(props),
   ]);
 
-  const subject = `☀ 每日简报 — ${props.date} · 第${props.editionNumber}期`;
+  const subject = `☀ 每日简报 — ${props.date}`;
 
   console.log(`📨  Sending to ${recipientEmail}…`);
   const messageId = await sendEmail({

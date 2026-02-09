@@ -35,7 +35,7 @@ async function main() {
   const props: NewsletterProps = JSON.parse(raw);
 
   console.log(
-    `📰  Rendering: ${props.date} · 第${props.editionNumber}期 · for ${props.recipientName}`
+    `📰  Rendering: ${props.date} · for ${props.recipientName}`
   );
 
   const html = await renderNewsletter(props);

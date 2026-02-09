@@ -21,7 +21,7 @@ import { sectionRegistry } from "./section-registry";
 export default function Newsletter(props: Partial<NewsletterProps> = {}) {
   // Merge with fake data defaults for preview
   const data: NewsletterProps = { ...fakeData, ...props };
-  const previewText = `☀ ${templateConfig.title} — ${data.date} · 第${data.editionNumber}期`;
+  const previewText = `☀ ${templateConfig.title} — ${data.date}`;
 
   return (
     <Html lang="zh-CN">

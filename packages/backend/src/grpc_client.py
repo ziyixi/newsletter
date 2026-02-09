@@ -43,14 +43,12 @@ def build_request(
     stocks: list[dict],
     hn_stories: list[dict],
     date_str: str,
-    edition_number: int,
 ) -> newsletter_pb2.SendNewsletterRequest:
     """Build a SendNewsletterRequest proto from Python dicts."""
     req = newsletter_pb2.SendNewsletterRequest(
         recipient_email=cfg.recipient_email,
         recipient_name=cfg.recipient_name,
         date=date_str,
-        edition_number=edition_number,
     )
 
     # Weather

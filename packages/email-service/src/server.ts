@@ -2,13 +2,16 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import path from "path";
 import { fileURLToPath } from "url";
-import "dotenv/config";
+import dotenv from "dotenv";
 
 import { renderNewsletter, renderNewsletterText } from "./render.js";
 import { sendEmail } from "./send.js";
 import { mapProtoToProps } from "./proto-mapper.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Load .env from project root
+dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 
 // ─────────────────────────────────────────────
 // Load proto definition
@@ -39,7 +42,7 @@ async function sendNewsletter(
     const { props, recipientEmail } = mapProtoToProps(call.request);
 
     console.log(
-      `📬  Rendering newsletter for ${recipientEmail} (Edition #${props.editionNumber})…`
+      `📬  Rendering newsletter for ${recipientEmail}…`
     );
 
     const [html, text] = await Promise.all([

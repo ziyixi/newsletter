@@ -15,7 +15,6 @@ export function mapProtoToProps(req: Record<string, any>): {
     props: {
       recipientName: req.recipient_name ?? "Reader",
       date: req.date ?? new Date().toLocaleDateString("zh-CN", { dateStyle: "full" }),
-      editionNumber: req.edition_number ?? 0,
 
       weather: req.weather
         ? {

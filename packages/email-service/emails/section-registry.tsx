@@ -28,7 +28,6 @@ export const sectionRegistry: Record<string, SectionRenderer> = {
   header: (data) => (
     <Header
       date={data.date}
-      editionNumber={data.editionNumber}
       recipientName={data.recipientName}
     />
   ),

@@ -1,5 +1,11 @@
 import { Resend } from "resend";
-import "dotenv/config";
+import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// Load .env from project root (not cwd)
+const __send_dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__send_dirname, "../../../.env") });
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 

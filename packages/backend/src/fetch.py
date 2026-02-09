@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from .config import cfg
-from .main import _date_string, _edition_number, _fetch_all
+from .main import _date_string, _fetch_all
 
 
 def fetch_to_json(output: Path) -> None:
@@ -25,8 +25,7 @@ def fetch_to_json(output: Path) -> None:
     print()
 
     date_str = _date_string()
-    edition = _edition_number()
-    print(f"📅  {date_str}  |  第 {edition} 期")
+    print(f"📅  {date_str}")
     print()
 
     print("🔄  Fetching content…")
@@ -47,7 +46,6 @@ def fetch_to_json(output: Path) -> None:
     payload: dict[str, object] = {
         "recipientName": cfg.recipient_name,
         "date": date_str,
-        "editionNumber": edition,
         "weather": weather_data,
         "topNews": sections.get("news", []),
         "stocks": sections.get("stocks", []),

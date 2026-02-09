@@ -8,7 +8,14 @@
  * Requires: RESEND_API_KEY and RECIPIENT_EMAIL in .env
  */
 
-import "dotenv/config";
+import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// Load .env from project root
+const __ts_dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__ts_dirname, "../../../.env") });
+
 import { renderNewsletter, renderNewsletterText } from "./render.js";
 import { sendEmail } from "./send.js";
 import { fakeData } from "../emails/fixtures/fake-data.js";
@@ -24,7 +31,7 @@ async function main() {
   ]);
 
   console.log(`📨  Sending to ${recipientEmail}…`);
-  const subject = `☀ 每日简报 — ${fakeData.date} · 第${fakeData.editionNumber}期`;
+  const subject = `☀ 每日简报 — ${fakeData.date}`;
   const messageId = await sendEmail({
     to: recipientEmail,
     subject,
