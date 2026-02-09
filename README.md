@@ -182,7 +182,8 @@ flowchart LR
     style Daily fill:#fef2f2,stroke:#dc2626,color:#121212
 ```
 
-### 1. Required Secrets
+<details>
+<summary><strong>1. Required Secrets</strong></summary>
 
 Go to your GitHub repo → **Settings → Secrets and variables → Actions → New repository secret** and add:
 
@@ -194,34 +195,32 @@ Go to your GitHub repo → **Settings → Secrets and variables → Actions → 
 
 > **Note:** `GITHUB_TOKEN` is provided automatically by GitHub Actions — you do **not** need to create it. It is used for pulling/pushing Docker images to GitHub Container Registry (GHCR).
 
-### 2. Step-by-Step Setup
+</details>
 
-```text
-1. Fork or push this repo to GitHub.
+<details>
+<summary><strong>2. Step-by-Step Setup</strong></summary>
 
-2. Add secrets:
-   a. Go to your repo on GitHub.
-   b. Click Settings → Secrets and variables → Actions.
-   c. Click "New repository secret".
-   d. Add RESEND_API_KEY  (value: re_xxxxxxxxxx from Resend dashboard).
-   e. Add RECIPIENT_EMAIL (value: your email address).
-   f. (Optional) Add GEMINI_API_KEY for AI-powered arXiv summaries.
-      Without it, arXiv summaries fall back to Google Translate.
+1. **Fork or push** this repo to GitHub.
+2. **Add secrets:**
+   1. Go to your repo on GitHub.
+   2. Click **Settings → Secrets and variables → Actions**.
+   3. Click **"New repository secret"**.
+   4. Add `RESEND_API_KEY` (value: `re_xxxxxxxxxx` from Resend dashboard).
+   5. Add `RECIPIENT_EMAIL` (value: your email address).
+   6. *(Optional)* Add `GEMINI_API_KEY` for AI-powered arXiv summaries. Without it, arXiv summaries fall back to Google Translate.
+3. **Enable workflows:**
+   1. Go to the **Actions** tab in your repo.
+   2. If prompted, click *"I understand my workflows, go ahead and enable them"*.
+4. **Verify CI works:**
+   1. Push any code change to `main`.
+   2. The CI workflow will lint, run E2E tests, and build a Docker image.
+   3. The Docker image is pushed to `ghcr.io/<your-user>/newsletter`.
+5. The **Daily Newsletter** workflow runs automatically at **8 AM PST** (4 PM UTC). To test immediately: **Actions → Daily Newsletter → Run workflow**.
 
-3. Enable workflows:
-   a. Go to the Actions tab in your repo.
-   b. If prompted, click "I understand my workflows, go ahead and enable them".
+</details>
 
-4. Verify CI works:
-   a. Push any code change to main.
-   b. The CI workflow will lint, run E2E tests, and build a Docker image.
-   c. The Docker image is pushed to ghcr.io/<your-user>/newsletter.
-
-5. The Daily Newsletter workflow runs automatically at 8 AM PST (4 PM UTC).
-   To test immediately: Actions → Daily Newsletter → Run workflow.
-```
-
-### 3. How the Workflows Use Secrets
+<details>
+<summary><strong>3. How the Workflows Use Secrets</strong></summary>
 
 **CI workflow** (`ci.yml`) — runs on every push to `main`:
 - Uses `GITHUB_TOKEN` (automatic) to push the Docker image to GHCR
@@ -240,6 +239,8 @@ docker run --rm \
 ```
 
 > **Tip:** You can trigger a send manually anytime: **Actions → Daily Newsletter → Run workflow**.
+
+</details>
 
 ---
 
