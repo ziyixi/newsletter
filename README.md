@@ -182,16 +182,64 @@ flowchart LR
     style Daily fill:#fef2f2,stroke:#dc2626,color:#121212
 ```
 
-### Setup
+### 1. Required Secrets
 
-1. Push this repo to GitHub
-2. Go to **Settings → Secrets and variables → Actions** and add:
-   - `RESEND_API_KEY` — your Resend API key
-   - `RECIPIENT_EMAIL` — where to deliver the newsletter
-   - `GEMINI_API_KEY` *(optional)* — for AI-powered arXiv summaries
-3. That's it! The newsletter will send automatically every morning
+Go to your GitHub repo → **Settings → Secrets and variables → Actions → New repository secret** and add:
 
-You can also trigger a send manually: **Actions → Daily Newsletter → Run workflow**.
+| Secret | Required | Description | How to Get |
+|--------|----------|-------------|------------|
+| `RESEND_API_KEY` | ✅ Yes | API key for email delivery | Sign up at [resend.com](https://resend.com) → [API Keys](https://resend.com/api-keys) → Create |
+| `RECIPIENT_EMAIL` | ✅ Yes | Email address to receive the newsletter | Your personal email |
+| `GEMINI_API_KEY` | ❌ Optional | Gemini AI key for arXiv paper summaries | [Google AI Studio](https://aistudio.google.com/app/apikey) → Create API Key |
+
+> **Note:** `GITHUB_TOKEN` is provided automatically by GitHub Actions — you do **not** need to create it. It is used for pulling/pushing Docker images to GitHub Container Registry (GHCR).
+
+### 2. Step-by-Step Setup
+
+```text
+1. Fork or push this repo to GitHub.
+
+2. Add secrets:
+   a. Go to your repo on GitHub.
+   b. Click Settings → Secrets and variables → Actions.
+   c. Click "New repository secret".
+   d. Add RESEND_API_KEY  (value: re_xxxxxxxxxx from Resend dashboard).
+   e. Add RECIPIENT_EMAIL (value: your email address).
+   f. (Optional) Add GEMINI_API_KEY for AI-powered arXiv summaries.
+      Without it, arXiv summaries fall back to Google Translate.
+
+3. Enable workflows:
+   a. Go to the Actions tab in your repo.
+   b. If prompted, click "I understand my workflows, go ahead and enable them".
+
+4. Verify CI works:
+   a. Push any code change to main.
+   b. The CI workflow will lint, run E2E tests, and build a Docker image.
+   c. The Docker image is pushed to ghcr.io/<your-user>/newsletter.
+
+5. The Daily Newsletter workflow runs automatically at 8 AM PST (4 PM UTC).
+   To test immediately: Actions → Daily Newsletter → Run workflow.
+```
+
+### 3. How the Workflows Use Secrets
+
+**CI workflow** (`ci.yml`) — runs on every push to `main`:
+- Uses `GITHUB_TOKEN` (automatic) to push the Docker image to GHCR
+
+**Daily workflow** (`daily.yml`) — runs every morning at 8 AM PST:
+- Pulls the latest Docker image from GHCR
+- Passes `RESEND_API_KEY`, `RECIPIENT_EMAIL`, and `GEMINI_API_KEY` into the container at runtime
+
+```yaml
+# What happens inside daily.yml:
+docker run --rm \
+  -e RESEND_API_KEY=${{ secrets.RESEND_API_KEY }} \
+  -e RECIPIENT_EMAIL=${{ secrets.RECIPIENT_EMAIL }} \
+  -e GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
+  ghcr.io/<your-user>/newsletter:latest send
+```
+
+> **Tip:** You can trigger a send manually anytime: **Actions → Daily Newsletter → Run workflow**.
 
 ---
 
