@@ -17,7 +17,6 @@ __pycache__/
 *.egg
 .venv/
 venv/
-uv.lock
 packages/backend/generated/*.py
 packages/backend/generated/*.pyi
 !packages/backend/generated/.gitkeep
