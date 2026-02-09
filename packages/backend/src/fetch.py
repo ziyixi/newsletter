@@ -50,6 +50,9 @@ def fetch_to_json(output: Path) -> None:
         "topNews": sections.get("news", []),
         "stocks": sections.get("stocks", []),
         "hnStories": sections.get("hn", []),
+        "githubTrending": sections.get("github_trending", []),
+        "arxivPapers": sections.get("arxiv", []),
+        "exchangeRates": sections.get("exchange_rates", []),
         "customSections": [],
     }
 

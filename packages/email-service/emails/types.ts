@@ -61,6 +61,33 @@ export interface HNStory {
   hnUrl: string;
 }
 
+export interface GitHubRepo {
+  name: string;
+  description: string;
+  descriptionCn: string;
+  language: string;
+  stars: number;
+  todayStars: number;
+  url: string;
+}
+
+export interface ArxivPaper {
+  title: string;
+  titleCn: string;
+  summary: string;
+  authors: string;
+  url: string;
+  category: string;
+}
+
+export interface ExchangeRate {
+  pair: string;
+  rate: number;
+  change: number;
+  changePercent: number;
+  displayName: string;
+}
+
 // ── Main props ──────────────────────────────
 
 export interface NewsletterProps {
@@ -71,4 +98,7 @@ export interface NewsletterProps {
   stocks: StockInfo[];
   customSections: ContentSection[];
   hnStories: HNStory[];
+  githubTrending: GitHubRepo[];
+  arxivPapers: ArxivPaper[];
+  exchangeRates: ExchangeRate[];
 }

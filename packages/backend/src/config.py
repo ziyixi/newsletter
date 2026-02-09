@@ -14,14 +14,13 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-# Load .env from the backend package root
-_env_path = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(_env_path)
-
 # ── Load root config ─────────────────────────
 _root_dir = Path(__file__).resolve().parents[3]
 _config_path = _root_dir / "newsletter.config.yaml"
 _raw: dict = yaml.safe_load(_config_path.read_text(encoding="utf-8"))
+
+# Load .env from the project root (where .env actually lives)
+load_dotenv(_root_dir / ".env")
 
 
 def _csv(val: str) -> list[str]:
@@ -96,6 +95,40 @@ class Config:
     # ── Astronomy ────────────────────────────
     timezone: str = os.getenv(
         "TIMEZONE", _raw.get("schedule", {}).get("timezone", "America/Los_Angeles")
+    )
+
+    # ── GitHub Trending ──────────────────────
+    github_trending_languages: list[str] = field(
+        default_factory=lambda: _raw.get("githubTrending", {}).get(
+            "languages", ["python", "go", "rust"]
+        )
+    )
+    github_trending_max_per_lang: int = int(
+        _raw.get("githubTrending", {}).get("maxPerLanguage", 3)
+    )
+
+    # ── arXiv / Gemini ───────────────────────
+    arxiv_queries: list[dict] = field(
+        default_factory=lambda: _raw.get("arxiv", {}).get(
+            "queries",
+            [
+                {"query": "cat:cs.CL AND abs:LLM", "label": "LLM", "maxResults": 3},
+                {"query": "cat:cs.DC AND abs:HPC", "label": "HPC", "maxResults": 2},
+            ],
+        )
+    )
+    gemini_model: str = _raw.get("arxiv", {}).get("geminiModel", "gemini-2.0-flash")
+
+    # ── Exchange Rates ───────────────────────
+    exchange_rate_pairs: list[str] = field(
+        default_factory=lambda: _raw.get("exchangeRates", {}).get(
+            "pairs", ["USD/CNY"]
+        )
+    )
+    exchange_rate_names: dict[str, str] = field(
+        default_factory=lambda: _raw.get("exchangeRates", {}).get(
+            "names", {"USD/CNY": "美元/人民币"}
+        )
     )
 
 

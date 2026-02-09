@@ -83,6 +83,33 @@ export function mapProtoToProps(req: Record<string, any>): {
         contentHtml: c.content_html ?? "",
         icon: c.icon ?? "",
       })),
+
+      githubTrending: (req.github_trending ?? []).map((r: any) => ({
+        name: r.name ?? "",
+        description: r.description ?? "",
+        descriptionCn: r.description_cn ?? "",
+        language: r.language ?? "",
+        stars: r.stars ?? 0,
+        todayStars: r.today_stars ?? 0,
+        url: r.url ?? "#",
+      })),
+
+      arxivPapers: (req.arxiv_papers ?? []).map((p: any) => ({
+        title: p.title ?? "",
+        titleCn: p.title_cn ?? "",
+        summary: p.summary ?? "",
+        authors: p.authors ?? "",
+        url: p.url ?? "#",
+        category: p.category ?? "",
+      })),
+
+      exchangeRates: (req.exchange_rates ?? []).map((e: any) => ({
+        pair: e.pair ?? "",
+        rate: e.rate ?? 0,
+        change: e.change ?? 0,
+        changePercent: e.change_percent ?? 0,
+        displayName: e.display_name ?? "",
+      })),
     },
   };
 }

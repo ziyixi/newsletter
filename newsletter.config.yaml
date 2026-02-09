@@ -46,18 +46,23 @@ news:
 # ── Stocks (yfinance — free, no API key) ────────────────────
 stocks:
   symbols:
-    - AAPL
-    - GOOGL
-    - MSFT
+    - QQQ
+    - VOO
+    - GLD
+    - SLV
     - TSLA
     - NVDA
   # Display names (Chinese) for each symbol
   names:
+    QQQ: "纳斯达克100 ETF"
+    VOO: "标普500 ETF"
+    GLD: "黄金 ETF"
+    SLV: "白银 ETF"
+    TSLA: "特斯拉"
+    NVDA: "英伟达"
     AAPL: "苹果公司"
     GOOGL: "谷歌母公司"
     MSFT: "微软公司"
-    TSLA: "特斯拉"
-    NVDA: "英伟达"
     AMZN: "亚马逊"
     META: "Meta"
     BRK-B: "伯克希尔"
@@ -67,6 +72,30 @@ stocks:
 # ── Hacker News ──────────────────────────────────────────────
 hackerNews:
   maxStories: 5
+
+# ── GitHub Trending (filtered by language) ───────────────────
+githubTrending:
+  languages: [python, go, ""]   # "" = overall trending (all languages)
+  maxPerLanguage: 3
+
+# ── arXiv Paper Highlights (AI-summarised via Gemini) ────────
+# GEMINI_API_KEY must be set in .env or GitHub Secrets
+arxiv:
+  geminiModel: "gemini-3-flash-preview"   # primary model; falls back to 2.5-flash → 2.5-flash-lite
+  queries:
+    - query: "cat:cs.CL AND abs:LLM"
+      label: "LLM"
+      maxResults: 3
+    - query: "cat:cs.DC AND abs:HPC"
+      label: "HPC"
+      maxResults: 2
+
+# ── Exchange Rates (via yfinance) ────────────────────────────
+exchangeRates:
+  pairs:
+    - "USD/CNY"
+  names:
+    "USD/CNY": "美元/人民币"
 
 # ── Sections (order matters — controls email layout) ─────────
 sections:
@@ -78,8 +107,14 @@ sections:
     label: "Top 5 News"
   - id: hacker-news
     label: "Hacker News Top Stories"
+  - id: github-trending
+    label: "GitHub Trending Repos"
+  - id: arxiv
+    label: "arXiv Paper Highlights"
   - id: stocks
-    label: "Stock Watchlist"
+    label: "Market Snapshot"
+  - id: exchange-rates
+    label: "Exchange Rates"
   - id: custom-sections
     label: "Custom / Personal Sections"
   - id: footer

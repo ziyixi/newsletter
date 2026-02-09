@@ -33,4 +33,5 @@ jobs:
           docker run --rm \
             -e RESEND_API_KEY=${{ secrets.RESEND_API_KEY }} \
             -e RECIPIENT_EMAIL=${{ secrets.RECIPIENT_EMAIL }} \
+            -e GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
             ${{ env.IMAGE_NAME }}:latest send

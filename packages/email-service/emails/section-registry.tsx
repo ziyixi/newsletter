@@ -9,6 +9,9 @@ import { Stocks } from "./components/stocks";
 import { CustomSections } from "./components/custom-section";
 import { Footer } from "./components/footer";
 import { HackerNews } from "./components/hacker-news";
+import { GitHubTrending } from "./components/github-trending";
+import { Arxiv } from "./components/arxiv";
+import { ExchangeRates } from "./components/exchange-rate";
 
 // ─────────────────────────────────────────────
 // Section Registry
@@ -39,6 +42,16 @@ export const sectionRegistry: Record<string, SectionRenderer> = {
   "hacker-news": (data) => <HackerNews stories={data.hnStories} />,
 
   stocks: (data) => <Stocks stocks={data.stocks} />,
+
+  "github-trending": (data) => (
+    <GitHubTrending repos={data.githubTrending} />
+  ),
+
+  arxiv: (data) => <Arxiv papers={data.arxivPapers} />,
+
+  "exchange-rates": (data) => (
+    <ExchangeRates rates={data.exchangeRates} />
+  ),
 
   "custom-sections": (data) => (
     <CustomSections sections={data.customSections} />

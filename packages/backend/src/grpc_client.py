@@ -42,6 +42,9 @@ def build_request(
     top_news: list[dict],
     stocks: list[dict],
     hn_stories: list[dict],
+    github_trending: list[dict],
+    arxiv_papers: list[dict],
+    exchange_rates: list[dict],
     date_str: str,
 ) -> newsletter_pb2.SendNewsletterRequest:
     """Build a SendNewsletterRequest proto from Python dicts."""
@@ -68,5 +71,17 @@ def build_request(
     # HN stories
     for s in hn_stories:
         req.hn_stories.append(newsletter_pb2.HNStory(**s))
+
+    # GitHub trending
+    for r in github_trending:
+        req.github_trending.append(newsletter_pb2.GitHubRepo(**r))
+
+    # arXiv papers
+    for p in arxiv_papers:
+        req.arxiv_papers.append(newsletter_pb2.ArxivPaper(**p))
+
+    # Exchange rates
+    for e in exchange_rates:
+        req.exchange_rates.append(newsletter_pb2.ExchangeRate(**e))
 
     return req

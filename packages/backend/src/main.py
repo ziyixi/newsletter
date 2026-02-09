@@ -20,7 +20,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import cfg
 from .grpc_client import build_request, send_newsletter
 from .services import (
+    fetch_arxiv_papers,
     fetch_astronomy,
+    fetch_exchange_rates,
+    fetch_github_trending,
     fetch_hn_stories,
     fetch_news,
     fetch_stocks,
@@ -46,9 +49,12 @@ def _fetch_all() -> dict:
         "stocks": fetch_stocks,
         "hn": fetch_hn_stories,
         "astronomy": fetch_astronomy,
+        "github_trending": fetch_github_trending,
+        "arxiv": fetch_arxiv_papers,
+        "exchange_rates": fetch_exchange_rates,
     }
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=10) as pool:
         futures = {pool.submit(fn): name for name, fn in tasks.items()}
 
         for future in as_completed(futures):
@@ -60,7 +66,7 @@ def _fetch_all() -> dict:
                 print(f"  ❌  {name}: {e}")
                 traceback.print_exc()
                 # Use safe defaults
-                if name in ("news", "stocks", "hn"):
+                if name in ("news", "stocks", "hn", "github_trending", "arxiv", "exchange_rates"):
                     sections[name] = []
                 elif name == "astronomy":
                     sections[name] = {"sunrise": "--", "sunset": "--", "day_length": "--"}
@@ -107,6 +113,9 @@ def main() -> None:
         top_news=sections.get("news", []),
         stocks=sections.get("stocks", []),
         hn_stories=sections.get("hn", []),
+        github_trending=sections.get("github_trending", []),
+        arxiv_papers=sections.get("arxiv", []),
+        exchange_rates=sections.get("exchange_rates", []),
         date_str=date_str,
     )
 

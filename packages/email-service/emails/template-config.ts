@@ -40,8 +40,20 @@ export const templateConfig: TemplateConfig = {
       "label": "Hacker News Top Stories"
     },
     {
+      "id": "github-trending",
+      "label": "GitHub Trending Repos"
+    },
+    {
+      "id": "arxiv",
+      "label": "arXiv Paper Highlights"
+    },
+    {
       "id": "stocks",
-      "label": "Stock Watchlist"
+      "label": "Market Snapshot"
+    },
+    {
+      "id": "exchange-rates",
+      "label": "Exchange Rates"
     },
     {
       "id": "custom-sections",

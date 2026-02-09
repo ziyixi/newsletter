@@ -120,28 +120,35 @@ export const fakeData: NewsletterProps = {
     },
   ],
 
-  // ── Stocks ────────────────────────────────
+  // ── Stocks (ETFs + key tickers) ────────────
   stocks: [
     {
-      symbol: "AAPL",
-      companyName: "苹果公司",
-      price: 237.42,
-      change: 3.18,
-      changePercent: 1.36,
+      symbol: "QQQ",
+      companyName: "纳斯达克100 ETF",
+      price: 527.83,
+      change: 4.21,
+      changePercent: 0.8,
     },
     {
-      symbol: "GOOGL",
-      companyName: "谷歌母公司",
-      price: 192.87,
-      change: -1.45,
-      changePercent: -0.75,
+      symbol: "VOO",
+      companyName: "标普500 ETF",
+      price: 543.19,
+      change: 2.67,
+      changePercent: 0.49,
     },
     {
-      symbol: "MSFT",
-      companyName: "微软公司",
-      price: 468.33,
-      change: 5.62,
-      changePercent: 1.21,
+      symbol: "GLD",
+      companyName: "黄金 ETF",
+      price: 234.56,
+      change: -0.89,
+      changePercent: -0.38,
+    },
+    {
+      symbol: "SLV",
+      companyName: "白银 ETF",
+      price: 28.14,
+      change: 0.32,
+      changePercent: 1.15,
     },
     {
       symbol: "TSLA",
@@ -156,6 +163,85 @@ export const fakeData: NewsletterProps = {
       price: 845.21,
       change: 12.35,
       changePercent: 1.48,
+    },
+  ],
+
+  // ── GitHub Trending ───────────────────────
+  githubTrending: [
+    {
+      name: "astral-sh/ruff",
+      description: "An extremely fast Python linter and code formatter, written in Rust.",
+      descriptionCn: "一个用 Rust 编写的极速 Python 代码检查与格式化工具。",
+      language: "Python",
+      stars: 42300,
+      todayStars: 186,
+      url: "https://github.com/astral-sh/ruff",
+    },
+    {
+      name: "microsoft/TypeScript",
+      description: "TypeScript is a superset of JavaScript that compiles to clean JavaScript output.",
+      descriptionCn: "TypeScript 是 JavaScript 的超集，编译生成简洁的 JavaScript 代码。",
+      language: "overall",
+      stars: 102000,
+      todayStars: 220,
+      url: "https://github.com/microsoft/TypeScript",
+    },
+    {
+      name: "ollama/ollama",
+      description: "Get up and running with Llama 3, Mistral, Gemma, and other large language models.",
+      descriptionCn: "快速启动并运行 Llama 3、Mistral、Gemma 等大语言模型。",
+      language: "Go",
+      stars: 108000,
+      todayStars: 312,
+      url: "https://github.com/ollama/ollama",
+    },
+    {
+      name: "vllm-project/vllm",
+      description: "A high-throughput and memory-efficient inference and serving engine for LLMs",
+      descriptionCn: "高吞吐、低内存占用的大语言模型推理与服务引擎",
+      language: "Python",
+      stars: 45800,
+      todayStars: 154,
+      url: "https://github.com/vllm-project/vllm",
+    },
+  ],
+
+  // ── arXiv Papers ──────────────────────────
+  arxivPapers: [
+    {
+      title: "Scaling Sparse Mixture-of-Experts to Trillion Parameters",
+      titleCn: "将稀疏混合专家模型扩展到万亿参数规模",
+      summary: "提出了一种新的路由策略，使 MoE 模型在万亿参数级别下仍能保持高效训练和推理。",
+      authors: "Zhang et al.",
+      url: "https://arxiv.org/abs/2602.00001",
+      category: "LLM",
+    },
+    {
+      title: "InfiniContext: Efficient Infinite-Length Context for LLMs via Hierarchical Compression",
+      titleCn: "InfiniContext：通过分层压缩实现 LLM 的高效无限上下文",
+      summary: "提出分层压缩方案，在不增加显存的情况下将上下文窗口扩展到百万级 token。",
+      authors: "Li, Wang, Chen",
+      url: "https://arxiv.org/abs/2602.00002",
+      category: "LLM",
+    },
+    {
+      title: "GPU-Aware MPI Collectives for Exascale Simulations",
+      titleCn: "面向百亿亿次模拟的 GPU 感知 MPI 集合通信",
+      summary: "优化了 GPU 集群上的 MPI 集合通信原语，在百亿亿次规模模拟中实现近线性扩展。",
+      authors: "Park, Johnson et al.",
+      url: "https://arxiv.org/abs/2602.00003",
+      category: "HPC",
+    },
+  ],
+
+  // ── Exchange Rates ────────────────────────
+  exchangeRates: [
+    {
+      pair: "USD/CNY",
+      rate: 7.2461,
+      change: -0.0023,
+      changePercent: -0.03,
+      displayName: "美元/人民币",
     },
   ],
 

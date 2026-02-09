@@ -22,18 +22,21 @@ I wanted a calm, newspaper-style morning email in Chinese that rounds up the thi
 
 ## Where the Data Comes From
 
-All data sources are **free with no API keys**:
+Almost everything is **free with no API keys**:
 
 | Section | Source | What You Get |
 |---------|--------|-------------|
 | ☁️ Weather & forecast | [Open-Meteo](https://open-meteo.com) | Current conditions, 3-day forecast, sunrise/sunset |
 | 📰 World news | RSS feeds (NYT, BBC, Guardian, NPR, Al Jazeera) | Top headlines, translated to Chinese |
-| 📈 Stocks | [yfinance](https://github.com/ranaroussi/yfinance) | Price, daily change, percentage for your tickers |
+| 📈 ETFs & Stocks | [yfinance](https://github.com/ranaroussi/yfinance) | Price, daily change, percentage for your tickers |
 | 🔶 Hacker News | [HN Firebase API](https://github.com/HackerNews/API) | Top stories with Chinese-translated titles |
+| 🔥 GitHub Trending | [GitHub Trending](https://github.com/trending) | Hot repos in Rust, Go, Python (scraped) |
+| 📄 arXiv Papers | [arXiv API](https://arxiv.org/help/api) + [Gemini AI](https://ai.google.dev) | Latest LLM & HPC papers with AI summaries |
+| 💱 Exchange Rates | [yfinance](https://github.com/ranaroussi/yfinance) | USD/CNY and other forex pairs |
 | 🌅 Astronomy | [astral](https://github.com/sffjunkie/astral) | Sunrise, sunset, golden hour, day length |
 | 🌐 Translation | Google Translate (free tier) | English → Chinese for headlines and summaries |
 
-The **only paid thing** is [Resend](https://resend.com) for email delivery — and their free tier (100 emails/day) is more than enough.
+**Optional API key:** [Gemini AI](https://ai.google.dev) produces better arXiv summaries, but the section works without it (falls back to Google Translate). The **only paid thing** is [Resend](https://resend.com) for email delivery — and their free tier (100 emails/day) is more than enough.
 
 ---
 
@@ -57,12 +60,14 @@ flowchart TB
     subgraph Backend["🐍 Python — data gathering"]
         direction TB
         weather["☁️ Weather"] & news["📰 News"] & stocks["📈 Stocks"] & hn["🔶 HN"] & astro["🌅 Astronomy"]
+        github["🔥 GitHub"] & arxiv["📄 arXiv"] & forex["💱 Forex"]
         weather & news & stocks & hn & astro --> json["💾 JSON"]
+        github & arxiv & forex --> json
     end
 
     subgraph Frontend["⚡ Node.js — email rendering"]
         direction TB
-        components["📐 Layout components<br/><i>header · weather · news<br/>stocks · hacker-news · footer</i>"]
+        components["📐 Layout components<br/><i>header · weather · news · stocks<br/>github · arxiv · forex · hacker-news · footer</i>"]
         components --> html["📄 HTML email"]
         html --> send["📨 Resend API"]
     end
@@ -130,10 +135,10 @@ weather:
   location: "圣尼维尔，加州"
 ```
 
-**Pick your stocks:**
+**Pick your ETFs/stocks:**
 ```yaml
 stocks:
-  symbols: [AAPL, GOOGL, MSFT, TSLA, NVDA]
+  symbols: [QQQ, VOO, GLD, SLV, TSLA, NVDA]
 ```
 
 **Reorder or hide sections** (just comment out what you don't want):
@@ -142,6 +147,9 @@ sections:
   - id: header
   - id: weather
   - id: top-news
+  - id: github-trending
+  - id: arxiv
+  - id: exchange-rates
   # - id: hacker-news   ← hidden
   - id: stocks
   - id: footer
@@ -180,6 +188,7 @@ flowchart LR
 2. Go to **Settings → Secrets and variables → Actions** and add:
    - `RESEND_API_KEY` — your Resend API key
    - `RECIPIENT_EMAIL` — where to deliver the newsletter
+   - `GEMINI_API_KEY` *(optional)* — for AI-powered arXiv summaries
 3. That's it! The newsletter will send automatically every morning
 
 You can also trigger a send manually: **Actions → Daily Newsletter → Run workflow**.
