@@ -3,8 +3,24 @@ name: CI — Lint & E2E
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "*.md"
+      - LICENSE
+      - .gitignore
+      - .editorconfig
+      - .env.example
+      - CONTRIBUTING.md
+      - "docs/**"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "*.md"
+      - LICENSE
+      - .gitignore
+      - .editorconfig
+      - .env.example
+      - CONTRIBUTING.md
+      - "docs/**"
 
 permissions:
   contents: read
@@ -97,7 +113,15 @@ jobs:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
     needs: e2e
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: >-
+      github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+      contains(join(github.event.commits.*.modified, ','), 'packages/')
+      || contains(join(github.event.commits.*.modified, ','), 'Dockerfile')
+      || contains(join(github.event.commits.*.modified, ','), 'protos/')
+      || contains(join(github.event.commits.*.modified, ','), 'scripts/')
+      || contains(join(github.event.commits.*.modified, ','), 'newsletter.config.yaml')
+      || contains(join(github.event.commits.*.modified, ','), 'yarn.lock')
+      || contains(join(github.event.commits.*.modified, ','), 'package.json')
     steps:
       - uses: actions/checkout@v4
 
