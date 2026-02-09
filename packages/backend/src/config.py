@@ -35,7 +35,7 @@ class Config:
         "RECIPIENT_EMAIL", _raw.get("recipient", {}).get("email", "you@example.com")
     )
     recipient_name: str = os.getenv(
-        "RECIPIENT_NAME", _raw.get("recipient", {}).get("name", "子逸")
+        "RECIPIENT_NAME", _raw.get("recipient", {}).get("name", "Ziyi")
     )
 
     # ── gRPC ─────────────────────────────────

@@ -18,7 +18,7 @@ newsletter:
 # ── Recipient ────────────────────────────────────────────────
 # Override per-environment with RECIPIENT_EMAIL / RECIPIENT_NAME
 recipient:
-  name: "子逸"
+  name: "Ziyi"
   email: "you@example.com"      # placeholder — set in .env
 
 # ── Schedule ─────────────────────────────────────────────────
