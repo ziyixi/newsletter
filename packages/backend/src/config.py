@@ -119,6 +119,18 @@ class Config:
     )
     gemini_model: str = _raw.get("arxiv", {}).get("geminiModel", "gemini-2.0-flash")
 
+    # ── LLM Ranking ─────────────────────────
+    ranking_enabled: bool = (
+        os.getenv("RANKING_ENABLED", str(_raw.get("ranking", {}).get("enabled", False))).lower()
+        in ("true", "1", "yes")
+    )
+    ranking_fetch_multiplier: int = int(
+        os.getenv(
+            "RANKING_FETCH_MULTIPLIER",
+            str(_raw.get("ranking", {}).get("fetchMultiplier", 3)),
+        )
+    )
+
     # ── Exchange Rates ───────────────────────
     exchange_rate_pairs: list[str] = field(
         default_factory=lambda: _raw.get("exchangeRates", {}).get(
