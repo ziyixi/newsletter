@@ -3,7 +3,7 @@
         dev-email dev-server backend-run backend-test \
         proto-py test-send clean \
         lint lint-ts lint-py lint-proto \
-        e2e docker-build docker-e2e docker-send
+        e2e test-arxiv docker-build docker-e2e docker-send
 
 # ═══════════════════════════════════════════════
 # Quick-start workflow:
@@ -111,6 +111,10 @@ lint-proto:
 		echo "   ⚠️  buf not installed — skipping proto lint (install: https://buf.build/docs/installation)"
 
 # ─── E2E Test ───────────────────────────────
+
+test-arxiv:
+	@echo "🧪  Running arXiv E2E test…"
+	cd packages/backend && uv run python tests/test_arxiv_e2e.py
 
 e2e: sync-config fetch
 	@echo "🧪  Running E2E validation…"
