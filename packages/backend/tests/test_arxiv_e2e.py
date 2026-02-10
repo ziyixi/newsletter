@@ -28,6 +28,13 @@ def _arxiv_reachable() -> bool:
 
 # ── Helpers ──────────────────────────────────────────────────
 
+_DELAY_BETWEEN_QUERIES = 5  # seconds between separate arXiv queries
+
+
+def _make_client() -> arxiv.Client:
+    """Create an arxiv Client with conservative rate-limit settings."""
+    return arxiv.Client(page_size=10, delay_seconds=5.0, num_retries=5)
+
 
 def _fetch_papers(query: str, max_results: int, client: arxiv.Client) -> list[dict]:
     """Fetch papers for a single query, returning a list of dicts."""
@@ -58,7 +65,7 @@ def _fetch_papers(query: str, max_results: int, client: arxiv.Client) -> list[di
 
 def test_arxiv_single_query() -> None:
     """Fetch a small number of LLM papers from arXiv."""
-    client = arxiv.Client(page_size=10, delay_seconds=5.0, num_retries=5)
+    client = _make_client()
     papers = _fetch_papers("cat:cs.CL AND abs:LLM", max_results=3, client=client)
     assert len(papers) > 0, "Expected at least 1 paper from cs.CL+LLM query"
     for p in papers:
@@ -70,7 +77,7 @@ def test_arxiv_single_query() -> None:
 
 def test_arxiv_multiple_queries_no_429() -> None:
     """Fetch from two categories back-to-back without 429 errors."""
-    client = arxiv.Client(page_size=10, delay_seconds=5.0, num_retries=5)
+    client = _make_client()
     queries = [
         {"query": "cat:cs.CL AND abs:LLM", "label": "LLM", "max": 3},
         {"query": "cat:cs.DC AND abs:HPC", "label": "HPC", "max": 2},
@@ -79,7 +86,7 @@ def test_arxiv_multiple_queries_no_429() -> None:
     all_papers: list[dict] = []
     for i, q in enumerate(queries):
         if i > 0:
-            time.sleep(5)  # pause between queries to avoid 429
+            time.sleep(_DELAY_BETWEEN_QUERIES)
         papers = _fetch_papers(q["query"], q["max"], client)
         assert len(papers) > 0, f"Expected papers from {q['label']} query"
         all_papers.extend(papers)
@@ -91,7 +98,7 @@ def test_arxiv_multiple_queries_no_429() -> None:
 
 def test_arxiv_paper_fields() -> None:
     """Validate that paper fields are well-formed."""
-    client = arxiv.Client(page_size=10, delay_seconds=5.0, num_retries=5)
+    client = _make_client()
     search = arxiv.Search(
         query="cat:cs.CL AND abs:LLM",
         max_results=1,

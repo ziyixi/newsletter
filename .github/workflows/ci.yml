@@ -124,10 +124,10 @@ jobs:
         run: |
           HTML_FILE="packages/.cache/e2e-output.html"
           if [ -f "$HTML_FILE" ]; then
-            SIZE=$(wc -c < "$HTML_FILE")
+            SIZE=$(wc -c < "$HTML_FILE" | tr -d ' ')
             echo "### 📰 Newsletter E2E Output" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "✅ Rendered **$(numfmt --to=iec $SIZE)** of HTML." >> "$GITHUB_STEP_SUMMARY"
+            echo "✅ Rendered **${SIZE} bytes** of HTML." >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "Download the full HTML from the **newsletter-html** artifact above." >> "$GITHUB_STEP_SUMMARY"
           else
