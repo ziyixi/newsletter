@@ -180,12 +180,24 @@ def _parse_index_json(text: str) -> dict[str, list[int]]:
     text = re.sub(r"```(?:json)?\s*", "", text)
     text = text.strip().rstrip("`")
 
-    # Find the first JSON-like object
-    match = re.search(r"\{[^}]+\}", text)
-    if not match:
+    # Find the outermost JSON object using brace matching
+    start = text.find("{")
+    if start == -1:
         return {}
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                json_str = text[start : i + 1]
+                break
+    else:
+        return {}
+
     try:
-        data = json.loads(match.group())
+        data = json.loads(json_str)
         return {
             k: [int(x) for x in v] for k, v in data.items() if isinstance(v, list)
         }

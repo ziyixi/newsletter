@@ -17,6 +17,9 @@ import arxiv
 from ..config import cfg
 from . import gemini_client
 
+# Maximum characters of abstract text sent to Gemini per paper
+_MAX_ABSTRACT_CHARS = 400
+
 
 def fetch_arxiv_papers() -> list[dict]:
     """Fetch latest arXiv papers for configured categories and summarize."""
@@ -87,7 +90,7 @@ def _summarize_batch_gemini(papers: list[dict], client: object) -> list[dict]:
     paper_lines: list[str] = []
     for i, p in enumerate(papers):
         paper_lines.append(
-            f"[{i}] 标题：{p['title']}\n    摘要：{p.get('_abstract', '')[:400]}"
+            f"[{i}] 标题：{p['title']}\n    摘要：{p.get('_abstract', '')[:_MAX_ABSTRACT_CHARS]}"
         )
     numbered_text = "\n".join(paper_lines)
 
