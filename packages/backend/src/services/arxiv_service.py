@@ -12,22 +12,21 @@ Falls back to Google Translate if GEMINI_API_KEY is not set.
 
 from __future__ import annotations
 
-import os
-from typing import Any
-
 import arxiv
 
 from ..config import cfg
+from . import gemini_client
 
 
 def fetch_arxiv_papers() -> list[dict]:
     """Fetch latest arXiv papers for configured categories and summarize."""
     results: list[dict] = []
     client = arxiv.Client(page_size=10, delay_seconds=3.0, num_retries=3)
+    multiplier = cfg.ranking_fetch_multiplier if cfg.ranking_enabled else 1
 
     for qcfg in cfg.arxiv_queries:
         try:
-            max_results = qcfg.get("maxResults", 3)
+            max_results = qcfg.get("maxResults", 3) * multiplier
             search = arxiv.Search(
                 query=qcfg["query"],
                 max_results=max_results,
@@ -63,11 +62,11 @@ def fetch_arxiv_papers() -> list[dict]:
 
 
 def _summarize(papers: list[dict]) -> list[dict]:
-    """Summarize papers using Gemini, with graceful fallback."""
-    api_key = os.getenv("GEMINI_API_KEY", "")
+    """Summarize papers using Gemini (batch), with graceful fallback."""
+    client = gemini_client.get_client()
 
-    if api_key:
-        papers = _summarize_with_gemini(papers, api_key)
+    if client is not None:
+        papers = _summarize_batch_gemini(papers, client)
     else:
         print("⚠️  GEMINI_API_KEY not set — using fallback translation")
         papers = _summarize_fallback(papers)
@@ -79,70 +78,68 @@ def _summarize(papers: list[dict]) -> list[dict]:
     return papers
 
 
-_GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+def _summarize_batch_gemini(papers: list[dict], client: object) -> list[dict]:
+    """Batch-summarise all papers in a single Gemini call (saves API quota)."""
+    if not papers:
+        return papers
 
+    # Build a numbered list for the prompt
+    paper_lines: list[str] = []
+    for i, p in enumerate(papers):
+        paper_lines.append(
+            f"[{i}] 标题：{p['title']}\n    摘要：{p.get('_abstract', '')[:400]}"
+        )
+    numbered_text = "\n".join(paper_lines)
 
-def _summarize_with_gemini(papers: list[dict], api_key: str) -> list[dict]:
-    """Use Gemini to translate titles and generate one-line Chinese summaries."""
-    try:
-        from google import genai
+    prompt = (
+        "请为以下每篇学术论文提供：\n"
+        "1. 中文标题翻译\n"
+        "2. 一句话中文摘要（不超过80字）\n\n"
+        f"{numbered_text}\n\n"
+        "请严格按以下格式逐篇回复，不要多余内容：\n"
+        "[编号]\n"
+        "标题：<中文标题>\n"
+        "摘要：<一句话中文摘要>\n"
+    )
 
-        client = genai.Client(api_key=api_key)
-        models_to_try = [cfg.gemini_model, *_GEMINI_FALLBACK_MODELS]
+    text = gemini_client.generate(client, prompt)
+    if text is None:
+        return _summarize_fallback(papers)
 
-        for p in papers:
-            _gemini_summarize_paper(client, models_to_try, p)
-    except ImportError:
-        print("⚠️  google-genai not installed — using fallback")
-        papers = _summarize_fallback(papers)
+    _parse_batch_response(papers, text)
+
+    # Fill in any that the batch missed
+    for p in papers:
+        if not p.get("title_cn"):
+            _fallback_single(p)
 
     return papers
 
 
-def _gemini_summarize_paper(
-    client: Any, models: list[str], paper: dict
-) -> None:
-    """Try each model in *models* until one succeeds."""
-    prompt = (
-        "请为以下学术论文提供：\n"
-        "1. 中文标题翻译\n"
-        "2. 一句话中文摘要（不超过80字）\n\n"
-        f"标题：{paper['title']}\n"
-        f"摘要：{paper.get('_abstract', '')[:500]}\n\n"
-        "请严格按以下格式回复，不要多余内容：\n"
-        "标题：<中文标题>\n"
-        "摘要：<一句话中文摘要>"
-    )
+def _parse_batch_response(papers: list[dict], text: str) -> None:
+    """Parse the batch Gemini response and populate paper dicts."""
+    current_idx: int | None = None
 
-    for model_name in models:
-        try:
-            resp = client.models.generate_content(  # type: ignore[union-attr]
-                model=model_name,
-                contents=prompt,
-            )
-            if resp.text:
-                _parse_gemini_response(paper, resp.text.strip())
-                if paper.get("title_cn"):
-                    return  # success
-        except Exception as e:
-            print(f"⚠️  Gemini ({model_name}) failed for paper: {e}")
-
-    # All models exhausted — use translation fallback
-    _fallback_single(paper)
-
-
-def _parse_gemini_response(paper: dict, text: str) -> None:
-    """Parse Gemini's structured response into paper dict."""
     for line in text.split("\n"):
         line = line.strip()
-        if line.startswith(("标题：", "标题:")):
-            paper["title_cn"] = line.split("：", 1)[-1].split(":", 1)[-1].strip()
-        elif line.startswith(("摘要：", "摘要:")):
-            paper["summary"] = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+        if not line:
+            continue
 
-    # Ensure we have values
-    if not paper["title_cn"]:
-        _fallback_single(paper)
+        # Detect "[0]", "[1]", etc.
+        if line.startswith("[") and "]" in line:
+            try:
+                idx_str = line[1 : line.index("]")]
+                current_idx = int(idx_str)
+            except (ValueError, IndexError):
+                pass
+            continue
+
+        if current_idx is not None and 0 <= current_idx < len(papers):
+            p = papers[current_idx]
+            if line.startswith(("标题：", "标题:")):
+                p["title_cn"] = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+            elif line.startswith(("摘要：", "摘要:")):
+                p["summary"] = line.split("：", 1)[-1].split(":", 1)[-1].strip()
 
 
 def _summarize_fallback(papers: list[dict]) -> list[dict]:

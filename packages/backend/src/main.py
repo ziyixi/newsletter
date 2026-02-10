@@ -29,6 +29,7 @@ from .services import (
     fetch_news,
     fetch_stocks,
     fetch_weather,
+    rank_sections,
 )
 
 
@@ -74,6 +75,9 @@ def _fetch_all() -> dict:
                     sections[name] = {"sunrise": "--", "sunset": "--", "day_length": "--"}
                 else:
                     sections[name] = {}
+
+    # ── LLM ranking (trim over-fetched lists) ──
+    sections = rank_sections(sections)
 
     return sections
 

@@ -30,8 +30,10 @@ _SOURCE_MAP: dict[str, str] = {
 def fetch_news() -> list[dict]:
     """Parse configured RSS feeds and return top N stories, balanced across sources."""
     all_entries: list[dict] = []
+    multiplier = cfg.ranking_fetch_multiplier if cfg.ranking_enabled else 1
+    effective_max = cfg.news_max_items * multiplier
     # Take at most 3 per feed to ensure source diversity
-    per_feed_limit = max(2, cfg.news_max_items // max(len(cfg.news_feeds), 1) + 1)
+    per_feed_limit = max(2, effective_max // max(len(cfg.news_feeds), 1) + 1)
 
     for feed_url in cfg.news_feeds:
         try:
@@ -63,7 +65,7 @@ def fetch_news() -> list[dict]:
             seen.add(key)
             unique.append(item)
 
-    result = unique[: cfg.news_max_items]
+    result = unique[: effective_max]
 
     # Translate headlines, summaries, and categories to Chinese
     for item in result:

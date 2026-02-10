@@ -14,6 +14,8 @@ _BASE = "https://github.com/trending"
 def fetch_github_trending() -> list[dict]:
     """Fetch daily trending repos for configured languages."""
     results: list[dict] = []
+    multiplier = cfg.ranking_fetch_multiplier if cfg.ranking_enabled else 1
+    effective_max_per_lang = cfg.github_trending_max_per_lang * multiplier
 
     for lang in cfg.github_trending_languages:
         try:
@@ -27,7 +29,7 @@ def fetch_github_trending() -> list[dict]:
             )
             resp.raise_for_status()
             repos = _parse_trending_page(resp.text, display_lang)
-            results.extend(repos[: cfg.github_trending_max_per_lang])
+            results.extend(repos[: effective_max_per_lang])
         except Exception as e:
             print(f"⚠️  Failed to fetch GitHub trending for {display_lang}: {e}")
 

@@ -16,11 +16,15 @@ _BASE = "https://hacker-news.firebaseio.com/v0"
 def fetch_hn_stories() -> list[dict]:
     """Fetch top N Hacker News stories."""
     results: list[dict] = []
+    multiplier = cfg.hn_max_stories  # original limit
+    if cfg.ranking_enabled:
+        multiplier = cfg.hn_max_stories * cfg.ranking_fetch_multiplier
+    effective_max = multiplier
 
     try:
         resp = httpx.get(f"{_BASE}/topstories.json", timeout=10)
         resp.raise_for_status()
-        story_ids: list[int] = resp.json()[: cfg.hn_max_stories]
+        story_ids: list[int] = resp.json()[: effective_max]
 
         for sid in story_ids:
             try:

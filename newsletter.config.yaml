@@ -90,6 +90,14 @@ arxiv:
       label: "HPC"
       maxResults: 2
 
+# ── LLM Ranking (Gemini-powered relevance ranking) ──────────
+# When enabled, services over-fetch items by fetchMultiplier,
+# then an LLM call ranks and selects the most relevant ones.
+# Requires GEMINI_API_KEY in .env or GitHub Secrets.
+ranking:
+  enabled: true
+  fetchMultiplier: 3   # fetch 3× more items, then rank down to configured limits
+
 # ── Exchange Rates (via yfinance) ────────────────────────────
 exchangeRates:
   pairs:
