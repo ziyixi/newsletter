@@ -102,11 +102,38 @@ jobs:
       - name: Generate proto stubs
         run: make proto-py
 
+      - name: arXiv E2E test
+        run: cd packages/backend && uv run python tests/test_arxiv_e2e.py
+
       - name: Fetch live data
         run: make fetch
 
       - name: Render & validate (E2E)
         run: yarn workspace email-service e2e
+
+      - name: Upload rendered HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: newsletter-html
+          path: packages/.cache/e2e-output.html
+          if-no-files-found: ignore
+
+      - name: Add HTML preview to job summary
+        if: always()
+        run: |
+          HTML_FILE="packages/.cache/e2e-output.html"
+          if [ -f "$HTML_FILE" ]; then
+            SIZE=$(wc -c < "$HTML_FILE" | tr -d ' ')
+            echo "### 📰 Newsletter E2E Output" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "✅ Rendered **${SIZE} bytes** of HTML." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Download the full HTML from the **newsletter-html** artifact above." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### 📰 Newsletter E2E Output" >> "$GITHUB_STEP_SUMMARY"
+            echo "⚠️ No HTML output found." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # ─── Docker ────────────────────────────────
   docker:

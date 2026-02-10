@@ -1,7 +1,8 @@
 """
 arXiv service — fetches latest papers and summarizes with Gemini.
 
-Uses the ``arxiv`` package (lukasschwab/arxiv.py) for reliable API access.
+Uses the ``arxiv`` package (lukasschwab/arxiv.py) for reliable API access
+with exponential back-off on HTTP 429 (rate-limit) errors.
 
 Categories:
   - cs.CL (Computation and Language) → LLM papers
@@ -12,6 +13,9 @@ Falls back to Google Translate if GEMINI_API_KEY is not set.
 
 from __future__ import annotations
 
+import random
+import time
+
 import arxiv
 
 from ..config import cfg
@@ -20,30 +24,34 @@ from . import gemini_client
 # Maximum characters of abstract text sent to Gemini per paper
 _MAX_ABSTRACT_CHARS = 400
 
+# ── Retry / back-off settings ───────────────────────────────
+_MAX_RETRIES = 5  # per-query retry attempts
+_BASE_DELAY = 5.0  # initial back-off in seconds
+_DELAY_BETWEEN_QUERIES = 5.0  # pause between separate arXiv queries
 
-def fetch_arxiv_papers() -> list[dict]:
-    """Fetch latest arXiv papers for configured categories and summarize."""
-    results: list[dict] = []
-    client = arxiv.Client(page_size=10, delay_seconds=3.0, num_retries=3)
-    multiplier = cfg.ranking_fetch_multiplier if cfg.ranking_enabled else 1
 
-    for qcfg in cfg.arxiv_queries:
+def _fetch_query_with_backoff(
+    client: arxiv.Client, qcfg: dict, max_results: int
+) -> list[dict]:
+    """Fetch a single arXiv query with exponential back-off on failure."""
+    last_err: Exception | None = None
+
+    for attempt in range(_MAX_RETRIES):
         try:
-            max_results = qcfg.get("maxResults", 3) * multiplier
             search = arxiv.Search(
                 query=qcfg["query"],
                 max_results=max_results,
                 sort_by=arxiv.SortCriterion.SubmittedDate,
             )
 
+            papers: list[dict] = []
             for paper in client.results(search):
-                # Authors (first 3)
                 authors: list[str] = [a.name for a in paper.authors[:3]]
                 author_str = ", ".join(authors)
                 if len(paper.authors) > 3:
                     author_str += " et al."
 
-                results.append(
+                papers.append(
                     {
                         "title": paper.title,
                         "title_cn": "",
@@ -54,8 +62,33 @@ def fetch_arxiv_papers() -> list[dict]:
                         "category": qcfg.get("label", ""),
                     }
                 )
+            return papers
         except Exception as e:
-            print(f"⚠️  Failed to fetch arXiv ({qcfg.get('label', '?')}): {e}")
+            last_err = e
+            wait = _BASE_DELAY * (2**attempt) + random.uniform(0, 1)
+            print(
+                f"⚠️  arXiv ({qcfg.get('label', '?')}) attempt {attempt + 1}/{_MAX_RETRIES} "
+                f"failed: {e} — retrying in {wait:.1f}s"
+            )
+            time.sleep(wait)
+
+    print(f"⚠️  Failed to fetch arXiv ({qcfg.get('label', '?')}) after {_MAX_RETRIES} attempts: {last_err}")
+    return []
+
+
+def fetch_arxiv_papers() -> list[dict]:
+    """Fetch latest arXiv papers for configured categories and summarize."""
+    results: list[dict] = []
+    client = arxiv.Client(page_size=10, delay_seconds=5.0, num_retries=5)
+    multiplier = cfg.ranking_fetch_multiplier if cfg.ranking_enabled else 1
+
+    for i, qcfg in enumerate(cfg.arxiv_queries):
+        if i > 0:
+            time.sleep(_DELAY_BETWEEN_QUERIES)
+
+        max_results = qcfg.get("maxResults", 3) * multiplier
+        papers = _fetch_query_with_backoff(client, qcfg, max_results)
+        results.extend(papers)
 
     # Summarize with Gemini (or fallback)
     return _summarize(results)
