@@ -114,13 +114,13 @@ class Config:
 
     # ── LLM Ranking ─────────────────────────
     ranking_enabled: bool = (
-        os.getenv("RANKING_ENABLED", str(_raw.get("ranking", {}).get("enabled", False))).lower()
+        os.getenv("RANKING_ENABLED", str(_RAW.get("ranking", {}).get("enabled", False))).lower()
         in ("true", "1", "yes")
     )
     ranking_fetch_multiplier: int = int(
         os.getenv(
             "RANKING_FETCH_MULTIPLIER",
-            str(_raw.get("ranking", {}).get("fetchMultiplier", 3)),
+            str(_RAW.get("ranking", {}).get("fetchMultiplier", 3)),
         )
     )
 
