@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import httpx
 
 from ..config import cfg
@@ -50,7 +52,8 @@ def _wind_description(speed_kmh: float) -> str:
 
 def fetch_weather() -> dict:
     """Fetch current weather + 3-day forecast from Open-Meteo (°C)."""
-    url = "https://api.open-meteo.com/v1/forecast"
+    base = os.environ.get("WEATHER_API_BASE", "https://api.open-meteo.com")
+    url = f"{base}/v1/forecast"
     params: dict[str, str | int | float] = {
         "latitude": cfg.weather_lat,
         "longitude": cfg.weather_lon,

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test News Feed</title>
+    <item>
+      <title>Test headline for integration testing</title>
+      <description>This is a test news article summary for the newsletter integration test.</description>
+      <link>https://example.com/test-news</link>
+      <category>Technology</category>
+    </item>
+    <item>
+      <title>Another test headline</title>
+      <description>Another test summary for the second news item.</description>
+      <link>https://example.com/test-news-2</link>
+      <category>World</category>
+    </item>
+  </channel>
+</rss>

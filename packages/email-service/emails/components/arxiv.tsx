@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Section, Text, Link } from "@react-email/components";
-import { tokens, SectionHeading, ThinRule } from "./styles";
+import { tokens, SectionHeading, ThinRule, CategoryPill } from "./styles";
 import type { ArxivPaper } from "../types";
 
 // ─────────────────────────────────────────────
@@ -34,20 +34,16 @@ export function Arxiv({ papers }: ArxivProps) {
         <React.Fragment key={cat}>
           {ci > 0 && <ThinRule />}
 
-          {/* Category badge */}
-          <Text
-            style={{
-              fontFamily: tokens.fontSans,
-              fontSize: "10px",
-              fontWeight: 700,
-              letterSpacing: "1.5px",
-              textTransform: "uppercase" as const,
-              color: tokens.accent,
-              margin: "12px 0 4px 0",
-            }}
-          >
-            {cat}
-          </Text>
+          {/* Category pill badge */}
+          <table cellPadding={0} cellSpacing={0} style={{ margin: "12px 0 6px 0" }}>
+            <tbody>
+              <tr>
+                <td>
+                  <CategoryPill>{cat}</CategoryPill>
+                </td>
+              </tr>
+            </tbody>
+          </table>
 
           {catPapers.map((paper, i) => (
             <table
@@ -55,7 +51,11 @@ export function Arxiv({ papers }: ArxivProps) {
               width="100%"
               cellPadding={0}
               cellSpacing={0}
-              style={{ padding: "6px 0" }}
+              style={{
+                padding: "8px 0 8px 12px",
+                borderLeft: `2px solid ${tokens.ruleLight}`,
+                marginBottom: "4px",
+              }}
             >
               <tbody>
                 <tr>
@@ -91,19 +91,33 @@ export function Arxiv({ papers }: ArxivProps) {
                       </Text>
                     )}
 
-                    {/* One-line AI summary */}
+                    {/* One-line AI summary — warm highlight strip */}
                     {paper.summary && (
-                      <Text
-                        style={{
-                          fontFamily: tokens.fontKai,
-                          fontSize: "12px",
-                          color: tokens.inkLight,
-                          lineHeight: "1.5",
-                          margin: "4px 0 0 0",
-                        }}
-                      >
-                        💡 {paper.summary}
-                      </Text>
+                      <table width="100%" cellPadding={0} cellSpacing={0} style={{ marginTop: "4px" }}>
+                        <tbody>
+                          <tr>
+                            <td
+                              style={{
+                                backgroundColor: tokens.pillBg,
+                                padding: "4px 8px",
+                                borderLeft: `2px solid ${tokens.gold}`,
+                              }}
+                            >
+                              <Text
+                                style={{
+                                  fontFamily: tokens.fontKai,
+                                  fontSize: "12px",
+                                  color: tokens.inkLight,
+                                  lineHeight: "1.5",
+                                  margin: "0",
+                                }}
+                              >
+                                💡 {paper.summary}
+                              </Text>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
                     )}
 
                     {/* Authors */}
@@ -112,7 +126,7 @@ export function Arxiv({ papers }: ArxivProps) {
                         fontFamily: tokens.fontSans,
                         fontSize: "11px",
                         color: tokens.inkMuted,
-                        margin: "2px 0 0 0",
+                        margin: "3px 0 0 0",
                       }}
                     >
                       {paper.authors}

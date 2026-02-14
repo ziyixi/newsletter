@@ -1,0 +1,39 @@
+# docker-compose.test.yml — Integration test with fake external services
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+#   make test
+
+services:
+  fake-server:
+    build: tests/fake-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+
+  newsletter:
+    build: .
+    depends_on:
+      fake-server:
+        condition: service_healthy
+    environment:
+      # Point services at the fake server
+      - WEATHER_API_BASE=http://fake-server:8080
+      - HN_API_BASE=http://fake-server:8080
+      - GITHUB_TRENDING_BASE=http://fake-server:8080
+      - TODO_API_BASE=http://fake-server:8080
+      - NEWS_FEEDS=http://fake-server:8080/rss/feed
+      # Skip services that use Python libraries (yfinance, astral, arxiv)
+      # — they don't call HTTP endpoints we can mock
+      - SKIP_STOCKS=true
+      - SKIP_EXCHANGE_RATES=true
+      - SKIP_ASTRONOMY=true
+      - SKIP_ARXIV=true
+      # Dummy auth for todo API
+      - TODO_API_USER=test
+      - TODO_API_PASSWORD=test
+    command: ["e2e"]

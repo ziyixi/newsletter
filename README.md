@@ -1,292 +1,151 @@
-<h1 align="center">📰 每日简报 — Daily Briefing Newsletter</h1>
+# 📰 每日简报 — Daily Newsletter
 
-<p align="center">
-  A personal, automated Chinese-language morning newsletter —<br>
-  weather, world news, stocks, and more, delivered to your inbox every day.
-</p>
+A personal daily newsletter that curates content from multiple sources and delivers a beautifully formatted email every morning.
 
-<p align="center">
-  <a href="#how-it-works">How It Works</a> •
-  <a href="#getting-started">Getting Started</a> •
-  <a href="#customise-your-newsletter">Customise</a> •
-  <a href="#deploying-with-github-actions">Deploy</a>
-</p>
+## Architecture
 
----
-
-## Why This Exists
-
-I wanted a calm, newspaper-style morning email in Chinese that rounds up the things I care about — weather, headlines, stock tickers, and interesting Hacker News posts. Everything runs automatically: a GitHub Action fires at 8 AM, gathers live data, renders a beautiful email, and sends it.
-
----
-
-## Where the Data Comes From
-
-Almost everything is **free with no API keys**:
-
-| Section | Source | What You Get |
-|---------|--------|-------------|
-| ☁️ Weather & forecast | [Open-Meteo](https://open-meteo.com) | Current conditions, 3-day forecast, sunrise/sunset |
-| 📰 World news | RSS feeds (NYT, BBC, Guardian, NPR, Al Jazeera) | Top headlines, translated to Chinese |
-| 📈 ETFs & Stocks | [yfinance](https://github.com/ranaroussi/yfinance) | Price, daily change, percentage for your tickers |
-| 🔶 Hacker News | [HN Firebase API](https://github.com/HackerNews/API) | Top stories with Chinese-translated titles |
-| 🔥 GitHub Trending | [GitHub Trending](https://github.com/trending) | Hot repos in Rust, Go, Python (scraped) |
-| 📄 arXiv Papers | [arXiv API](https://arxiv.org/help/api) + [Gemini AI](https://ai.google.dev) | Latest LLM & HPC papers with AI summaries |
-| 💱 Exchange Rates | [yfinance](https://github.com/ranaroussi/yfinance) | USD/CNY and other forex pairs |
-| 🌅 Astronomy | [astral](https://github.com/sffjunkie/astral) | Sunrise, sunset, golden hour, day length |
-| 🌐 Translation | Google Translate (free tier) | English → Chinese for headlines and summaries |
-
-**Optional API key:** [Gemini AI](https://ai.google.dev) produces better arXiv summaries, but the section works without it (falls back to Google Translate). The **only paid thing** is [Resend](https://resend.com) for email delivery — and their free tier (100 emails/day) is more than enough.
-
----
-
-## How It Works
-
-```mermaid
-flowchart LR
-    A["⏰ 8 AM trigger<br/>(GitHub Action or manual)"] --> B["🐍 Python backend<br/>fetches live data"]
-    B --> C["💾 JSON file<br/>(weather, news, stocks…)"]
-    C --> D["⚡ Node.js renders<br/>HTML email"]
-    D --> E["📨 Resend delivers<br/>to your inbox"]
+```
+Python backend          Node.js email-service
+(fetch data)     →      (render + send)
+      │                       │
+      ▼                       ▼
+  JSON file             React Email → Resend
 ```
 
-1. **Fetch** — Python pulls fresh data from all the free APIs listed above, in parallel
-2. **Translate** — Headlines and summaries are translated to Chinese via Google Translate
-3. **Render** — The data is passed to React Email components that produce a styled HTML email (warm ivory background, calligraphy title, newspaper-inspired layout)
-4. **Send** — The HTML is sent through the Resend API to your email address
+The system is split into two packages:
 
-```mermaid
-flowchart TB
-    subgraph Backend["🐍 Python — data gathering"]
-        direction TB
-        weather["☁️ Weather"] & news["📰 News"] & stocks["📈 Stocks"] & hn["🔶 HN"] & astro["🌅 Astronomy"]
-        github["🔥 GitHub"] & arxiv["📄 arXiv"] & forex["💱 Forex"]
-        weather & news & stocks & hn & astro --> json["💾 JSON"]
-        github & arxiv & forex --> json
-    end
+| Package | Language | Purpose |
+|---------|----------|---------|
+| `packages/backend` | Python 3.12 | Fetches data from external APIs in parallel |
+| `packages/email-service` | TypeScript (Node 20) | Renders React Email templates and sends via Resend |
 
-    subgraph Frontend["⚡ Node.js — email rendering"]
-        direction TB
-        components["📐 Layout components<br/><i>header · weather · news · stocks<br/>github · arxiv · forex · hacker-news · footer</i>"]
-        components --> html["📄 HTML email"]
-        html --> send["📨 Resend API"]
-    end
+They communicate through a **JSON file** — the backend writes it, the email-service reads it.
 
-    json --> components
+## Content Sources
 
-    style Backend fill:#f0f4ff,stroke:#2563eb,color:#121212
-    style Frontend fill:#fefce8,stroke:#ca8a04,color:#121212
-```
+| Section | Source | API Key? |
+|---------|--------|----------|
+| 🌤 Weather | Open-Meteo | No |
+| 🌅 Astronomy | `astral` library | No |
+| 📰 Top News | RSS feeds + Google Translate | No |
+| 🔥 Hacker News | Firebase API + Google Translate | No |
+| 📈 Stocks | yfinance | No |
+| 💱 Exchange Rates | yfinance | No |
+| 🐙 GitHub Trending | HTML scraping + Google Translate | No |
+| 📄 arXiv Papers | arxiv API + Gemini | Yes (`GEMINI_API_KEY`) |
+| ✅ Todo Tasks | daily.ziyixi.science | Yes (`TODO_API_*`) |
 
----
-
-## Getting Started
-
-You need **four things** installed:
-
-- [Node.js](https://nodejs.org) (v20+) and [Yarn](https://yarnpkg.com) — for the email renderer
-- [Python](https://python.org) (3.11+) and [uv](https://docs.astral.sh/uv/) — for the data fetcher
+## Quick Start
 
 ```bash
-# Clone the repo
-git clone https://github.com/<your-user>/newsletter.git
-cd newsletter
-
-# Install everything (Node packages, Python packages, proto stubs)
+# 1. Install dependencies
 make setup
 
-# Fetch live data and preview the email in your browser
+# 2. Configure secrets
+cp .env.example .env   # edit with your API keys
+
+# 3. Preview in browser (fetches real data)
 make preview
-```
 
-That's it — `make preview` will open a local preview with real data. No API keys needed for previewing.
-
-### Sending a Real Email
-
-To actually deliver the email, you need a free [Resend](https://resend.com) account:
-
-1. Sign up at [resend.com](https://resend.com) and grab an API key
-2. Set up your `.env` file:
-
-```bash
-cp .env.example .env
-# Then edit .env and fill in:
-#   RESEND_API_KEY=re_xxxxxxxxxxxx
-#   RECIPIENT_EMAIL=you@example.com
-```
-
-3. Send:
-
-```bash
+# 4. Send the newsletter
 make send
 ```
 
----
+## Configuration
 
-## Customise Your Newsletter
+All settings live in **`newsletter.config.yaml`** — a single source of truth for both packages.
 
-Everything is configured in one file: [`newsletter.config.yaml`](newsletter.config.yaml).
+Secrets go in **`.env`** (local) or **GitHub Secrets** (CI):
 
-**Change your location** (affects weather and astronomy):
-```yaml
-weather:
-  latitude: 37.3688
-  longitude: -122.0363
-  location: "圣尼维尔，加州"
+```
+RESEND_API_KEY=re_...
+RECIPIENT_EMAIL=you@example.com
+RECIPIENT_NAME=Ziyi
+GEMINI_API_KEY=AIza...
+TODO_API_USER=...
+TODO_API_PASSWORD=...
 ```
 
-**Pick your ETFs/stocks:**
-```yaml
-stocks:
-  symbols: [QQQ, VOO, GLD, SLV, TSLA, NVDA]
+## Development
+
+```bash
+# React Email dev server (hot reload)
+make dev-email
+
+# Run all linters (TypeScript + Python)
+make lint
+
+# Fetch data only (without sending)
+make fetch
+
+# Run integration tests (Docker Compose)
+make test
 ```
 
-**Reorder or hide sections** (just comment out what you don't want):
-```yaml
-sections:
-  - id: header
-  - id: weather
-  - id: top-news
-  - id: github-trending
-  - id: arxiv
-  - id: exchange-rates
-  # - id: hacker-news   ← hidden
-  - id: stocks
-  - id: footer
+## Testing
+
+Integration tests use Docker Compose with a **fake server** that returns canned responses for all external APIs:
+
+```bash
+make test
+# → docker compose -f docker-compose.test.yml up --build ...
 ```
 
-Run `make preview` after editing to see your changes instantly.
+The fake server lives in `tests/fake-server/` with fixture files for each API endpoint.
 
----
+Backend services support configurable base URLs via environment variables (`WEATHER_API_BASE`, `HN_API_BASE`, etc.) and skip flags (`SKIP_STOCKS=true`) for services that use Python libraries instead of HTTP.
 
-## Deploying with GitHub Actions
+## Docker
 
-The project includes two workflows that handle everything automatically:
+```bash
+# Build
+docker build -t newsletter .
 
-```mermaid
-flowchart LR
-    subgraph CI["On every push"]
-        direction TB
-        lint["✅ Lint & type-check"] --> e2e["🧪 Fetch + render test"]
-        e2e --> docker["🐳 Build Docker image"]
-    end
+# Send
+docker run -e RESEND_API_KEY=... -e RECIPIENT_EMAIL=... newsletter send
 
-    subgraph Daily["Every morning at 8 AM"]
-        cron["⏰ Scheduled run"] --> pull["Pull latest image"]
-        pull --> deliver["📨 Send newsletter"]
-    end
-
-    docker --> pull
-
-    style CI fill:#f0fdf4,stroke:#16a34a,color:#121212
-    style Daily fill:#fef2f2,stroke:#dc2626,color:#121212
+# E2E validation (no email sent)
+docker run newsletter e2e
 ```
 
-<details>
-<summary><strong>1. Required Secrets</strong></summary>
-
-Go to your GitHub repo → **Settings → Secrets and variables → Actions → New repository secret** and add:
-
-| Secret | Required | Description | How to Get |
-|--------|----------|-------------|------------|
-| `RESEND_API_KEY` | ✅ Yes | API key for email delivery | Sign up at [resend.com](https://resend.com) → [API Keys](https://resend.com/api-keys) → Create |
-| `RECIPIENT_EMAIL` | ✅ Yes | Email address to receive the newsletter | Your personal email |
-| `GEMINI_API_KEY` | ❌ Optional | Gemini AI key for arXiv paper summaries | [Google AI Studio](https://aistudio.google.com/app/apikey) → Create API Key |
-
-> **Note:** `GITHUB_TOKEN` is provided automatically by GitHub Actions — you do **not** need to create it. It is used for pulling/pushing Docker images to GitHub Container Registry (GHCR).
-
-</details>
-
-<details>
-<summary><strong>2. Step-by-Step Setup</strong></summary>
-
-1. **Fork or push** this repo to GitHub.
-2. **Add secrets:**
-   1. Go to your repo on GitHub.
-   2. Click **Settings → Secrets and variables → Actions**.
-   3. Click **"New repository secret"**.
-   4. Add `RESEND_API_KEY` (value: `re_xxxxxxxxxx` from Resend dashboard).
-   5. Add `RECIPIENT_EMAIL` (value: your email address).
-   6. *(Optional)* Add `GEMINI_API_KEY` for AI-powered arXiv summaries. Without it, arXiv summaries fall back to Google Translate.
-3. **Enable workflows:**
-   1. Go to the **Actions** tab in your repo.
-   2. If prompted, click *"I understand my workflows, go ahead and enable them"*.
-4. **Verify CI works:**
-   1. Push any code change to `main`.
-   2. The CI workflow will lint, run E2E tests, and build a Docker image.
-   3. The Docker image is pushed to `ghcr.io/<your-user>/newsletter`.
-5. The **Daily Newsletter** workflow runs automatically at **8 AM PST** (4 PM UTC). To test immediately: **Actions → Daily Newsletter → Run workflow**.
-
-</details>
-
-<details>
-<summary><strong>3. How the Workflows Use Secrets</strong></summary>
-
-**CI workflow** (`ci.yml`) — runs on every push to `main`:
-- Uses `GITHUB_TOKEN` (automatic) to push the Docker image to GHCR
-
-**Daily workflow** (`daily.yml`) — runs every morning at 8 AM PST:
-- Pulls the latest Docker image from GHCR
-- Passes `RESEND_API_KEY`, `RECIPIENT_EMAIL`, and `GEMINI_API_KEY` into the container at runtime
-
-```yaml
-# What happens inside daily.yml:
-docker run --rm \
-  -e RESEND_API_KEY=${{ secrets.RESEND_API_KEY }} \
-  -e RECIPIENT_EMAIL=${{ secrets.RECIPIENT_EMAIL }} \
-  -e GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
-  ghcr.io/<your-user>/newsletter:latest send
-```
-
-> **Tip:** You can trigger a send manually anytime: **Actions → Daily Newsletter → Run workflow**.
-
-</details>
-
----
-
-## Useful Commands
-
-| Command | What it does |
-|---------|-------------|
-| `make setup` | Install all dependencies |
-| `make preview` | Fetch live data → render → open in browser |
-| `make send` | Fetch live data → render → send email |
-| `make fetch` | Fetch data only (saves to a JSON file) |
-| `make lint` | Check code for errors |
-| `make e2e` | Full test run without sending email |
-| `make docker-build` | Build the Docker image |
-| `make clean` | Remove caches and temporary files |
-
----
-
-## Project Layout
+## Project Structure
 
 ```
 newsletter/
-├── newsletter.config.yaml    ← All your settings live here
-├── .env.example              ← Template for secrets
-├── Makefile                  ← All the commands above
-├── Dockerfile                ← For running in production
+├── newsletter.config.yaml     # All configurable settings
+├── Makefile                    # Development commands
+├── Dockerfile                  # Multi-runtime image (Python + Node)
+├── docker-compose.test.yml     # Integration test with fake server
 ├── packages/
-│   ├── backend/              ← Python: fetches data from APIs
+│   ├── backend/                # Python — data fetching
 │   │   └── src/
-│   │       ├── services/     ← One file per data source
-│   │       ├── config.py     ← Reads your YAML config
-│   │       └── fetch.py      ← Runs all fetchers → outputs JSON
-│   └── email-service/        ← Node.js: renders & sends the email
+│   │       ├── main.py         # Orchestrator (parallel fetch → JSON)
+│   │       ├── config.py       # YAML + env var configuration
+│   │       └── services/       # One module per content source
+│   └── email-service/          # TypeScript — rendering & sending
 │       ├── emails/
-│       │   ├── newsletter.tsx        ← Main email template
-│       │   └── components/           ← Visual building blocks
+│       │   ├── newsletter.tsx  # Main template (config-driven layout)
+│       │   ├── types.ts        # Shared TypeScript interfaces
+│       │   ├── section-registry.tsx
+│       │   ├── template-config.ts
+│       │   ├── components/     # One component per section
+│       │   └── fixtures/       # Fake data for dev preview
 │       └── src/
-│           ├── send-real.ts          ← Production send script
-│           └── preview.ts            ← Local preview script
+│           ├── send-real.ts    # Render + send via Resend
+│           ├── e2e.ts          # E2E validation (no send)
+│           └── preview.ts      # HTML preview
+├── tests/
+│   └── fake-server/            # Mock HTTP server for testing
+│       ├── server.py
+│       ├── Dockerfile
+│       └── fixtures/           # Canned API responses
+├── scripts/
+│   └── entrypoint.sh           # Docker entrypoint
 └── .github/workflows/
-    ├── ci.yml                ← Runs tests on every push
-    └── daily.yml             ← Sends newsletter every morning
+    ├── ci.yml                  # Lint + integration test
+    └── daily.yml               # Scheduled newsletter send
 ```
-
----
 
 ## License
 
-[MIT](LICENSE) — Ziyi Xi
+MIT

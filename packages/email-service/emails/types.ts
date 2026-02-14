@@ -1,26 +1,31 @@
 // ─────────────────────────────────────────────
-// Shared types for the newsletter email template
+// Shared TypeScript interfaces for the newsletter.
+//
+// These types define the contract between the Python backend
+// (which outputs JSON) and the React Email frontend.
+// See: packages/backend/src/main.py for the producer.
 // ─────────────────────────────────────────────
 
+/** A single day in the 3-day weather forecast. */
 export interface ForecastDay {
-  label: string; // e.g. "周一"
-  icon: string; // emoji
+  label: string;       // e.g. "周一"
+  icon: string;        // emoji
   condition: string;
   high: number;
   low: number;
 }
 
+/** Current weather conditions plus astronomy data. */
 export interface WeatherForecast {
   location: string;
   condition: string;
-  icon: string; // emoji
+  icon: string;        // emoji
   tempCurrent: number; // °C
   tempHigh: number;
   tempLow: number;
   summary: string;
-  // 3-day forecast
   forecasts: ForecastDay[];
-  // Astronomy (merged)
+  // Astronomy (merged from astronomy_service)
   sunrise: string;
   sunset: string;
   dayLength: string;
@@ -28,30 +33,25 @@ export interface WeatherForecast {
   astroNote?: string;
 }
 
+/** A top-news headline item. */
 export interface NewsItem {
   headline: string;
   summary: string;
-  source: string;
+  source: string;      // e.g. "Reuters"
   url: string;
-  category: string;
+  category: string;    // e.g. "Technology", "World"
 }
 
+/** A stock or ETF quote. */
 export interface StockInfo {
-  symbol: string;
+  symbol: string;      // e.g. "AAPL"
   companyName: string;
   price: number;
   change: number;
   changePercent: number;
 }
 
-export interface ContentSection {
-  title: string;
-  contentHtml: string;
-  icon: string;
-}
-
-// ── New section types ───────────────────────
-
+/** A Hacker News front-page story. */
 export interface HNStory {
   title: string;
   titleCn: string;
@@ -61,6 +61,7 @@ export interface HNStory {
   hnUrl: string;
 }
 
+/** A GitHub trending repository. */
 export interface GitHubRepo {
   name: string;
   description: string;
@@ -71,34 +72,44 @@ export interface GitHubRepo {
   url: string;
 }
 
+/** An arXiv paper with AI-generated summary. */
 export interface ArxivPaper {
   title: string;
   titleCn: string;
-  summary: string;
+  summary: string;     // one-line Gemini summary
   authors: string;
   url: string;
-  category: string;
+  category: string;    // e.g. "LLM", "HPC"
 }
 
+/** A currency exchange rate. */
 export interface ExchangeRate {
-  pair: string;
+  pair: string;        // e.g. "USD/CNY"
   rate: number;
   change: number;
   changePercent: number;
-  displayName: string;
+  displayName: string; // e.g. "美元/人民币"
 }
 
-// ── Main props ──────────────────────────────
+/** A recommended todo task. */
+export interface TodoTask {
+  rank: number;
+  title: string;
+  reason: string;
+}
 
+// ── Main props for the newsletter template ──
+
+/** Top-level props passed to the newsletter React Email template. */
 export interface NewsletterProps {
   recipientName: string;
   date: string;
   weather: WeatherForecast;
   topNews: NewsItem[];
   stocks: StockInfo[];
-  customSections: ContentSection[];
   hnStories: HNStory[];
   githubTrending: GitHubRepo[];
   arxivPapers: ArxivPaper[];
   exchangeRates: ExchangeRate[];
+  todoTasks: TodoTask[];
 }

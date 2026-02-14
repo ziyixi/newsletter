@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Section, Text, Link } from "@react-email/components";
-import { tokens, SectionHeading, ThinRule } from "./styles";
+import { tokens, SectionHeading, ThinRule, CategoryPill } from "./styles";
 import type { NewsItem } from "../types";
 
 interface TopNewsProps {
@@ -16,25 +16,28 @@ export function TopNews({ news }: TopNewsProps) {
     <Section style={{ padding: tokens.sectionPadding }}>
       <SectionHeading icon="📰">今日要闻</SectionHeading>
 
-      {/* Lead story — editorial treatment */}
+      {/* Lead story — editorial treatment with accent border */}
       <table width="100%" cellPadding={0} cellSpacing={0}>
         <tbody>
           <tr>
-            <td>
-              {/* Category tag */}
-              <Text
-                style={{
-                  fontFamily: tokens.fontSans,
-                  fontSize: "10px",
-                  fontWeight: 700,
-                  textTransform: "uppercase" as const,
-                  letterSpacing: "2px",
-                  color: tokens.accent,
-                  margin: "0 0 6px 0",
-                }}
-              >
-                {lead.category}
-              </Text>
+            <td
+              style={{
+                borderLeft: `3px solid ${tokens.accent}`,
+                paddingLeft: "16px",
+                backgroundColor: tokens.sectionBg,
+                padding: "14px 16px",
+              }}
+            >
+              {/* Category pill */}
+              <table cellPadding={0} cellSpacing={0} style={{ marginBottom: "8px" }}>
+                <tbody>
+                  <tr>
+                    <td>
+                      <CategoryPill>{lead.category}</CategoryPill>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
 
               {/* Headline */}
               <Link
@@ -96,7 +99,7 @@ export function TopNews({ news }: TopNewsProps) {
             width="100%"
             cellPadding={0}
             cellSpacing={0}
-            style={{ padding: "10px 0" }}
+            style={{ padding: "12px 0" }}
           >
             <tbody>
               <tr>
@@ -105,7 +108,7 @@ export function TopNews({ news }: TopNewsProps) {
                   style={{
                     verticalAlign: "top",
                     width: "32px",
-                    paddingRight: "8px",
+                    paddingRight: "10px",
                   }}
                 >
                   <Text
@@ -124,19 +127,17 @@ export function TopNews({ news }: TopNewsProps) {
 
                 {/* Content */}
                 <td style={{ verticalAlign: "top" }}>
-                  <Text
-                    style={{
-                      fontFamily: tokens.fontSans,
-                      fontSize: "9px",
-                      fontWeight: 700,
-                      textTransform: "uppercase" as const,
-                      letterSpacing: "2px",
-                      color: tokens.accent,
-                      margin: "0 0 2px 0",
-                    }}
-                  >
-                    {item.category}
-                  </Text>
+                  {/* Category pill */}
+                  <table cellPadding={0} cellSpacing={0} style={{ marginBottom: "4px" }}>
+                    <tbody>
+                      <tr>
+                        <td>
+                          <CategoryPill>{item.category}</CategoryPill>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+
                   <Link
                     href={item.url}
                     style={{
@@ -163,7 +164,7 @@ export function TopNews({ news }: TopNewsProps) {
                       fontSize: "13px",
                       color: tokens.inkLight,
                       lineHeight: "1.6",
-                      margin: "0 0 2px 0",
+                      margin: "0 0 3px 0",
                     }}
                   >
                     {item.summary}

@@ -1,0 +1,14 @@
+{
+    "tasks": [
+        {
+            "rank": 1,
+            "title": "Test task 1",
+            "reason": "Integration test fixture"
+        },
+        {
+            "rank": 2,
+            "title": "Test task 2",
+            "reason": "Another fixture task"
+        }
+    ]
+}

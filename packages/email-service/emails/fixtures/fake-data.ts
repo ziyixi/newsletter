@@ -245,22 +245,32 @@ export const fakeData: NewsletterProps = {
     },
   ],
 
-  // ── Custom Sections ───────────────────────
-  customSections: [
+  // ── Todo Tasks ────────────────────────────
+  todoTasks: [
     {
-      title: "个人备忘",
-      icon: "📝",
-      contentHtml: `
-        <p style="margin: 0 0 8px 0;">
-          <strong>提醒：</strong>周三下午2点 — 牙医预约
-        </p>
-        <p style="margin: 0 0 8px 0;">
-          继续阅读《数据密集型应用系统设计》第9章 — 一致性与共识
-        </p>
-        <p style="margin: 0;">
-          🎂 妈妈的生日在下周六 — 记得订花！
-        </p>
-      `,
+      rank: 1,
+      title: "Charles Schwab 账户安全与授权核实",
+      reason: "收到关于未识别设备登录以及第三方授权访问的警报，需立即核实这些活动是否由本人授权，以确保金融账户安全。",
+    },
+    {
+      rank: 2,
+      title: "Dropbox 误删文件恢复确认",
+      reason: "系统检测到账户删除了 3767 个重要文件，需在限期前确认是否为误操作并执行恢复。",
+    },
+    {
+      rank: 3,
+      title: "下载并查收 1099 税务表格",
+      reason: "Robinhood 和嘉信理财的 2026 年综合 1099 税务表格已发布，是完成当前税务申报的关键财务文件。",
+    },
+    {
+      rank: 4,
+      title: "执行 TurboTax 报税准确性检查",
+      reason: "需要运行 CompleteCheck 工具来检测报税错误、评估审计风险并寻找抵税机会。",
+    },
+    {
+      rank: 5,
+      title: "跟进 Terra AI 全栈软件工程师职位机会",
+      reason: "收到专注于人工智能与清洁能源公司的招聘邀请，需尽快决定是否安排初步通话。",
     },
   ],
 };

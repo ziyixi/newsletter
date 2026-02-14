@@ -3,7 +3,7 @@
 # Python 3.12 (backend) + Node.js 20 (email-service)
 #
 # Build:  docker build -t newsletter .
-# Run:    docker run -e RESEND_API_KEY=... -e RECIPIENT_EMAIL=... newsletter send
+# Run:    docker run -e RESEND_API_KEY=... newsletter send
 # E2E:    docker run newsletter e2e
 # ─────────────────────────────────────────────
 
@@ -40,21 +40,6 @@ RUN cd packages/backend && uv sync --no-dev
 
 # ── Copy all source files ───────────────────
 COPY . .
-
-# ── Build steps ─────────────────────────────
-# Sync template config from root YAML
-RUN node scripts/sync-config.mjs
-
-# Generate proto stubs
-RUN cd packages/backend && mkdir -p generated && \
-    uv run python -m grpc_tools.protoc \
-      -I../../protos \
-      --python_out=generated \
-      --pyi_out=generated \
-      --grpc_python_out=generated \
-      ../../protos/newsletter.proto && \
-    touch generated/__init__.py && \
-    sed -i 's/^import newsletter_pb2/from generated import newsletter_pb2/' generated/newsletter_pb2_grpc.py
 
 # ── Entrypoint ──────────────────────────────
 COPY scripts/entrypoint.sh /entrypoint.sh

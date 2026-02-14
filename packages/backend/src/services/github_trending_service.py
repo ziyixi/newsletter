@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import os
+
 import httpx
 from bs4 import BeautifulSoup
 
 from ..config import cfg
 from .translator import translate_to_chinese
 
-_BASE = "https://github.com/trending"
+_BASE = os.environ.get("GITHUB_TRENDING_BASE", "https://github.com") + "/trending"
 
 
 def fetch_github_trending() -> list[dict]:

@@ -33,16 +33,20 @@ export function HackerNews({ stories }: HNProps) {
             width="100%"
             cellPadding={0}
             cellSpacing={0}
-            style={{ padding: "8px 0" }}
+            style={{
+              padding: "10px 0",
+              backgroundColor: i % 2 === 1 ? tokens.rowAlt : "transparent",
+            }}
           >
             <tbody>
               <tr>
-                {/* Rank number */}
+                {/* Rank number — gold accent */}
                 <td
                   style={{
                     verticalAlign: "top",
                     width: "28px",
-                    paddingRight: "8px",
+                    paddingRight: "10px",
+                    paddingLeft: i % 2 === 1 ? "8px" : "0",
                   }}
                 >
                   <Text
@@ -50,7 +54,7 @@ export function HackerNews({ stories }: HNProps) {
                       fontFamily: tokens.fontSerif,
                       fontSize: "20px",
                       fontWeight: 700,
-                      color: tokens.ruleLight,
+                      color: tokens.gold,
                       margin: "0",
                       lineHeight: "1.2",
                     }}
@@ -104,7 +108,11 @@ export function HackerNews({ stories }: HNProps) {
                       margin: "0",
                     }}
                   >
-                    ▲ {story.points} 分 ·{" "}
+                    <span style={{ color: tokens.goldLight }}>▲</span>{" "}
+                    <span style={{ color: tokens.accent, fontWeight: 700 }}>
+                      {story.points}
+                    </span>{" "}
+                    分 ·{" "}
                     <Link
                       href={story.hnUrl}
                       style={{

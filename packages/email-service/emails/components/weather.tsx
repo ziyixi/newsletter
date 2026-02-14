@@ -86,18 +86,28 @@ export function Weather({ weather }: WeatherProps) {
 
       {/* ── Astronomy (sunrise / sunset / day length) ── */}
       <ThinRule />
-      <table width="100%" cellPadding={0} cellSpacing={0} style={{ marginTop: "12px" }}>
+      <table
+        width="100%"
+        cellPadding={0}
+        cellSpacing={0}
+        style={{
+          marginTop: "0",
+          backgroundColor: tokens.paperDark,
+          borderTop: `2px solid ${tokens.gold}`,
+        }}
+      >
         <tbody>
           <tr>
-            <td style={{ width: "25%" }}>
+            <td style={{ width: "25%", padding: "12px 8px" }}>
               <Text
                 style={{
                   fontFamily: tokens.fontSans,
-                  fontSize: "11px",
-                  color: tokens.inkMuted,
+                  fontSize: "10px",
+                  color: tokens.gold,
                   margin: "0 0 2px 0",
                   textTransform: "uppercase" as const,
                   letterSpacing: "1px",
+                  fontWeight: 700,
                 }}
               >
                 🌅 日出
@@ -114,15 +124,16 @@ export function Weather({ weather }: WeatherProps) {
                 {weather.sunrise}
               </Text>
             </td>
-            <td style={{ width: "25%", textAlign: "center" as const }}>
+            <td style={{ width: "25%", textAlign: "center" as const, padding: "12px 8px" }}>
               <Text
                 style={{
                   fontFamily: tokens.fontSans,
-                  fontSize: "11px",
-                  color: tokens.inkMuted,
+                  fontSize: "10px",
+                  color: tokens.gold,
                   margin: "0 0 2px 0",
                   textTransform: "uppercase" as const,
                   letterSpacing: "1px",
+                  fontWeight: 700,
                 }}
               >
                 🌇 日落
@@ -139,15 +150,16 @@ export function Weather({ weather }: WeatherProps) {
                 {weather.sunset}
               </Text>
             </td>
-            <td style={{ width: "25%", textAlign: "center" as const }}>
+            <td style={{ width: "25%", textAlign: "center" as const, padding: "12px 8px" }}>
               <Text
                 style={{
                   fontFamily: tokens.fontSans,
-                  fontSize: "11px",
-                  color: tokens.inkMuted,
+                  fontSize: "10px",
+                  color: tokens.gold,
                   margin: "0 0 2px 0",
                   textTransform: "uppercase" as const,
                   letterSpacing: "1px",
+                  fontWeight: 700,
                 }}
               >
                 ☀️ 日照
@@ -164,15 +176,16 @@ export function Weather({ weather }: WeatherProps) {
                 {weather.dayLength}
               </Text>
             </td>
-            <td style={{ width: "25%", textAlign: "right" as const }}>
+            <td style={{ width: "25%", textAlign: "right" as const, padding: "12px 8px" }}>
               <Text
                 style={{
                   fontFamily: tokens.fontSans,
-                  fontSize: "11px",
-                  color: tokens.inkMuted,
+                  fontSize: "10px",
+                  color: tokens.gold,
                   margin: "0 0 2px 0",
                   textTransform: "uppercase" as const,
                   letterSpacing: "1px",
+                  fontWeight: 700,
                 }}
               >
                 🌅 黄金时刻
@@ -213,6 +226,7 @@ export function Weather({ weather }: WeatherProps) {
                       textAlign: "center" as const,
                       verticalAlign: "top",
                       padding: "0 4px",
+                      borderLeft: i > 0 ? `1px solid ${tokens.ruleLight}` : "none",
                     }}
                   >
                     <Text
@@ -268,17 +282,31 @@ export function Weather({ weather }: WeatherProps) {
 
       {/* Optional astronomy note */}
       {weather.astroNote && (
-        <Text
-          style={{
-            fontFamily: tokens.fontKai,
-            fontSize: "13px",
-            color: tokens.inkMuted,
-            lineHeight: "1.6",
-            margin: "8px 0 0 0",
-          }}
-        >
-          💡 {weather.astroNote}
-        </Text>
+        <table width="100%" cellPadding={0} cellSpacing={0} style={{ marginTop: "10px" }}>
+          <tbody>
+            <tr>
+              <td
+                style={{
+                  backgroundColor: tokens.pillBg,
+                  border: `1px solid ${tokens.pillBorder}`,
+                  padding: "8px 12px",
+                }}
+              >
+                <Text
+                  style={{
+                    fontFamily: tokens.fontKai,
+                    fontSize: "13px",
+                    color: tokens.inkMuted,
+                    lineHeight: "1.6",
+                    margin: "0",
+                  }}
+                >
+                  💡 {weather.astroNote}
+                </Text>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       )}
     </Section>
   );

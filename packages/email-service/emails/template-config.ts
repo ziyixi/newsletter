@@ -56,8 +56,8 @@ export const templateConfig: TemplateConfig = {
       "label": "Exchange Rates"
     },
     {
-      "id": "custom-sections",
-      "label": "Custom / Personal Sections"
+      "id": "todo-tasks",
+      "label": "Today's Todo Tasks"
     },
     {
       "id": "footer",

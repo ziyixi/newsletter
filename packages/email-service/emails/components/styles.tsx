@@ -15,10 +15,23 @@ export const tokens = {
   paperDark: "#f0ece2", // warmer off-white
   paperEdge: "#e8e4d9", // warm edge
   accent: "#a01a2f", // editorial crimson / deep wine
+  gold: "#9e7c0c", // warm deep gold for highlights
+  goldLight: "#d4a017", // brighter gold for ornaments
   green: "#2d6a4f", // forest green (elegant)
   red: "#b71c1c", // classic red
   rule: "#121212", // dark rule
   ruleLight: "#d5d0c4", // warm gray rule
+
+  // Section card surfaces
+  sectionBg: "#fdfcf9", // barely-warm white card
+  sectionBorder: "#eae6db", // warm card border
+
+  // Pill badge
+  pillBg: "#f3efe6", // warm cream pill background
+  pillBorder: "#e0dbd0", // pill border
+
+  // Alternating row
+  rowAlt: "#f8f6f1", // subtle alternating row tint
 
   // Typography — calligraphy for display, 楷体 for body, serif fallback
   fontCalligraphy:
@@ -99,7 +112,7 @@ export function DoubleRule() {
 
 // ─────────────────────────────────────────────
 // Section heading — refined editorial label
-// centered with flanking thin rules
+// centered with warm gold accent underline
 // ─────────────────────────────────────────────
 
 export function SectionHeading({
@@ -116,32 +129,104 @@ export function SectionHeading({
           <td
             style={{
               borderBottom: `1px solid ${tokens.ruleLight}`,
-              width: "20%",
+              width: "15%",
             }}
           />
           <td style={{ textAlign: "center" as const, padding: "0 16px", whiteSpace: "nowrap" as const }}>
             <Text
               style={{
                 fontFamily: tokens.fontCalligraphy,
-                fontSize: "13px",
+                fontSize: "15px",
                 fontWeight: 400,
-                letterSpacing: "3px",
-                color: tokens.inkMuted,
-                margin: "0 0 12px 0",
+                letterSpacing: "4px",
+                color: tokens.inkLight,
+                margin: "0 0 6px 0",
               }}
             >
               {icon ? `${icon}  ` : ""}
               {children}
             </Text>
+            {/* Gold accent underline */}
+            <table cellPadding={0} cellSpacing={0} style={{ margin: "0 auto 12px auto" }}>
+              <tbody>
+                <tr>
+                  <td
+                    style={{
+                      width: "40px",
+                      height: "2px",
+                      backgroundColor: tokens.gold,
+                    }}
+                  />
+                </tr>
+              </tbody>
+            </table>
           </td>
           <td
             style={{
               borderBottom: `1px solid ${tokens.ruleLight}`,
-              width: "20%",
+              width: "15%",
             }}
           />
         </tr>
       </tbody>
     </table>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Section divider — decorative spacer between
+// major sections (centered dot ornament)
+// ─────────────────────────────────────────────
+
+export function SectionDivider() {
+  return (
+    <table width="100%" cellPadding={0} cellSpacing={0}>
+      <tbody>
+        <tr>
+          <td
+            style={{
+              textAlign: "center" as const,
+              padding: "8px 0",
+            }}
+          >
+            <Text
+              style={{
+                fontSize: "8px",
+                color: tokens.ruleLight,
+                margin: "0",
+                letterSpacing: "8px",
+              }}
+            >
+              ◆ ◆ ◆
+            </Text>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Category pill badge — warm tinted pill
+// ─────────────────────────────────────────────
+
+export function CategoryPill({ children }: { children: React.ReactNode }) {
+  return (
+    <span
+      style={{
+        fontFamily: tokens.fontSans,
+        fontSize: "9px",
+        fontWeight: 700,
+        textTransform: "uppercase" as const,
+        letterSpacing: "1.5px",
+        color: tokens.accent,
+        backgroundColor: tokens.pillBg,
+        border: `1px solid ${tokens.pillBorder}`,
+        padding: "2px 8px",
+        display: "inline-block",
+      }}
+    >
+      {children}
+    </span>
   );
 }

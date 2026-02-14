@@ -1,22 +1,21 @@
 .PHONY: setup setup-frontend setup-backend \
-        sync-config fetch preview send \
-        dev-email dev-server backend-run backend-test \
-        proto-py test-send clean \
-        lint lint-ts lint-py lint-proto \
-        e2e test-arxiv docker-build docker-e2e docker-send
+        fetch preview send \
+        dev-email test-send clean \
+        lint lint-ts lint-py \
+        e2e test docker-build docker-send
 
 # ═══════════════════════════════════════════════
 # Quick-start workflow:
 #   make setup          ← one-time install
 #   make preview        ← fetch real data → render → open in browser
-#   make send           ← send the previewed newsletter via Resend
-#   make lint           ← run all linters (TS + Python + Proto)
-#   make e2e            ← end-to-end test (fetch + render, no send)
+#   make send           ← send the newsletter via Resend
+#   make lint           ← run all linters (TS + Python)
+#   make test           ← integration test (Docker Compose)
 # ═══════════════════════════════════════════════
 
 # ─── Setup ──────────────────────────────────
 
-setup: setup-frontend setup-backend sync-config
+setup: setup-frontend setup-backend
 	@echo ""
 	@echo "✅  All set up! Next steps:"
 	@echo "    make preview   — fetch real data and preview in browser"
@@ -31,71 +30,43 @@ setup-frontend:
 setup-backend:
 	@echo "🐍  Installing Python dependencies…"
 	cd packages/backend && uv sync
-	@echo "🔧  Generating proto stubs…"
-	$(MAKE) proto-py
-
-# ─── Sync Config ────────────────────────────
-
-sync-config:
-	@node scripts/sync-config.mjs
 
 # ─── Fetch / Preview / Send ─────────────────
 
 fetch:
 	@echo "🔄  Fetching real data from all services…"
-	cd packages/backend && uv run python -m src.fetch
+	cd packages/backend && uv run python -m src.main
 
-preview: sync-config fetch
+preview: fetch
 	@echo "🌐  Rendering and opening preview…"
 	yarn workspace email-service preview
 
-send: sync-config fetch
+send: fetch
 	@echo "📨  Rendering and sending newsletter…"
-	yarn workspace email-service send:real
+	yarn workspace email-service send
 
 # ─── Development helpers ────────────────────
 
 dev-email:
 	yarn workspace email-service dev:email
 
-dev-server:
-	yarn workspace email-service dev:server
-
 test-send:
 	yarn workspace email-service send:test
-
-backend-run:
-	cd packages/backend && uv run python -m src.main
-
-backend-test:
-	@echo "Testing all backend services…"
-	cd packages/backend && uv run python -c "\
-from src.services import *; \
-import json; \
-w = fetch_weather(); print('✅ Weather:', w['condition']); \
-n = fetch_news(); print(f'✅ News: {len(n)} items'); \
-s = fetch_stocks(); print(f'✅ Stocks: {len(s)} tickers'); \
-h = fetch_hn_stories(); print(f'✅ HN: {len(h)} stories'); \
-a = fetch_astronomy(); print('✅ Astronomy:', a['sunrise'], '-', a['sunset']); \
-print(); print('All services OK ✅')"
-
-proto-py:
-	$(MAKE) -C packages/backend proto
 
 # ─── Cleanup ────────────────────────────────
 
 clean:
-	$(MAKE) -C packages/backend clean
+	rm -rf packages/backend/.cache
 	rm -rf packages/email-service/dist
-	rm -rf .cache packages/backend/.cache
+	rm -rf .cache
 
 # ─── Linting ────────────────────────────────
 
-lint: lint-ts lint-py lint-proto
+lint: lint-ts lint-py
 	@echo ""
 	@echo "✅  All linters passed"
 
-lint-ts: sync-config
+lint-ts:
 	@echo "🔍  TypeScript…"
 	cd packages/email-service && npx tsc --noEmit
 
@@ -105,32 +76,30 @@ lint-py:
 	@echo "🔍  Python (mypy)…"
 	cd packages/backend && uv run mypy src/ --ignore-missing-imports
 
-lint-proto:
-	@echo "🔍  Proto (buf)…"
-	@command -v buf >/dev/null 2>&1 && cd protos && buf lint || \
-		echo "   ⚠️  buf not installed — skipping proto lint (install: https://buf.build/docs/installation)"
-
 # ─── E2E Test ───────────────────────────────
-
-test-arxiv:
-	@echo "🧪  Running arXiv E2E test…"
-	cd packages/backend && uv run python tests/test_arxiv_e2e.py
 
 e2e: sync-config fetch
 	@echo "🧪  Running E2E validation…"
 	yarn workspace email-service e2e
+
+# ─── Integration Test (Docker Compose) ──────
+
+test:
+	@echo "🧪  Running integration tests with Docker Compose…"
+	docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from newsletter
+	docker compose -f docker-compose.test.yml down -v
 
 # ─── Docker ─────────────────────────────────
 
 docker-build:
 	docker build -t newsletter .
 
-docker-e2e: docker-build
-	docker run --rm newsletter e2e
-
 docker-send: docker-build
 	@echo "📨  Sending newsletter via Docker…"
 	docker run --rm \
 		-e RESEND_API_KEY=$${RESEND_API_KEY} \
 		-e RECIPIENT_EMAIL=$${RECIPIENT_EMAIL} \
+		-e GEMINI_API_KEY=$${GEMINI_API_KEY} \
+		-e TODO_API_USER=$${TODO_API_USER} \
+		-e TODO_API_PASSWORD=$${TODO_API_PASSWORD} \
 		newsletter send

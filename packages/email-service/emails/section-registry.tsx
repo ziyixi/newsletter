@@ -6,12 +6,12 @@ import { Header } from "./components/header";
 import { Weather } from "./components/weather";
 import { TopNews } from "./components/top-news";
 import { Stocks } from "./components/stocks";
-import { CustomSections } from "./components/custom-section";
 import { Footer } from "./components/footer";
 import { HackerNews } from "./components/hacker-news";
 import { GitHubTrending } from "./components/github-trending";
 import { Arxiv } from "./components/arxiv";
 import { ExchangeRates } from "./components/exchange-rate";
+import { TodoTasks } from "./components/todo-tasks";
 
 // ─────────────────────────────────────────────
 // Section Registry
@@ -53,9 +53,7 @@ export const sectionRegistry: Record<string, SectionRenderer> = {
     <ExchangeRates rates={data.exchangeRates} />
   ),
 
-  "custom-sections": (data) => (
-    <CustomSections sections={data.customSections} />
-  ),
+  "todo-tasks": (data) => <TodoTasks tasks={data.todoTasks} />,
 
   footer: (_data) => <Footer />,
 

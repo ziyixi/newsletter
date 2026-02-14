@@ -1,2 +1,0 @@
-# This directory holds generated protobuf / gRPC code.
-# Run `make proto` from packages/backend/ to regenerate.

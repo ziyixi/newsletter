@@ -3,11 +3,11 @@
 #
 # All configurable settings for the newsletter live here.
 # Both the Python backend and the Node.js email-service read
-# from this file (via sync-config / config.py).
+# from this file (backend via config.py, frontend via
+# template-config.ts).
 #
 # Secrets (API keys) should NEVER go here — use .env files
 # for local dev and GitHub Secrets for CI/CD.
-# See the README for details.
 # ═══════════════════════════════════════════════════════════════
 
 # ── Newsletter identity ──────────────────────────────────────
@@ -52,7 +52,6 @@ stocks:
     - SLV
     - GOOGL
     - NVDA
-  # Display names (Chinese) for each symbol
   names:
     QQQ: "纳斯达克100 ETF"
     VOO: "标普500 ETF"
@@ -81,7 +80,7 @@ githubTrending:
 # ── arXiv Paper Highlights (AI-summarised via Gemini) ────────
 # GEMINI_API_KEY must be set in .env or GitHub Secrets
 arxiv:
-  geminiModel: "gemini-3-flash-preview"   # primary model; falls back to 2.5-flash → 2.5-flash-lite
+  geminiModel: "gemini-3-flash-preview"
   queries:
     - query: "cat:cs.CL AND abs:LLM"
       label: "LLM"
@@ -123,17 +122,10 @@ sections:
     label: "Market Snapshot"
   - id: exchange-rates
     label: "Exchange Rates"
-  - id: custom-sections
-    label: "Custom / Personal Sections"
+  - id: todo-tasks
+    label: "Today's Todo Tasks"
   - id: footer
     label: "Footer"
-  # ── Add new sections below ──
-  # - id: calendar
-  #   label: "Today's Calendar"
-
-# ── gRPC (internal, rarely changed) ─────────────────────────
-grpc:
-  port: 50051
 
 # ── Secrets reference (NOT stored here) ──────────────────────
 # These are documented for clarity — actual values go in .env
@@ -142,3 +134,6 @@ grpc:
 #   RESEND_API_KEY      — API key from https://resend.com
 #   RECIPIENT_EMAIL     — where the newsletter is delivered
 #   RECIPIENT_NAME      — name shown in the email greeting
+#   GEMINI_API_KEY      — for arXiv paper summarization
+#   TODO_API_USER       — for daily.ziyixi.science todo API
+#   TODO_API_PASSWORD   — for daily.ziyixi.science todo API

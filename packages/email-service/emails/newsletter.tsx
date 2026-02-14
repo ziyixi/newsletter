@@ -7,7 +7,7 @@ import {
   Font,
   Preview,
 } from "@react-email/components";
-import { tokens } from "./components/styles";
+import { tokens, SectionDivider } from "./components/styles";
 import type { NewsletterProps } from "./types";
 import { fakeData } from "./fixtures/fake-data";
 import { templateConfig, type SectionDef } from "./template-config";
@@ -17,6 +17,11 @@ import { sectionRegistry } from "./section-registry";
 // The Daily Briefing — main newsletter template
 // Driven by template-config.ts for easy extensibility.
 // ─────────────────────────────────────────────
+
+// Sections that should NOT have a divider before them
+const noDividerBefore = new Set(["header", "footer"]);
+// Sections that should NOT have a divider after them
+const noDividerAfter = new Set(["header", "footer"]);
 
 export default function Newsletter(props: Partial<NewsletterProps> = {}) {
   // Merge with fake data defaults for preview
@@ -75,20 +80,29 @@ export default function Newsletter(props: Partial<NewsletterProps> = {}) {
             maxWidth: `${tokens.containerWidth}px`,
             margin: "0 auto",
             backgroundColor: tokens.paper,
-            padding: "0 36px",
+            padding: "0 40px",
             borderTop: `3px solid ${tokens.ink}`,
-            boxShadow: "0 1px 8px rgba(60, 50, 30, 0.08)",
+            boxShadow: "0 1px 12px rgba(60, 50, 30, 0.1)",
           }}
         >
           {/* Render sections in order from template config */}
-          {templateConfig.sections.map((sectionDef: SectionDef) => {
+          {templateConfig.sections.map((sectionDef: SectionDef, index: number) => {
             const renderer = sectionRegistry[sectionDef.id];
             if (!renderer) {
               console.warn(`Unknown section: ${sectionDef.id}`);
               return null;
             }
+
+            // Insert a decorative divider between major content sections
+            const prevSection = index > 0 ? templateConfig.sections[index - 1] : null;
+            const showDivider =
+              prevSection &&
+              !noDividerAfter.has(prevSection.id) &&
+              !noDividerBefore.has(sectionDef.id);
+
             return (
               <React.Fragment key={sectionDef.id}>
+                {showDivider && <SectionDivider />}
                 {renderer(data)}
               </React.Fragment>
             );

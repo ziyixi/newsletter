@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Section, Text, Link } from "@react-email/components";
-import { tokens, SectionHeading, ThinRule } from "./styles";
+import { tokens, SectionHeading, ThinRule, CategoryPill } from "./styles";
 import type { GitHubRepo } from "../types";
 
 // ─────────────────────────────────────────────
@@ -34,20 +34,16 @@ export function GitHubTrending({ repos }: GitHubTrendingProps) {
         <React.Fragment key={lang}>
           {gi > 0 && <ThinRule />}
 
-          {/* Language badge */}
-          <Text
-            style={{
-              fontFamily: tokens.fontSans,
-              fontSize: "10px",
-              fontWeight: 700,
-              letterSpacing: "1.5px",
-              textTransform: "uppercase" as const,
-              color: tokens.accent,
-              margin: "12px 0 4px 0",
-            }}
-          >
-            {lang}
-          </Text>
+          {/* Language pill badge */}
+          <table cellPadding={0} cellSpacing={0} style={{ margin: "12px 0 6px 0" }}>
+            <tbody>
+              <tr>
+                <td>
+                  <CategoryPill>{lang}</CategoryPill>
+                </td>
+              </tr>
+            </tbody>
+          </table>
 
           {langRepos.map((repo, i) => (
             <table
@@ -55,7 +51,11 @@ export function GitHubTrending({ repos }: GitHubTrendingProps) {
               width="100%"
               cellPadding={0}
               cellSpacing={0}
-              style={{ padding: "6px 0" }}
+              style={{
+                padding: "8px 0 8px 12px",
+                borderLeft: `2px solid ${tokens.ruleLight}`,
+                marginBottom: "4px",
+              }}
             >
               <tbody>
                 <tr>
@@ -95,12 +95,13 @@ export function GitHubTrending({ repos }: GitHubTrendingProps) {
                         fontFamily: tokens.fontSans,
                         fontSize: "11px",
                         color: tokens.inkMuted,
-                        margin: "2px 0 0 0",
+                        margin: "3px 0 0 0",
                       }}
                     >
-                      ⭐ {repo.stars.toLocaleString()}
+                      <span style={{ color: tokens.goldLight }}>⭐</span>{" "}
+                      {repo.stars.toLocaleString()}
                       {repo.todayStars > 0 && (
-                        <span style={{ color: tokens.accent }}>
+                        <span style={{ color: tokens.accent, fontWeight: 700 }}>
                           {" "}
                           · +{repo.todayStars} today
                         </span>

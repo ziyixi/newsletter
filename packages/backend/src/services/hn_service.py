@@ -5,12 +5,14 @@ https://github.com/HackerNews/API
 
 from __future__ import annotations
 
+import os
+
 import httpx
 
 from ..config import cfg
 from .translator import translate_to_chinese
 
-_BASE = "https://hacker-news.firebaseio.com/v0"
+_BASE = os.environ.get("HN_API_BASE", "https://hacker-news.firebaseio.com") + "/v0"
 
 
 def fetch_hn_stories() -> list[dict]:

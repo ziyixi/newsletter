@@ -8,7 +8,7 @@ from .astronomy_service import fetch_astronomy
 from .github_trending_service import fetch_github_trending
 from .arxiv_service import fetch_arxiv_papers
 from .exchange_rate_service import fetch_exchange_rates
-from .ranking_service import rank_sections
+from .todo_service import fetch_todo_tasks
 
 __all__ = [
     "fetch_weather",
@@ -19,5 +19,5 @@ __all__ = [
     "fetch_github_trending",
     "fetch_arxiv_papers",
     "fetch_exchange_rates",
-    "rank_sections",
+    "fetch_todo_tasks",
 ]

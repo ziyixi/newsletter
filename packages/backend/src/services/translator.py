@@ -1,34 +1,27 @@
-"""Translation utility — translates text to Chinese via Google Translate."""
+"""Translator utility — translates text to Chinese using Google Translate."""
 
 from __future__ import annotations
 
-from deep_translator import GoogleTranslator
-
-
-_translator = GoogleTranslator(source="en", target="zh-CN")
-
 
 def translate_to_chinese(text: str) -> str:
-    """Translate English text to Simplified Chinese.
+    """Translate text to Chinese (Simplified) using deep-translator.
 
-    Returns the original text if it appears to already be Chinese
-    or if the translation fails.
+    Returns the original text unchanged if translation fails or if the
+    input is empty.
+
+    Args:
+        text: The text to translate.
+
+    Returns:
+        The translated text, or the original text on failure.
     """
     if not text or not text.strip():
         return text
 
-    # Skip if already predominantly Chinese characters
-    chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
-    if chinese_chars / max(len(text), 1) > 0.3:
-        return text
-
     try:
-        result = _translator.translate(text)
-        return result if result else text
+        from deep_translator import GoogleTranslator
+
+        result = GoogleTranslator(source="auto", target="zh-CN").translate(text)
+        return result or text
     except Exception:
         return text
-
-
-def translate_batch(texts: list[str]) -> list[str]:
-    """Translate a list of strings, preserving order."""
-    return [translate_to_chinese(t) for t in texts]

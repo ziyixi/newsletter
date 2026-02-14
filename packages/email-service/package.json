@@ -5,16 +5,13 @@
   "type": "module",
   "scripts": {
     "dev:email": "email dev --dir emails --port 3000",
-    "dev:server": "tsx src/server.ts",
     "preview": "tsx src/preview.ts",
-    "send:real": "tsx src/send-real.ts",
+    "send": "tsx src/send-real.ts",
     "send:test": "tsx src/test-send.ts",
     "e2e": "tsx src/e2e.ts",
     "build": "tsc"
   },
   "dependencies": {
-    "@grpc/grpc-js": "^1.12.0",
-    "@grpc/proto-loader": "^0.7.13",
     "@react-email/components": "^0.0.31",
     "@react-email/render": "^1.0.3",
     "dotenv": "^16.4.7",

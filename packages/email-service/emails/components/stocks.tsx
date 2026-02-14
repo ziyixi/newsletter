@@ -22,7 +22,7 @@ export function Stocks({ stocks }: StocksProps) {
           borderCollapse: "collapse" as const,
         }}
       >
-        {/* Table header */}
+        {/* Table header — warm accent strip */}
         <thead>
           <tr>
             <th
@@ -32,10 +32,11 @@ export function Stocks({ stocks }: StocksProps) {
                 fontWeight: 700,
                 textTransform: "uppercase" as const,
                 letterSpacing: "1px",
-                color: tokens.inkMuted,
+                color: tokens.inkLight,
                 textAlign: "left" as const,
-                padding: "0 0 8px 0",
+                padding: "8px 8px 8px 10px",
                 borderBottom: `2px solid ${tokens.rule}`,
+                backgroundColor: tokens.paperDark,
               }}
             >
               代码
@@ -47,10 +48,11 @@ export function Stocks({ stocks }: StocksProps) {
                 fontWeight: 700,
                 textTransform: "uppercase" as const,
                 letterSpacing: "1px",
-                color: tokens.inkMuted,
+                color: tokens.inkLight,
                 textAlign: "left" as const,
-                padding: "0 0 8px 0",
+                padding: "8px 8px",
                 borderBottom: `2px solid ${tokens.rule}`,
+                backgroundColor: tokens.paperDark,
               }}
             >
               公司
@@ -62,10 +64,11 @@ export function Stocks({ stocks }: StocksProps) {
                 fontWeight: 700,
                 textTransform: "uppercase" as const,
                 letterSpacing: "1px",
-                color: tokens.inkMuted,
+                color: tokens.inkLight,
                 textAlign: "right" as const,
-                padding: "0 0 8px 0",
+                padding: "8px 8px",
                 borderBottom: `2px solid ${tokens.rule}`,
+                backgroundColor: tokens.paperDark,
               }}
             >
               价格
@@ -77,10 +80,11 @@ export function Stocks({ stocks }: StocksProps) {
                 fontWeight: 700,
                 textTransform: "uppercase" as const,
                 letterSpacing: "1px",
-                color: tokens.inkMuted,
+                color: tokens.inkLight,
                 textAlign: "right" as const,
-                padding: "0 0 8px 0",
+                padding: "8px 10px 8px 8px",
                 borderBottom: `2px solid ${tokens.rule}`,
+                backgroundColor: tokens.paperDark,
               }}
             >
               涨跌
@@ -96,10 +100,15 @@ export function Stocks({ stocks }: StocksProps) {
             const sign = isPositive ? "+" : "";
 
             return (
-              <tr key={i}>
+              <tr
+                key={i}
+                style={{
+                  backgroundColor: i % 2 === 1 ? tokens.rowAlt : "transparent",
+                }}
+              >
                 <td
                   style={{
-                    padding: "10px 8px 10px 0",
+                    padding: "10px 8px 10px 10px",
                     borderBottom: `1px solid ${tokens.ruleLight}`,
                   }}
                 >
@@ -156,7 +165,7 @@ export function Stocks({ stocks }: StocksProps) {
 
                 <td
                   style={{
-                    padding: "10px 0 10px 8px",
+                    padding: "10px 10px 10px 8px",
                     borderBottom: `1px solid ${tokens.ruleLight}`,
                     textAlign: "right" as const,
                   }}
