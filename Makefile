@@ -1,15 +1,15 @@
 .PHONY: setup setup-frontend setup-backend \
         fetch preview send \
         dev-email test-send clean \
-        lint lint-ts lint-py \
-        e2e test docker-build docker-send
+        lint lint-ts lint-go \
+        proto e2e test docker-build docker-send
 
 # ═══════════════════════════════════════════════
 # Quick-start workflow:
 #   make setup          ← one-time install
 #   make preview        ← fetch real data → render → open in browser
 #   make send           ← send the newsletter via Resend
-#   make lint           ← run all linters (TS + Python)
+#   make lint           ← run all linters (TS + Go)
 #   make test           ← integration test (Docker Compose)
 # ═══════════════════════════════════════════════
 
@@ -28,14 +28,20 @@ setup-frontend:
 	yarn install
 
 setup-backend:
-	@echo "🐍  Installing Python dependencies…"
-	cd packages/backend && uv sync
+	@echo "🔨  Building Go backend…"
+	cd packages/backend && go build ./cmd/newsletter/
+
+# ─── Proto ──────────────────────────────────
+
+proto:
+	@echo "🔧  Generating proto…"
+	cd packages/backend && make proto
 
 # ─── Fetch / Preview / Send ─────────────────
 
 fetch:
 	@echo "🔄  Fetching real data from all services…"
-	cd packages/backend && uv run python -m src.main
+	cd packages/backend && go run ./cmd/newsletter/
 
 preview: fetch
 	@echo "🌐  Rendering and opening preview…"
@@ -62,7 +68,7 @@ clean:
 
 # ─── Linting ────────────────────────────────
 
-lint: lint-ts lint-py
+lint: lint-ts lint-go
 	@echo ""
 	@echo "✅  All linters passed"
 
@@ -70,15 +76,13 @@ lint-ts:
 	@echo "🔍  TypeScript…"
 	cd packages/email-service && npx tsc --noEmit
 
-lint-py:
-	@echo "🔍  Python (ruff)…"
-	cd packages/backend && uv run ruff check src/
-	@echo "🔍  Python (mypy)…"
-	cd packages/backend && uv run mypy src/ --ignore-missing-imports
+lint-go:
+	@echo "🔍  Go (vet)…"
+	cd packages/backend && go vet ./...
 
 # ─── E2E Test ───────────────────────────────
 
-e2e: sync-config fetch
+e2e: fetch
 	@echo "🧪  Running E2E validation…"
 	yarn workspace email-service e2e
 

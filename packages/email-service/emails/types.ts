@@ -1,9 +1,9 @@
 // ─────────────────────────────────────────────
 // Shared TypeScript interfaces for the newsletter.
 //
-// These types define the contract between the Python backend
-// (which outputs JSON) and the React Email frontend.
-// See: packages/backend/src/main.py for the producer.
+// These types define the contract between the Go backend
+// (which outputs JSON via protobuf) and the React Email frontend.
+// See: packages/backend/proto/newsletter.proto for the schema.
 // ─────────────────────────────────────────────
 
 /** A single day in the 3-day weather forecast. */

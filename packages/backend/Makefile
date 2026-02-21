@@ -1,23 +1,26 @@
-# Backend Makefile — development helpers
+.PHONY: build run lint clean proto
 
-.PHONY: sync run lint clean
+# ─── Build ──────────────────────────────────
 
-# ─── uv package management ──────────────────
-
-sync:
-	uv sync
+build:
+	go build -o newsletter ./cmd/newsletter/
 
 run:
-	uv run python -m src.main
+	go run ./cmd/newsletter/
+
+# ─── Proto ──────────────────────────────────
+
+proto:
+	protoc --go_out=. --go_opt=module=newsletter-backend \
+		-I proto proto/newsletter.proto
 
 # ─── Linting ────────────────────────────────
 
 lint:
-	uv run ruff check src/
-	uv run mypy src/ --ignore-missing-imports
+	go vet ./...
 
 # ─── Cleanup ────────────────────────────────
 
 clean:
-	rm -rf .cache
+	rm -rf .cache newsletter
 	@echo "🧹  Cleaned backend cache"

@@ -27,8 +27,7 @@ services:
       - GITHUB_TRENDING_BASE=http://fake-server:8080
       - TODO_API_BASE=http://fake-server:8080
       - NEWS_FEEDS=http://fake-server:8080/rss/feed
-      # Skip services that use Python libraries (yfinance, astral, arxiv)
-      # — they don't call HTTP endpoints we can mock
+      # Skip services that use external libraries/APIs not easily mocked
       - SKIP_STOCKS=true
       - SKIP_EXCHANGE_RATES=true
       - SKIP_ASTRONOMY=true

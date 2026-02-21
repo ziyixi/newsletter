@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────
 # Newsletter — multi-runtime Docker image
-# Python 3.12 (backend) + Node.js 20 (email-service)
+# Go (backend) + Node.js 20 (email-service)
 #
 # Build:  docker build -t newsletter .
 # Run:    docker run -e RESEND_API_KEY=... newsletter send
@@ -14,34 +14,29 @@ COPY package.json yarn.lock ./
 COPY packages/email-service/package.json packages/email-service/
 RUN yarn install --frozen-lockfile --production=false
 
-# ── Stage 2: Final image ────────────────────
-FROM python:3.12-slim
+# ── Stage 2: Go backend build ───────────────
+FROM golang:1.24-bookworm AS go-build
+WORKDIR /build
+COPY packages/backend/go.mod packages/backend/go.sum ./
+RUN go mod download
+COPY packages/backend/ .
+RUN CGO_ENABLED=0 go build -o /newsletter ./cmd/newsletter/
 
-# Install Node.js 20
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates make && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    npm install -g yarn && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Install uv (fast Python package manager)
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# ── Stage 3: Final image ────────────────────
+FROM node:20-slim
 
 WORKDIR /app
 
-# ── Node.js dependencies (from stage 1) ─────
+# Go binary (from stage 2).
+COPY --from=go-build /newsletter /usr/local/bin/newsletter
+
+# Node.js dependencies (from stage 1).
 COPY --from=node-deps /app/node_modules ./node_modules
 COPY --from=node-deps /app/packages/email-service/node_modules ./packages/email-service/node_modules
 
-# ── Python dependencies ─────────────────────
-COPY packages/backend/pyproject.toml packages/backend/uv.lock packages/backend/
-RUN cd packages/backend && uv sync --no-dev
-
-# ── Copy all source files ───────────────────
+# Source files.
 COPY . .
 
-# ── Entrypoint ──────────────────────────────
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

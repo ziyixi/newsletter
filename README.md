@@ -1,39 +1,43 @@
-# 📰 每日简报 — Daily Newsletter
+# 每日简报 — Daily Newsletter
 
 A personal daily newsletter that curates content from multiple sources and delivers a beautifully formatted email every morning.
 
 ## Architecture
 
-```
-Python backend          Node.js email-service
-(fetch data)     →      (render + send)
-      │                       │
-      ▼                       ▼
-  JSON file             React Email → Resend
-```
+```mermaid
+graph LR
+    subgraph "Go backend"
+        W[Weather] & N[News] & S[Stocks] & H[HN] & G[GitHub] & A[arXiv] & E[Exchange] & T[Todo] & As[Astronomy]
+    end
 
-The system is split into two packages:
+    subgraph "Node.js email-service"
+        R[React Email] --> Re[Resend API]
+    end
+
+    W & N & S & H & G & A & E & T & As --> J["JSON file"]
+    J --> R
+```
 
 | Package | Language | Purpose |
 |---------|----------|---------|
-| `packages/backend` | Python 3.12 | Fetches data from external APIs in parallel |
+| `packages/backend` | Go 1.24 + Protobuf | Fetches data from external APIs in parallel |
 | `packages/email-service` | TypeScript (Node 20) | Renders React Email templates and sends via Resend |
 
-They communicate through a **JSON file** — the backend writes it, the email-service reads it.
+They communicate through a **JSON file** — the backend writes it (via `protojson`), the email-service reads it.
 
 ## Content Sources
 
 | Section | Source | API Key? |
 |---------|--------|----------|
-| 🌤 Weather | Open-Meteo | No |
-| 🌅 Astronomy | `astral` library | No |
-| 📰 Top News | RSS feeds + Google Translate | No |
-| 🔥 Hacker News | Firebase API + Google Translate | No |
-| 📈 Stocks | yfinance | No |
-| 💱 Exchange Rates | yfinance | No |
-| 🐙 GitHub Trending | HTML scraping + Google Translate | No |
-| 📄 arXiv Papers | arxiv API + Gemini | Yes (`GEMINI_API_KEY`) |
-| ✅ Todo Tasks | daily.ziyixi.science | Yes (`TODO_API_*`) |
+| Weather | Open-Meteo | No |
+| Astronomy | `go-sunrise` | No |
+| Top News | RSS feeds + Google Translate | No |
+| Hacker News | Firebase API + Google Translate | No |
+| Stocks | Yahoo Finance HTTP API | No |
+| Exchange Rates | Yahoo Finance HTTP API | No |
+| GitHub Trending | HTML scraping + Google Translate | No |
+| arXiv Papers | arXiv Atom API + Gemini | Yes (`GEMINI_API_KEY`) |
+| Todo Tasks | daily.ziyixi.science | Yes (`TODO_API_*`) |
 
 ## Quick Start
 
@@ -72,11 +76,14 @@ TODO_API_PASSWORD=...
 # React Email dev server (hot reload)
 make dev-email
 
-# Run all linters (TypeScript + Python)
+# Run all linters (TypeScript + Go)
 make lint
 
 # Fetch data only (without sending)
 make fetch
+
+# Regenerate protobuf Go code after editing proto/newsletter.proto
+make proto
 
 # Run integration tests (Docker Compose)
 make test
@@ -93,7 +100,7 @@ make test
 
 The fake server lives in `tests/fake-server/` with fixture files for each API endpoint.
 
-Backend services support configurable base URLs via environment variables (`WEATHER_API_BASE`, `HN_API_BASE`, etc.) and skip flags (`SKIP_STOCKS=true`) for services that use Python libraries instead of HTTP.
+Backend services support configurable base URLs via environment variables (`WEATHER_API_BASE`, `HN_API_BASE`, etc.) and skip flags (`SKIP_STOCKS=true`).
 
 ## Docker
 
@@ -110,40 +117,51 @@ docker run newsletter e2e
 
 ## Project Structure
 
-```
-newsletter/
-├── newsletter.config.yaml     # All configurable settings
-├── Makefile                    # Development commands
-├── Dockerfile                  # Multi-runtime image (Python + Node)
-├── docker-compose.test.yml     # Integration test with fake server
-├── packages/
-│   ├── backend/                # Python — data fetching
-│   │   └── src/
-│   │       ├── main.py         # Orchestrator (parallel fetch → JSON)
-│   │       ├── config.py       # YAML + env var configuration
-│   │       └── services/       # One module per content source
-│   └── email-service/          # TypeScript — rendering & sending
-│       ├── emails/
-│       │   ├── newsletter.tsx  # Main template (config-driven layout)
-│       │   ├── types.ts        # Shared TypeScript interfaces
-│       │   ├── section-registry.tsx
-│       │   ├── template-config.ts
-│       │   ├── components/     # One component per section
-│       │   └── fixtures/       # Fake data for dev preview
-│       └── src/
-│           ├── send-real.ts    # Render + send via Resend
-│           ├── e2e.ts          # E2E validation (no send)
-│           └── preview.ts      # HTML preview
-├── tests/
-│   └── fake-server/            # Mock HTTP server for testing
-│       ├── server.py
-│       ├── Dockerfile
-│       └── fixtures/           # Canned API responses
-├── scripts/
-│   └── entrypoint.sh           # Docker entrypoint
-└── .github/workflows/
-    ├── ci.yml                  # Lint + integration test
-    └── daily.yml               # Scheduled newsletter send
+```mermaid
+graph TD
+    subgraph "Root"
+        Config["newsletter.config.yaml"]
+        Make["Makefile"]
+        Docker["Dockerfile"]
+        Compose["docker-compose.test.yml"]
+    end
+
+    subgraph "packages/backend (Go)"
+        Proto["proto/newsletter.proto"]
+        PB["pb/newsletter.pb.go &#40;generated&#41;"]
+        CMD["cmd/newsletter/main.go"]
+        CFG["internal/config/config.go"]
+        Fetcher["internal/fetcher/fetcher.go"]
+        SVC["internal/service/*.go"]
+    end
+
+    subgraph "packages/email-service (TypeScript)"
+        Emails["emails/newsletter.tsx"]
+        Types["emails/types.ts"]
+        Sections["emails/components/*.tsx"]
+        Send["src/send-real.ts"]
+        E2E["src/e2e.ts"]
+        Preview["src/preview.ts"]
+    end
+
+    subgraph "tests/"
+        Fake["fake-server/server.py"]
+        Fixtures["fake-server/fixtures/"]
+    end
+
+    subgraph "scripts/"
+        Entry["entrypoint.sh"]
+    end
+
+    subgraph ".github/workflows/"
+        CI["ci.yml"]
+        Daily["daily.yml"]
+    end
+
+    Proto --> PB
+    CMD --> Fetcher --> SVC
+    SVC --> |"JSON via protojson"| Emails
+    CFG --> SVC
 ```
 
 ## License

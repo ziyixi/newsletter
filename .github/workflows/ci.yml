@@ -14,7 +14,7 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
-  # ── Lint (TypeScript + Python) ──────────────
+  # ── Lint (TypeScript + Go) ──────────────────
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -32,22 +32,24 @@ jobs:
       - name: TypeScript type-check
         run: cd packages/email-service && npx tsc --noEmit
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          python-version: "3.12"
+          go-version: "1.24"
+          cache-dependency-path: packages/backend/go.sum
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
+      - name: Go vet
+        run: cd packages/backend && go vet ./...
 
-      - name: Install Python dependencies
-        run: cd packages/backend && uv sync
+      - name: Go build
+        run: cd packages/backend && go build ./cmd/newsletter/
 
-      - name: Ruff (lint + format check)
-        run: cd packages/backend && uv run ruff check src/
-
-      - name: Mypy
-        run: cd packages/backend && uv run mypy src/ --ignore-missing-imports
+      - name: Verify proto is up to date
+        run: |
+          sudo apt-get install -y protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          cd packages/backend && make proto
+          git diff --exit-code pb/ || (echo "❌ Proto generated code is stale. Run 'make proto' and commit." && exit 1)
 
   # ── Integration Test (Docker Compose) ──────
   integration:

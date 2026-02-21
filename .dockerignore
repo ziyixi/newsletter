@@ -2,18 +2,6 @@
 node_modules/
 packages/*/node_modules/
 
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.mypy_cache/
-.ruff_cache/
-
-# Generated (rebuilt in Docker)
-packages/backend/generated/*.py
-packages/backend/generated/*.pyi
-
 # Caches
 .cache/
 packages/backend/.cache/

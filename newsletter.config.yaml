@@ -2,8 +2,8 @@
 # newsletter.config.yaml — Single source of truth
 #
 # All configurable settings for the newsletter live here.
-# Both the Python backend and the Node.js email-service read
-# from this file (backend via config.py, frontend via
+# Both the Go backend and the Node.js email-service read
+# from this file (backend via config/config.go, frontend via
 # template-config.ts).
 #
 # Secrets (API keys) should NEVER go here — use .env files
