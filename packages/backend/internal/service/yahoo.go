@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -63,6 +64,9 @@ func (yc *yahooClient) init() error {
 
 // FetchYahooQuote returns price data for a single ticker symbol.
 func FetchYahooQuote(symbol string) (*YahooQuote, error) {
+	if base := envOrDefault("YAHOO_CHART_BASE", ""); base != "" {
+		return fetchChartAtBase(base, symbol)
+	}
 	if err := yahoo.init(); err != nil {
 		return fetchChartDirect(symbol)
 	}
@@ -85,6 +89,23 @@ func FetchYahooQuote(symbol string) (*YahooQuote, error) {
 		return fetchChartDirect(symbol)
 	}
 	defer resp.Body.Close()
+	return parseChart(resp.Body)
+}
+
+func fetchChartAtBase(base, symbol string) (*YahooQuote, error) {
+	u := fmt.Sprintf("%s/v8/finance/chart/%s?interval=1d&range=5d",
+		strings.TrimSuffix(base, "/"), url.PathEscape(symbol))
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("User-Agent", yahooUA+" newsletter-bot/1.0")
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("yahoo chart: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("yahoo chart %d: %s", resp.StatusCode, body)
+	}
 	return parseChart(resp.Body)
 }
 

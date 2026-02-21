@@ -58,10 +58,11 @@ func FetchArxivPapers() ([]*pb.ArxivPaper, error) {
 
 func fetchQueryWithBackoff(client *http.Client, q config.ArxivQuery, maxResults int) []rawPaper {
 	var lastErr error
+	base := envOrDefault("ARXIV_API_BASE", "http://export.arxiv.org")
 	for attempt := range arxivMaxRetries {
 		u := fmt.Sprintf(
-			"http://export.arxiv.org/api/query?search_query=%s&max_results=%d&sortBy=submittedDate&sortOrder=descending",
-			url.QueryEscape(q.Query), maxResults,
+			"%s/api/query?search_query=%s&max_results=%d&sortBy=submittedDate&sortOrder=descending",
+			strings.TrimSuffix(base, "/"), url.QueryEscape(q.Query), maxResults,
 		)
 		resp, err := client.Get(u)
 		if err != nil || resp.StatusCode != http.StatusOK {

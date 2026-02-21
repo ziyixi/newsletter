@@ -1,0 +1,13 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "regularMarketPrice": 150.5,
+          "chartPreviousClose": 148.0
+        }
+      }
+    ],
+    "error": null
+  }
+}

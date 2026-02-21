@@ -6,22 +6,21 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
 var translateHTTP = &http.Client{Timeout: 10 * time.Second}
 
 // TranslateToChinese translates text to Simplified Chinese via the free
-// Google Translate API. Returns the original text on failure.
+// Google Translate API (or TRANSLATE_API_BASE for tests). Returns the original text on failure.
 func TranslateToChinese(text string) string {
 	if text == "" {
 		return text
 	}
-
-	u := fmt.Sprintf(
-		"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=%s",
-		url.QueryEscape(text),
-	)
+	base := envOrDefault("TRANSLATE_API_BASE", "https://translate.googleapis.com")
+	u := fmt.Sprintf("%s/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=%s",
+		strings.TrimSuffix(base, "/"), url.QueryEscape(text))
 
 	resp, err := translateHTTP.Get(u)
 	if err != nil {

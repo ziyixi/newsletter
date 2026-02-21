@@ -25,9 +25,13 @@ Thumbs.db
 # Build
 *.tsbuildinfo
 
-# Go backend: generated proto and binary (generated on the fly by make/Docker)
+# Go backend: generated proto and binary (make build / preview)
 packages/backend/pb/
 packages/backend/newsletter
+
+# Fake server binary (go build in tests/fake-server)
+tests/fake-server/newsletter-fake-server
+tests/fake-server/fake-server
 
 # Preview cache
 .cache/

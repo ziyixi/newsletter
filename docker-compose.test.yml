@@ -1,7 +1,7 @@
-# docker-compose.test.yml — Integration test with fake external services
+# docker-compose.test.yml — Integration test with mocked external services
 #
-# Usage:
-#   docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+# All external APIs are mocked by the Go fake-server. No real servers are called.
+# Usage: docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
 #   make test
 
 services:
@@ -10,7 +10,7 @@ services:
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 2s
       timeout: 5s
       retries: 5
@@ -21,17 +21,17 @@ services:
       fake-server:
         condition: service_healthy
     environment:
-      # Point services at the fake server
+      # Point all services at the fake server (mocks only, no real APIs)
       - WEATHER_API_BASE=http://fake-server:8080
       - HN_API_BASE=http://fake-server:8080
       - GITHUB_TRENDING_BASE=http://fake-server:8080
       - TODO_API_BASE=http://fake-server:8080
       - NEWS_FEEDS=http://fake-server:8080/rss/feed
-      # Skip services that use external libraries/APIs not easily mocked
-      - SKIP_STOCKS=true
-      - SKIP_EXCHANGE_RATES=true
-      - SKIP_ASTRONOMY=true
-      - SKIP_ARXIV=true
+      - YAHOO_CHART_BASE=http://fake-server:8080
+      - ARXIV_API_BASE=http://fake-server:8080
+      - TRANSLATE_API_BASE=http://fake-server:8080
+      # Disable LLM ranking in tests (no Gemini call)
+      - RANKING_ENABLED=false
       # Dummy auth for todo API
       - TODO_API_USER=test
       - TODO_API_PASSWORD=test

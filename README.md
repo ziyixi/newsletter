@@ -81,16 +81,14 @@ make test
 
 ## Testing
 
-Integration tests use Docker Compose with a **fake server** that returns canned responses for all external APIs:
+Integration tests use **mocks only**: Docker Compose runs a Go fake server (`tests/fake-server/`) that implements all external API endpoints with canned responses. No real external services are called.
 
 ```bash
 make test
 # → docker compose -f docker-compose.test.yml up --build ...
 ```
 
-The fake server lives in `tests/fake-server/` with fixture files for each API endpoint.
-
-Backend services support configurable base URLs via environment variables (`WEATHER_API_BASE`, `HN_API_BASE`, etc.) and skip flags (`SKIP_STOCKS=true`).
+The backend points to the fake server via environment variables (`WEATHER_API_BASE`, `YAHOO_CHART_BASE`, `ARXIV_API_BASE`, `TRANSLATE_API_BASE`, etc.). See `docker-compose.test.yml` for the full list.
 
 ## Docker
 
