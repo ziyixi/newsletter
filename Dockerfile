@@ -63,8 +63,5 @@ COPY scripts scripts
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Suppress Node SEA experimental warning in CI logs.
-ENV NODE_OPTIONS="--no-experimental-warnings"
-
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["send"]
