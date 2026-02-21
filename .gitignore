@@ -9,18 +9,6 @@ dist/
 .env
 .env.local
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-*.egg
-.venv/
-venv/
-packages/backend/generated/*.py
-packages/backend/generated/*.pyi
-!packages/backend/generated/.gitkeep
-
 # React Email
 .react-email/
 
@@ -37,6 +25,11 @@ Thumbs.db
 # Build
 *.tsbuildinfo
 
+# Go backend: generated proto and binary (generated on the fly by make/Docker)
+packages/backend/pb/
+packages/backend/newsletter
+
 # Preview cache
 .cache/
 packages/backend/.cache/
+packages/.cache/

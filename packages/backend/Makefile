@@ -2,10 +2,10 @@
 
 # ─── Build ──────────────────────────────────
 
-build:
+build: proto
 	go build -o newsletter ./cmd/newsletter/
 
-run:
+run: proto
 	go run ./cmd/newsletter/
 
 # ─── Proto ──────────────────────────────────

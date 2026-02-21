@@ -17,9 +17,13 @@ RUN yarn install --frozen-lockfile --production=false
 # ── Stage 2: Go backend build ───────────────
 FROM golang:1.24-bookworm AS go-build
 WORKDIR /build
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+ENV PATH=$PATH:/go/bin
 COPY packages/backend/go.mod packages/backend/go.sum ./
 RUN go mod download
 COPY packages/backend/ .
+RUN make proto
 RUN CGO_ENABLED=0 go build -o /newsletter ./cmd/newsletter/
 
 # ── Stage 3: Final image ────────────────────

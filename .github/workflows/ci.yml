@@ -38,18 +38,13 @@ jobs:
           go-version: "1.24"
           cache-dependency-path: packages/backend/go.sum
 
-      - name: Go vet
-        run: cd packages/backend && go vet ./...
-
-      - name: Go build
-        run: cd packages/backend && go build ./cmd/newsletter/
-
-      - name: Verify proto is up to date
+      # Proto is generated on the fly (pb/ is gitignored). No "verify up to date" step.
+      - name: Go vet and build (install protoc, generate proto, vet, build)
         run: |
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get update && sudo apt-get install -y protobuf-compiler
           go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-          cd packages/backend && make proto
-          git diff --exit-code pb/ || (echo "❌ Proto generated code is stale. Run 'make proto' and commit." && exit 1)
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          cd packages/backend && make proto && go vet ./... && go build ./cmd/newsletter/
 
   # ── Integration Test (Docker Compose) ──────
   integration:

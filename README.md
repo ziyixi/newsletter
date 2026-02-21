@@ -5,17 +5,10 @@ A personal daily newsletter that curates content from multiple sources and deliv
 ## Architecture
 
 ```mermaid
-graph LR
-    subgraph "Go backend"
-        W[Weather] & N[News] & S[Stocks] & H[HN] & G[GitHub] & A[arXiv] & E[Exchange] & T[Todo] & As[Astronomy]
-    end
-
-    subgraph "Node.js email-service"
-        R[React Email] --> Re[Resend API]
-    end
-
-    W & N & S & H & G & A & E & T & As --> J["JSON file"]
-    J --> R
+flowchart LR
+    Backend[Go backend] --> JSON[JSON file]
+    JSON --> Email[Email service]
+    Email --> Resend[Resend API]
 ```
 
 | Package | Language | Purpose |
@@ -79,11 +72,8 @@ make dev-email
 # Run all linters (TypeScript + Go)
 make lint
 
-# Fetch data only (without sending)
+# Fetch data only (without sending; generates proto if needed)
 make fetch
-
-# Regenerate protobuf Go code after editing proto/newsletter.proto
-make proto
 
 # Run integration tests (Docker Compose)
 make test
@@ -118,50 +108,22 @@ docker run newsletter e2e
 ## Project Structure
 
 ```mermaid
-graph TD
-    subgraph "Root"
-        Config["newsletter.config.yaml"]
-        Make["Makefile"]
-        Docker["Dockerfile"]
-        Compose["docker-compose.test.yml"]
+flowchart TB
+    subgraph backend["packages/backend (Go)"]
+        Proto[proto/newsletter.proto]
+        CMD[cmd/newsletter]
+        Internal[internal/config, fetcher, service]
     end
 
-    subgraph "packages/backend (Go)"
-        Proto["proto/newsletter.proto"]
-        PB["pb/newsletter.pb.go &#40;generated&#41;"]
-        CMD["cmd/newsletter/main.go"]
-        CFG["internal/config/config.go"]
-        Fetcher["internal/fetcher/fetcher.go"]
-        SVC["internal/service/*.go"]
+    subgraph email["packages/email-service (TypeScript)"]
+        Template[emails/newsletter.tsx]
+        Scripts[src: send, e2e, preview]
     end
 
-    subgraph "packages/email-service (TypeScript)"
-        Emails["emails/newsletter.tsx"]
-        Types["emails/types.ts"]
-        Sections["emails/components/*.tsx"]
-        Send["src/send-real.ts"]
-        E2E["src/e2e.ts"]
-        Preview["src/preview.ts"]
-    end
-
-    subgraph "tests/"
-        Fake["fake-server/server.py"]
-        Fixtures["fake-server/fixtures/"]
-    end
-
-    subgraph "scripts/"
-        Entry["entrypoint.sh"]
-    end
-
-    subgraph ".github/workflows/"
-        CI["ci.yml"]
-        Daily["daily.yml"]
-    end
-
-    Proto --> PB
-    CMD --> Fetcher --> SVC
-    SVC --> |"JSON via protojson"| Emails
-    CFG --> SVC
+    Root[newsletter.config.yaml, Makefile, Dockerfile] --> backend
+    Proto --> Internal
+    CMD --> Internal
+    Internal --> Template
 ```
 
 ## License

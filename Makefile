@@ -28,8 +28,8 @@ setup-frontend:
 	yarn install
 
 setup-backend:
-	@echo "🔨  Building Go backend…"
-	cd packages/backend && go build ./cmd/newsletter/
+	@echo "🔨  Building Go backend (generates proto if needed)…"
+	cd packages/backend && make build
 
 # ─── Proto ──────────────────────────────────
 
@@ -41,7 +41,7 @@ proto:
 
 fetch:
 	@echo "🔄  Fetching real data from all services…"
-	cd packages/backend && go run ./cmd/newsletter/
+	cd packages/backend && make run
 
 preview: fetch
 	@echo "🌐  Rendering and opening preview…"
@@ -62,9 +62,9 @@ test-send:
 # ─── Cleanup ────────────────────────────────
 
 clean:
-	rm -rf packages/backend/.cache
+	rm -rf packages/backend/.cache packages/backend/pb packages/backend/newsletter
 	rm -rf packages/email-service/dist
-	rm -rf .cache
+	rm -rf .cache packages/.cache
 
 # ─── Linting ────────────────────────────────
 
@@ -78,7 +78,7 @@ lint-ts:
 
 lint-go:
 	@echo "🔍  Go (vet)…"
-	cd packages/backend && go vet ./...
+	cd packages/backend && make proto && go vet ./...
 
 # ─── E2E Test ───────────────────────────────
 
