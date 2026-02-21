@@ -77,9 +77,9 @@ type rawConfig struct {
 		Timezone string `yaml:"timezone"`
 	} `yaml:"schedule"`
 	Weather struct {
-		Latitude  float64 `yaml:"latitude"`
-		Longitude float64 `yaml:"longitude"`
-		Location  string  `yaml:"location"`
+		Latitude  *float64 `yaml:"latitude"`
+		Longitude *float64 `yaml:"longitude"`
+		Location  string   `yaml:"location"`
 	} `yaml:"weather"`
 	News struct {
 		MaxItems int      `yaml:"maxItems"`
@@ -132,8 +132,8 @@ func build(raw rawConfig) *Config {
 		RecipientEmail: envOr("RECIPIENT_EMAIL", raw.Recipient.Email, "you@example.com"),
 		RecipientName:  envOr("RECIPIENT_NAME", raw.Recipient.Name, "Ziyi"),
 
-		WeatherLat:          envFloat("WEATHER_LAT", raw.Weather.Latitude, 37.3688),
-		WeatherLon:          envFloat("WEATHER_LON", raw.Weather.Longitude, -122.0363),
+		WeatherLat:          envFloatOpt("WEATHER_LAT", raw.Weather.Latitude, 37.3688),
+		WeatherLon:          envFloatOpt("WEATHER_LON", raw.Weather.Longitude, -122.0363),
 		WeatherLocationName: envOr("WEATHER_LOCATION", raw.Weather.Location, "圣尼维尔，加州"),
 
 		NewsFeeds:    envCSV("NEWS_FEEDS", raw.News.Feeds),
@@ -215,14 +215,16 @@ func envInt(key string, yaml, fallback int) int {
 	return intOr(yaml, fallback)
 }
 
-func envFloat(key string, yaml, fallback float64) float64 {
+// envFloatOpt uses env override, then yaml if present (including 0), else fallback.
+// Use for values where 0 is valid (e.g. latitude/longitude at equator/prime meridian).
+func envFloatOpt(key string, yaml *float64, fallback float64) float64 {
 	if v := os.Getenv(key); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
 		}
 	}
-	if yaml != 0 {
-		return yaml
+	if yaml != nil {
+		return *yaml
 	}
 	return fallback
 }

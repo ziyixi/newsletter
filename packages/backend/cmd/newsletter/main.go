@@ -20,9 +20,13 @@ import (
 )
 
 func main() {
-	output := flag.String("output", ".cache/newsletter-data.json", "Output JSON path")
-	flag.StringVar(output, "o", ".cache/newsletter-data.json", "Output JSON path (shorthand)")
+	var output string
+	flag.StringVar(&output, "output", ".cache/newsletter-data.json", "Output JSON path")
+	flag.StringVar(&output, "o", ".cache/newsletter-data.json", "Output JSON path (shorthand)")
 	flag.Parse()
+	if output == "" {
+		output = ".cache/newsletter-data.json"
+	}
 
 	fmt.Println(strings.Repeat("=", 50))
 	fmt.Println("📰  每日简报 — Newsletter Backend")
@@ -41,13 +45,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(*output), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "❌  Failed to create output dir: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.WriteFile(*output, data, 0o644); err != nil {
+	if err := os.WriteFile(output, data, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "❌  Failed to write output: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("💾  Data written to %s\n", *output)
+	fmt.Printf("💾  Data written to %s\n", output)
 }
