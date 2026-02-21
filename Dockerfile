@@ -41,7 +41,14 @@ RUN CGO_ENABLED=0 go build -o /newsletter ./cmd/newsletter/
 # Node SEA is linked against glibc; Debian slim provides it + shell for entrypoint.
 FROM debian:bookworm-slim
 
+# CA certificates so Go/Node can verify TLS (e.g. in GitHub Actions).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
+
+# Root config (backend looks for ../../newsletter.config.yaml when cwd is packages/backend).
+COPY newsletter.config.yaml /app/newsletter.config.yaml
 
 # Go binary (static, CGO_ENABLED=0).
 COPY --from=go-build /newsletter /usr/local/bin/newsletter
@@ -55,6 +62,9 @@ COPY packages/backend packages/backend
 COPY scripts scripts
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Suppress Node SEA experimental warning in CI logs.
+ENV NODE_OPTIONS="--no-experimental-warnings"
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["send"]
