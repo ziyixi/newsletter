@@ -1,6 +1,7 @@
 # ─────────────────────────────────────────────
-# Newsletter — multi-runtime Docker image
-# Go (backend) + Node.js 20 (email-service)
+# Newsletter — Docker image: Go backend + Node SEA (email-service)
+# Final image: debian:bookworm-slim only (no Node.js; SEA has runtime baked in).
+# Node is used only in build stages; image scanners see the final stage.
 #
 # Build:  docker build -t newsletter .
 # Run:    docker run -e RESEND_API_KEY=... newsletter send
@@ -36,22 +37,22 @@ COPY packages/backend/ .
 RUN make proto
 RUN CGO_ENABLED=0 go build -o /newsletter ./cmd/newsletter/
 
-# ── Stage 4: Final image ────────────────────
-FROM node:20-slim
+# ── Stage 4: Final image (minimal glibc base; no Node.js runtime) ─
+# Node SEA is linked against glibc; Debian slim provides it + shell for entrypoint.
+FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Go binary (from stage 3).
+# Go binary (static, CGO_ENABLED=0).
 COPY --from=go-build /newsletter /usr/local/bin/newsletter
 
-# Node.js single executable (from stage 2).
+# Node.js single executable (SEA — runtime baked in; needs glibc only).
 COPY --from=node-sea /app/packages/email-service/email-service /usr/local/bin/email-service
 RUN chmod +x /usr/local/bin/email-service
 
-# Source only for backend .cache and scripts (entrypoint runs newsletter from packages/backend).
+# Backend config/cache dir and entrypoint script.
 COPY packages/backend packages/backend
 COPY scripts scripts
-
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
