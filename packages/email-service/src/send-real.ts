@@ -1,7 +1,7 @@
 /**
  * send-real.ts
  *
- * Reads real data from a JSON file (produced by the Python backend),
+ * Reads real data from a JSON file (produced by the Go backend),
  * renders the newsletter, and sends it via Resend.
  *
  * Usage:  tsx src/send-real.ts [path-to-json]
@@ -10,24 +10,21 @@
 
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { renderNewsletter, renderNewsletterText } from "./render.js";
 import { sendEmail } from "./send.js";
 import type { NewsletterProps } from "../emails/types";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Load .env from project root (cwd when run from repo or Docker /app)
+dotenv.config({ path: path.join(process.cwd(), ".env") });
 
-// Load .env from project root
-dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
-
-const DEFAULT_JSON = path.resolve(
-  __dirname,
-  "../../backend/.cache/newsletter-data.json"
+const DEFAULT_JSON = path.join(
+  process.cwd(),
+  "packages/backend/.cache/newsletter-data.json"
 );
 
-async function main() {
-  const jsonPath = process.argv[2] ?? DEFAULT_JSON;
+export async function main(overridePath?: string) {
+  const jsonPath = overridePath ?? DEFAULT_JSON;
   const recipientEmail =
     process.env.RECIPIENT_EMAIL ?? "delivered@resend.dev";
 
@@ -62,8 +59,3 @@ async function main() {
 
   console.log(`✅  Sent! Message ID: ${messageId}`);
 }
-
-main().catch((err) => {
-  console.error("❌  Send failed:", err);
-  process.exit(1);
-});

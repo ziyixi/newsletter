@@ -6,10 +6,11 @@
   "scripts": {
     "dev:email": "email dev --dir emails --port 3000",
     "preview": "tsx src/preview.ts",
-    "send": "tsx src/send-real.ts",
+    "send": "tsx src/run-send.ts",
     "send:test": "tsx src/test-send.ts",
-    "e2e": "tsx src/e2e.ts",
-    "build": "tsc"
+    "e2e": "tsx src/run-e2e.ts",
+    "build": "tsc",
+    "build:bundle": "node build-bundle.mjs"
   },
   "dependencies": {
     "@react-email/components": "^0.0.31",
@@ -24,6 +25,8 @@
     "@types/react-dom": "^19.0.0",
     "react-email": "^3.0.6",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "esbuild": "^0.24.0",
+    "postject": "^1.0.0-alpha.6"
   }
 }

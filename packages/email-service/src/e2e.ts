@@ -9,19 +9,16 @@
 
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
 import { renderNewsletter } from "./render.js";
 import type { NewsletterProps } from "../emails/types";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const DEFAULT_JSON = path.resolve(
-  __dirname,
-  "../../backend/.cache/newsletter-data.json"
+const DEFAULT_JSON = path.join(
+  process.cwd(),
+  "packages/backend/.cache/newsletter-data.json"
 );
 
-async function main() {
-  const jsonPath = process.argv[2] ?? DEFAULT_JSON;
+export async function main(overridePath?: string) {
+  const jsonPath = overridePath ?? DEFAULT_JSON;
 
   if (!fs.existsSync(jsonPath)) {
     console.error(`❌  Data file not found: ${jsonPath}`);
@@ -59,7 +56,7 @@ async function main() {
   }
 
   // Save for inspection
-  const outDir = path.resolve(__dirname, "../../.cache");
+  const outDir = path.join(process.cwd(), ".cache");
   fs.mkdirSync(outDir, { recursive: true });
   const outPath = path.join(outDir, "e2e-output.html");
   fs.writeFileSync(outPath, html, "utf-8");
@@ -67,8 +64,3 @@ async function main() {
   console.log(`✅  E2E passed — ${html.length.toLocaleString()} bytes rendered`);
   console.log(`💾  Output saved to ${outPath}`);
 }
-
-main().catch((err) => {
-  console.error("❌  E2E failed:", err);
-  process.exit(1);
-});

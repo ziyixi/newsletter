@@ -92,6 +92,8 @@ The backend points to the fake server via environment variables (`WEATHER_API_BA
 
 ## Docker
 
+The image contains two binaries: the **Go backend** (`newsletter`) and the **Node.js email-service** compiled into a **single executable** (Node SEA). No `node_modules` or TypeScript source is shipped in the final image.
+
 ```bash
 # Build
 docker build -t newsletter .
@@ -115,7 +117,7 @@ flowchart TB
 
     subgraph email["packages/email-service (TypeScript)"]
         Template[emails/newsletter.tsx]
-        Scripts[src: send, e2e, preview]
+        Scripts[src: send, e2e, preview, cli]
     end
 
     Root[newsletter.config.yaml, Makefile, Dockerfile] --> backend
