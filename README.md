@@ -92,7 +92,7 @@ The backend points to the fake server via environment variables (`WEATHER_API_BA
 
 ## Docker
 
-The image contains two binaries: the **Go backend** (`newsletter`) and the **Node.js email-service** compiled into a **single executable** (Node SEA). No `node_modules` or TypeScript source is shipped in the final image.
+The image contains two binaries: the **Go backend** (`newsletter`) and the **Node.js email-service** as a **single executable** (Node SEA). The final stage uses **Debian Bookworm Slim** (minimal glibc base)—no Node.js runtime or `node_modules` in the image.
 
 ```bash
 # Build
