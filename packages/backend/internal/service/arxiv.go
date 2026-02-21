@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,11 +16,35 @@ import (
 )
 
 const (
-	maxAbstractChars  = 400
-	arxivMaxRetries   = 5
-	arxivBaseDelay    = 5.0
-	arxivDelayBetween = 5 * time.Second
+	maxAbstractChars   = 400
+	arxivMaxRetries    = 5
+	arxivBaseDelay     = 5.0
+	arxivDelay429      = 15.0             // longer base when rate-limited
+	arxivDelayBetween  = 10 * time.Second // between different queries (LLM, HPC, ...)
+	arxivMaxRetryAfter = 60               // cap Retry-After to this many seconds
 )
+
+// arXiv recommends identifying the client; polite User-Agent can reduce 429s.
+var arxivUserAgent = "newsletter-backend/1.0 (https://github.com/your-repo/newsletter)"
+
+// backoffForArxiv returns wait duration: respects Retry-After on 429, else exponential backoff.
+func backoffForArxiv(resp *http.Response, attempt int) time.Duration {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if s := resp.Header.Get("Retry-After"); s != "" {
+			if sec, err := strconv.Atoi(s); err == nil && sec > 0 {
+				if sec > arxivMaxRetryAfter {
+					sec = arxivMaxRetryAfter
+				}
+				return time.Duration(sec) * time.Second
+			}
+		}
+		// 429 with no Retry-After: use longer base
+		wait := arxivDelay429*intPow(2, attempt) + rand.Float64()*2
+		return time.Duration(wait * float64(time.Second))
+	}
+	wait := arxivBaseDelay*intPow(2, attempt) + rand.Float64()
+	return time.Duration(wait * float64(time.Second))
+}
 
 // rawPaper holds arXiv data including the full abstract (internal only).
 type rawPaper struct {
@@ -64,19 +89,25 @@ func fetchQueryWithBackoff(client *http.Client, q config.ArxivQuery, maxResults 
 			"%s/api/query?search_query=%s&max_results=%d&sortBy=submittedDate&sortOrder=descending",
 			strings.TrimSuffix(base, "/"), url.QueryEscape(q.Query), maxResults,
 		)
-		resp, err := client.Get(u)
+		req, _ := http.NewRequest("GET", u, nil)
+		req.Header.Set("User-Agent", arxivUserAgent)
+		resp, err := client.Do(req)
 		if err != nil || resp.StatusCode != http.StatusOK {
 			if resp != nil {
+				wait := backoffForArxiv(resp, attempt)
 				resp.Body.Close()
+				lastErr = err
+				if err == nil {
+					lastErr = fmt.Errorf("status %d", resp.StatusCode)
+				}
+				fmt.Printf("⚠️  arXiv (%s) attempt %d/%d failed: %v — retrying in %.1fs\n",
+					q.Label, attempt+1, arxivMaxRetries, lastErr, wait.Seconds())
+				time.Sleep(wait)
+			} else {
+				lastErr = err
+				wait := time.Duration((arxivBaseDelay*intPow(2, attempt) + rand.Float64()) * float64(time.Second))
+				time.Sleep(wait)
 			}
-			lastErr = err
-			if err == nil {
-				lastErr = fmt.Errorf("status %d", resp.StatusCode)
-			}
-			wait := arxivBaseDelay*intPow(2, attempt) + rand.Float64()
-			fmt.Printf("⚠️  arXiv (%s) attempt %d/%d failed: %v — retrying in %.1fs\n",
-				q.Label, attempt+1, arxivMaxRetries, lastErr, wait)
-			time.Sleep(time.Duration(wait * float64(time.Second)))
 			continue
 		}
 
