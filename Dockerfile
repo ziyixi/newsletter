@@ -17,6 +17,8 @@ RUN yarn install --frozen-lockfile --production=false
 
 # ── Stage 2: Node.js single executable (SEA) ─
 FROM node-deps AS node-sea
+# Root tsconfig so packages/email-service/tsconfig.json "extends": "../../tsconfig.json" resolves.
+COPY tsconfig.json ./
 COPY packages/email-service packages/email-service/
 RUN yarn workspace email-service build:bundle
 WORKDIR /app/packages/email-service
