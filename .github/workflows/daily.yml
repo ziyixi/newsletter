@@ -2,8 +2,8 @@ name: Daily Newsletter
 
 on:
   schedule:
-    # 8 AM PST (16:00 UTC) / 9 AM PDT (16:00 UTC)
-    - cron: "0 16 * * *"
+    # 7 AM PST (15:00 UTC) / 8 AM PDT (15:00 UTC)
+    - cron: "0 15 * * *"
   workflow_dispatch: # Allow manual trigger
 
 permissions:
