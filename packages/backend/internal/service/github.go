@@ -84,19 +84,13 @@ func parseTrending(r io.Reader, language string) []*pb.GitHubRepo {
 			}
 		}
 
-		descCN := ""
-		if desc != "" {
-			descCN = TranslateToChinese(desc)
-		}
-
 		repos = append(repos, &pb.GitHubRepo{
-			Name:          name,
-			Description:   desc,
-			DescriptionCn: descCN,
-			Language:      capitalize(language),
-			Stars:         totalStars,
-			TodayStars:    todayStars,
-			Url:           "https://github.com" + href,
+			Name:        name,
+			Description: desc,
+			Language:    capitalize(language),
+			Stars:       totalStars,
+			TodayStars:  todayStars,
+			Url:         "https://github.com" + href,
 		})
 	})
 	return repos

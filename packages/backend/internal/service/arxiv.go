@@ -160,7 +160,7 @@ func summarize(papers []rawPaper) []*pb.ArxivPaper {
 	if client != nil {
 		return summarizeBatch(papers)
 	}
-	fmt.Println("⚠️  GEMINI_API_KEY not set — using fallback translation")
+	fmt.Println("⚠️  GEMINI_API_KEY not set — using untranslated arXiv fallback")
 	return fallbackAll(papers)
 }
 
@@ -194,7 +194,7 @@ func summarizeBatch(papers []rawPaper) []*pb.ArxivPaper {
 
 	out := make([]*pb.ArxivPaper, len(papers))
 	for i, p := range papers {
-		if p.proto.TitleCn == "" {
+		if p.proto.TitleCn == "" || p.proto.Summary == "" {
 			fallbackSingle(&papers[i])
 		}
 		out[i] = p.proto
@@ -249,9 +249,9 @@ func fallbackAll(papers []rawPaper) []*pb.ArxivPaper {
 }
 
 func fallbackSingle(p *rawPaper) {
-	if p.proto.TitleCn == "" {
-		p.proto.TitleCn = TranslateToChinese(p.proto.Title)
-	}
+	// Leave TitleCn empty so the email template displays the original title
+	// without duplicating it. Unauthenticated translation endpoints are not a
+	// reliable fallback.
 	if p.proto.Summary == "" {
 		runes := []rune(p.abstract)
 		if len(runes) > 150 {

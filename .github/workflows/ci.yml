@@ -39,12 +39,12 @@ jobs:
           cache-dependency-path: packages/backend/go.sum
 
       # Proto is generated on the fly (pb/ is gitignored). No "verify up to date" step.
-      - name: Go vet and build (install protoc, generate proto, vet, build)
+      - name: Go test, vet, and build (install protoc, generate proto, test, vet, build)
         run: |
           sudo apt-get update && sudo apt-get install -y protobuf-compiler
           go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
           export PATH="$(go env GOPATH)/bin:$PATH"
-          cd packages/backend && make proto && go vet ./... && go build ./cmd/newsletter/
+          cd packages/backend && make proto && go test ./... && go vet ./... && go build ./cmd/newsletter/
 
   # ── Integration Test (Docker Compose) ──────
   integration:

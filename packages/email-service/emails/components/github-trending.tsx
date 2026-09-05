@@ -74,8 +74,8 @@ export function GitHubTrending({ repos }: GitHubTrendingProps) {
                       {repo.name}
                     </Link>
 
-                    {/* Description (Chinese) */}
-                    {repo.descriptionCn && (
+                    {/* Chinese description, or the English source if translation failed. */}
+                    {(repo.descriptionCn || repo.description) && (
                       <Text
                         style={{
                           fontFamily: tokens.fontKai,
@@ -85,7 +85,7 @@ export function GitHubTrending({ repos }: GitHubTrendingProps) {
                           margin: "2px 0 0 0",
                         }}
                       >
-                        {repo.descriptionCn}
+                        {repo.descriptionCn || repo.description}
                       </Text>
                     )}
 

@@ -40,6 +40,11 @@ func FetchAll() *pb.NewsletterPayload {
 		fmt.Println("  ✅  Ranking complete")
 	}
 
+	// Translate only the final selected content. This avoids sending the
+	// over-fetched candidates to Gemini and gives every field a stable ID for
+	// structured-output validation.
+	service.TranslateSelectedContent(r.news, r.hn, r.github)
+
 	// Merge astronomy into weather.
 	if r.weather == nil {
 		r.weather = &pb.WeatherData{}

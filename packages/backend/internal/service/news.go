@@ -25,7 +25,9 @@ var sourceMap = map[string]string{
 
 var htmlTagRe = regexp.MustCompile(`<[^>]+>`)
 
-// FetchNews parses configured RSS feeds and returns translated headlines.
+// FetchNews parses configured RSS feeds and returns English source content.
+// Translation happens after LLM ranking so discarded candidates are not sent
+// to the translation model.
 func FetchNews() ([]*pb.NewsItem, error) {
 	mult := rankingMultiplier()
 	effectiveMax := config.C.NewsMaxItems * mult
@@ -60,15 +62,7 @@ func FetchNews() ([]*pb.NewsItem, error) {
 		}
 	}
 
-	unique := dedup(all, effectiveMax)
-	for _, n := range unique {
-		n.Headline = TranslateToChinese(n.Headline)
-		n.Summary = TranslateToChinese(n.Summary)
-		if n.Category != "" {
-			n.Category = TranslateToChinese(n.Category)
-		}
-	}
-	return unique, nil
+	return dedup(all, effectiveMax), nil
 }
 
 func dedup(items []*pb.NewsItem, limit int) []*pb.NewsItem {

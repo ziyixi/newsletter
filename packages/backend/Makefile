@@ -1,4 +1,4 @@
-.PHONY: build run lint clean proto
+.PHONY: build run lint test clean proto
 
 # ─── Build ──────────────────────────────────
 
@@ -18,6 +18,9 @@ proto:
 
 lint:
 	go vet ./...
+
+test: proto
+	go test ./...
 
 # ─── Cleanup ────────────────────────────────
 

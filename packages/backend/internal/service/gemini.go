@@ -3,6 +3,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -18,9 +19,10 @@ const (
 	geminiMinCallGap  = 1 * time.Second
 	geminiMaxRetries  = 2
 	geminiBackoffBase = 2.0
+	geminiCallTimeout = 120 * time.Second
 )
 
-var fallbackModels = []string{"gemini-2.5-flash", "gemini-2.5-flash-lite"}
+var fallbackModels = []string{"gemini-3.7-flash", "gemini-3.5-flash-lite"}
 
 var (
 	geminiOnce   sync.Once
@@ -52,14 +54,21 @@ func GeminiClient() *genai.Client {
 // GeminiGenerate calls Gemini with model fallback, retry, and rate-limiting.
 // Returns the trimmed response text, or "" if every attempt fails.
 func GeminiGenerate(client *genai.Client, prompt string) string {
+	return GeminiGenerateWithConfig(client, prompt, nil)
+}
+
+// GeminiGenerateWithConfig calls Gemini with the supplied generation config,
+// preserving the same model fallback, retry, and rate-limiting behavior as
+// GeminiGenerate. It is used for schema-constrained responses.
+func GeminiGenerateWithConfig(client *genai.Client, prompt string, cfg *genai.GenerateContentConfig) string {
 	models := append([]string{config.C.GeminiModel}, fallbackModels...)
 
 	for _, model := range models {
 		for attempt := range geminiMaxRetries + 1 {
 			waitForRateLimit()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			resp, err := client.Models.GenerateContent(ctx, model, genai.Text(prompt), nil)
+			ctx, cancel := context.WithTimeout(context.Background(), geminiCallTimeout)
+			resp, err := client.Models.GenerateContent(ctx, model, genai.Text(prompt), cfg)
 			cancel()
 			recordCall()
 
@@ -67,6 +76,7 @@ func GeminiGenerate(client *genai.Client, prompt string) string {
 				if t := strings.TrimSpace(resp.Text()); t != "" {
 					return t
 				}
+				err = errors.New("empty response")
 			}
 
 			wait := time.Duration(intPow(geminiBackoffBase, attempt)) * time.Second

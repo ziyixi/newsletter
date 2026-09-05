@@ -13,7 +13,7 @@ flowchart LR
 
 | Package | Language | Purpose |
 |---------|----------|---------|
-| `packages/backend` | Go 1.24 + Protobuf | Fetches data from external APIs in parallel |
+| `packages/backend` | Go 1.24 + Protobuf | Fetches, ranks, and batch-translates content |
 | `packages/email-service` | TypeScript (Node 20) | Renders React Email templates and sends via Resend |
 
 They communicate through a **JSON file** — the backend writes it (via `protojson`), the email-service reads it.
@@ -24,11 +24,11 @@ They communicate through a **JSON file** — the backend writes it (via `protojs
 |---------|--------|----------|
 | Weather | Open-Meteo | No |
 | Astronomy | `go-sunrise` | No |
-| Top News | RSS feeds + Google Translate | No |
-| Hacker News | Firebase API + Google Translate | No |
+| Top News | RSS feeds + Gemini batch translation | Yes (`GEMINI_API_KEY`) |
+| Hacker News | Firebase API + Gemini batch translation | Yes (`GEMINI_API_KEY`) |
 | Stocks | Yahoo Finance HTTP API | No |
 | Exchange Rates | Yahoo Finance HTTP API | No |
-| GitHub Trending | HTML scraping + Google Translate | No |
+| GitHub Trending | HTML scraping + Gemini batch translation | Yes (`GEMINI_API_KEY`) |
 | arXiv Papers | arXiv Atom API + Gemini | Yes (`GEMINI_API_KEY`) |
 | Todo Tasks | daily.ziyixi.science | Yes (`TODO_API_*`) |
 
@@ -63,6 +63,14 @@ TODO_API_USER=...
 TODO_API_PASSWORD=...
 ```
 
+Gemini uses the stable `gemini-3.8-flash` model for ranking, translation, and
+arXiv summarisation. News, Hacker News, and GitHub candidates are ranked in
+English first; only selected items are translated in one structured-output
+request. The backend validates every response ID and retries only missing or
+invalid fields. A failed field remains in English instead of failing the run.
+Use `GEMINI_MODEL` to override the model configured under `arxiv.geminiModel`.
+The automatic fallbacks are `gemini-3.7-flash` and `gemini-3.5-flash-lite`.
+
 ## Development
 
 ```bash
@@ -81,14 +89,33 @@ make test
 
 ## Testing
 
-Integration tests use **mocks only**: Docker Compose runs a Go fake server (`tests/fake-server/`) that implements all external API endpoints with canned responses. No real external services are called.
+Go unit tests cover structured translation parsing, ID validation, and
+missing-field retry behavior without calling Gemini. Integration tests use
+**mocks only**: Docker Compose runs a Go fake server (`tests/fake-server/`)
+that implements the non-LLM external endpoints with canned responses. No real
+external services are called.
 
 ```bash
 make test
 # → docker compose -f docker-compose.test.yml up --build ...
 ```
 
-The backend points to the fake server via environment variables (`WEATHER_API_BASE`, `YAHOO_CHART_BASE`, `ARXIV_API_BASE`, `TRANSLATE_API_BASE`, etc.). See `docker-compose.test.yml` for the full list.
+Run just the offline Go tests with `make test-go`. To explicitly test the
+configured primary Gemini model using your local `.env` (API usage is billed,
+and no email is sent):
+
+```bash
+cd packages/backend
+RUN_GEMINI_INTEGRATION=1 go test ./internal/service -run TestGeminiStructuredTranslationIntegration -count=1 -v
+```
+
+This opt-in test disables fallback models and checks response IDs, Chinese
+text, URL/code preservation, and translation of text containing instructions.
+
+The backend points to the fake server via environment variables
+(`WEATHER_API_BASE`, `YAHOO_CHART_BASE`, `ARXIV_API_BASE`, etc.) and disables
+Gemini in the integration environment. See `docker-compose.test.yml` for the
+full list.
 
 ## Docker
 

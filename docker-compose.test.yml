@@ -29,8 +29,8 @@ services:
       - NEWS_FEEDS=http://fake-server:8080/rss/feed
       - YAHOO_CHART_BASE=http://fake-server:8080
       - ARXIV_API_BASE=http://fake-server:8080
-      - TRANSLATE_API_BASE=http://fake-server:8080
-      # Disable LLM ranking in tests (no Gemini call)
+      # No GEMINI_API_KEY is provided, so integration uses English fallbacks.
+      # Disable ranking to avoid over-fetching the fixed test fixtures.
       - RANKING_ENABLED=false
       # Dummy auth for todo API
       - TODO_API_USER=test

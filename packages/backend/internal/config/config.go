@@ -149,7 +149,7 @@ func build(raw rawConfig) *Config {
 		GithubTrendingMaxPerLang: intOr(raw.GithubTrending.MaxPerLanguage, 3),
 
 		ArxivQueries: arxivQueriesOr(raw.Arxiv.Queries),
-		GeminiModel:  strOr(raw.Arxiv.GeminiModel, "gemini-2.0-flash"),
+		GeminiModel:  envOr("GEMINI_MODEL", raw.Arxiv.GeminiModel, "gemini-3.8-flash"),
 
 		RankingEnabled:         envBool("RANKING_ENABLED", raw.Ranking.Enabled),
 		RankingFetchMultiplier: envInt("RANKING_FETCH_MULTIPLIER", raw.Ranking.FetchMultiplier, 3),
@@ -174,7 +174,7 @@ func defaults() *Config {
 		Timezone:                 "America/Los_Angeles",
 		GithubTrendingLanguages:  []string{"python", "go", "rust"},
 		GithubTrendingMaxPerLang: 3,
-		GeminiModel:              "gemini-2.0-flash",
+		GeminiModel:              "gemini-3.8-flash",
 		RankingFetchMultiplier:   3,
 		ExchangeRatePairs:        []string{"USD/CNY"},
 		StockNames:               map[string]string{},
@@ -188,9 +188,18 @@ func configPath() string {
 	if p := os.Getenv("NEWSLETTER_CONFIG_PATH"); p != "" {
 		return p
 	}
-	for _, c := range []string{"newsletter.config.yaml", "../../newsletter.config.yaml"} {
-		if _, err := os.Stat(c); err == nil {
-			return c
+	dir, err := os.Getwd()
+	if err == nil {
+		for {
+			candidate := filepath.Join(dir, "newsletter.config.yaml")
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
 		}
 	}
 	return "../../newsletter.config.yaml"
@@ -250,13 +259,6 @@ func envCSV(key string, yaml []string) []string {
 		}
 	}
 	return yaml
-}
-
-func strOr(v, fallback string) string {
-	if v != "" {
-		return v
-	}
-	return fallback
 }
 
 func intOr(v, fallback int) int {

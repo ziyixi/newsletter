@@ -1,6 +1,6 @@
 # Fake server (Go)
 
-HTTP server that mocks all external APIs used by the newsletter backend. Used for integration tests only; no real external services are called.
+HTTP server that mocks all non-LLM external APIs used by the newsletter backend. Used for integration tests only; no real external services are called.
 
 ## Endpoints mocked
 
@@ -15,7 +15,6 @@ HTTP server that mocks all external APIs used by the newsletter backend. Used fo
 | `GET /rss/feed` | rss_feed.xml | News RSS |
 | `GET /v8/finance/chart/:symbol` | yahoo_chart.json | Yahoo (stocks & exchange) |
 | `GET /api/query?search_query=...` | arxiv_query.xml | arXiv |
-| `GET /translate_a/single?q=...` | Echoes `q` as translation | Google Translate |
 
 ## Run locally
 

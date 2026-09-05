@@ -2,7 +2,7 @@
         fetch preview send \
         dev-email test-send clean \
         lint lint-ts lint-go \
-        proto e2e test docker-build docker-send
+        proto e2e test test-go docker-build docker-send
 
 # ═══════════════════════════════════════════════
 # Quick-start workflow:
@@ -86,7 +86,11 @@ e2e: fetch
 	@echo "🧪  Running E2E validation…"
 	yarn workspace email-service e2e
 
-# ─── Integration Test (Docker Compose) ──────
+# ─── Tests ──────────────────────────────────
+
+test-go:
+	@echo "🧪  Running Go unit tests…"
+	cd packages/backend && make test
 
 test:
 	@echo "🧪  Running integration tests with Docker Compose…"

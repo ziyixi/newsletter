@@ -1,11 +1,9 @@
-// Fake server mocks all external APIs for newsletter integration tests.
+// Fake server mocks all non-LLM external APIs for newsletter integration tests.
 // Usage: go run .  (listens on port 8080, or FAKE_SERVER_PORT)
 package main
 
 import (
 	"embed"
-	"encoding/json"
-	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -38,17 +36,6 @@ func handler(fixtures fs.FS) http.HandlerFunc {
 		pathOnly := path.Clean(r.URL.Path)
 		if r.URL.RawQuery != "" {
 			pathOnly = strings.Split(r.URL.Path, "?")[0]
-		}
-
-		// Translate API: echo back the "q" param as translated text
-		if strings.HasPrefix(pathOnly, "/translate_a/") {
-			q := r.URL.Query().Get("q")
-			// Response format: [[["translated","original",null,null,3]],...]
-			body := fmt.Sprintf("[[[\"%s\",\"%s\",null,null,3]]]", escapeJSON(q), escapeJSON(q))
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(body))
-			return
 		}
 
 		// Route to fixture file
@@ -102,9 +89,4 @@ func route(pathOnly string) (fixture string, contentType string) {
 		return "yahoo_chart.json", "application/json"
 	}
 	return "", ""
-}
-
-func escapeJSON(s string) string {
-	b, _ := json.Marshal(s)
-	return strings.Trim(string(b), `"`)
 }

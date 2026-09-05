@@ -62,8 +62,5 @@ func FetchHNStories() ([]*pb.HNStory, error) {
 		})
 	}
 
-	for _, s := range out {
-		s.TitleCn = TranslateToChinese(s.Title)
-	}
 	return out, nil
 }

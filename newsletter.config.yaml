@@ -77,10 +77,11 @@ githubTrending:
   languages: [python, go, ""]   # "" = overall trending (all languages)
   maxPerLanguage: 3
 
-# ── arXiv Paper Highlights (AI-summarised via Gemini) ────────
-# GEMINI_API_KEY must be set in .env or GitHub Secrets
+# ── Gemini model (summarisation, ranking, and translation) ───
+# GEMINI_API_KEY must be set in .env or GitHub Secrets.
+# The model setting remains under arxiv for backward compatibility.
 arxiv:
-  geminiModel: "gemini-3-flash-preview"
+  geminiModel: "gemini-3.8-flash"
   queries:
     - query: "cat:cs.CL AND abs:LLM"
       label: "LLM"
@@ -134,6 +135,6 @@ sections:
 #   RESEND_API_KEY      — API key from https://resend.com
 #   RECIPIENT_EMAIL     — where the newsletter is delivered
 #   RECIPIENT_NAME      — name shown in the email greeting
-#   GEMINI_API_KEY      — for arXiv paper summarization
+#   GEMINI_API_KEY      — for ranking, translation, and arXiv summarization
 #   TODO_API_USER       — for daily.ziyixi.science todo API
 #   TODO_API_PASSWORD   — for daily.ziyixi.science todo API
