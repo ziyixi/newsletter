@@ -35,10 +35,21 @@ def object_schema(properties: Payload) -> Payload:
 
 
 def discovery_schema(max_candidates: int = 5) -> Payload:
-    props: Payload = {key: {"type": "string"} for key in CANDIDATE_FIELDS}
+    optional_text = {"doi", "version", "event_key", "published_at"}
+    props: Payload = {
+        key: {
+            "type": "string",
+            "minLength": 0 if key in optional_text else 1,
+            "maxLength": 1200,
+        }
+        for key in CANDIDATE_FIELDS
+    }
     props["access_scope"]["enum"] = list(SOURCE_ACCESS_SCOPES)
-    props["summary"]["maxLength"] = 1200
+    props["title"]["maxLength"] = 500
     props["why_now"]["maxLength"] = 1000
+    # Shape only: the parser still checks calendar validity and the issue date.
+    # Unknown publication dates are deliberately allowed to remain empty.
+    props["published_at"].update(maxLength=10, pattern=r"^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})?$")
     return object_schema(
         {
             "candidates": {
@@ -46,7 +57,7 @@ def discovery_schema(max_candidates: int = 5) -> Payload:
                 "maxItems": max_candidates,
                 "items": object_schema(props),
             },
-            "note": {"type": "string", "maxLength": 2000},
+            "note": {"type": "string", "minLength": 1, "maxLength": 2000},
         }
     )
 

@@ -1,6 +1,7 @@
 """Offline discovery/planning/research boundaries, with synthetic engine responses."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -161,6 +162,71 @@ def test_discovery_cap_empty_note_and_shape_fail_closed():
         with pytest.raises(EditorError):
             parse_discovery(raw, set(), True, "01-ai-ml", DAY)
     assert parse_discovery(discovered(), set(), True, "01-ai-ml", DAY).candidates == []
+
+
+def test_discovery_schema_exposes_parser_string_and_empty_value_boundaries():
+    schema = discovery_schema()
+    props = schema["properties"]["candidates"]["items"]["properties"]
+    optional = {"doi", "version", "event_key", "published_at"}
+    for name, field in props.items():
+        assert field["minLength"] == (0 if name in optional else 1)
+        assert field["maxLength"] == {"title": 500, "why_now": 1000, "published_at": 10}.get(
+            name, 1200
+        )
+    assert schema["properties"]["note"] == {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000,
+    }
+
+
+@pytest.mark.parametrize(
+    "field,maximum",
+    [
+        ("title", 500),
+        ("summary", 1200),
+        ("why_now", 1000),
+        ("version", 1200),
+        ("event_key", 1200),
+    ],
+)
+def test_discovery_schema_lengths_match_actual_parser(field, maximum):
+    props = discovery_schema()["properties"]["candidates"]["items"]["properties"]
+    assert props[field]["maxLength"] == maximum
+    result = parse_discovery(
+        discovered(candidate(**{field: "x" * maximum})), {URL}, True, "01-ai-ml", DAY
+    )
+    assert result.candidates[0][field] == "x" * maximum
+    with pytest.raises(EditorError):
+        parse_discovery(
+            discovered(candidate(**{field: "x" * (maximum + 1)})), {URL}, True, "01-ai-ml", DAY
+        )
+
+
+@pytest.mark.parametrize(
+    "value", ["2026-09", "20260906", "2026-9-06", "2026-09-06T00:00:00Z", "unknown"]
+)
+def test_discovery_schema_rejects_non_date_shapes(value):
+    field = discovery_schema()["properties"]["candidates"]["items"]["properties"]["published_at"]
+    assert re.fullmatch(field["pattern"], value) is None
+    with pytest.raises(ContractError):
+        parse_discovery(discovered(candidate(published_at=value)), {URL}, True, "01-ai-ml", DAY)
+
+
+@pytest.mark.parametrize(
+    "value,valid", [("", True), (DAY, True), ("2026-02-30", False), ("2026-09-07", False)]
+)
+def test_date_shape_is_not_a_substitute_for_calendar_and_issue_date_validation(value, valid):
+    field = discovery_schema()["properties"]["candidates"]["items"]["properties"]["published_at"]
+    assert re.fullmatch(field["pattern"], value) is not None
+    if valid:
+        result = parse_discovery(
+            discovered(candidate(published_at=value)), {URL}, True, "01-ai-ml", DAY
+        )
+        assert result.candidates[0]["published_at"] == value
+    else:
+        with pytest.raises((ContractError, EditorError)):
+            parse_discovery(discovered(candidate(published_at=value)), {URL}, True, "01-ai-ml", DAY)
 
 
 def test_dedup_matches_doi_alias_arxiv_versions_tracking_urls_and_events():

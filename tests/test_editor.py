@@ -11,8 +11,11 @@ import pytest
 
 from newsletter import codex_runtime as runtime
 from newsletter import editor
+from newsletter.collection.instructions import Instruction
 from newsletter.contracts import ContractError, content_hash, validate_draft
 from newsletter.model_schema import editor_schema
+from newsletter.workflow.content import ContentPreparation
+from newsletter.workflow.schema import discovery_schema
 
 
 @pytest.fixture
@@ -125,6 +128,7 @@ def fake_sdk(monkeypatch, bundle):
         started=False,
         prompt=None,
         thread_options=None,
+        thread_starts=0,
         config=None,
         skills_response=None,
         skills_checked=False,
@@ -174,6 +178,7 @@ def fake_sdk(monkeypatch, bundle):
 
         async def thread_start(self, **kwargs):
             inspect.signature(sdk.AsyncCodex.thread_start).bind(self, **kwargs)
+            state.thread_starts += 1
             state.thread_options = kwargs
             return FakeThread()
 
@@ -255,6 +260,142 @@ def test_provenance_inspection_includes_only_new_sources():
     for invalid in ("[]", '{"packets":null}', '{"packets":[{}]}'):
         with pytest.raises(editor.EditorError):
             editor._unopened_sources(invalid, set())
+
+
+def discovery_output(*, url="https://example.com/evidence", scope="abstract"):
+    return {
+        "candidates": [
+            {
+                "title": "Synthetic public candidate",
+                "url": url,
+                "doi": "",
+                "version": "",
+                "event_key": "",
+                "published_at": "",
+                "summary": "Only a synthetic test claim.",
+                "why_now": "An offline fixture tests evidence provenance, not actual news.",
+                "access_scope": scope,
+            }
+        ],
+        "note": "Synthetic discovery only",
+    }
+
+
+def discovery_turn(value, *, omit_action):
+    turn = FakeTurn(value)
+    original = turn.stream
+
+    async def stream():
+        async for event in original():
+            action = event.payload.get("item", {}).get("action", {}).get("type")
+            if action != omit_action:
+                yield event
+
+    turn.stream = stream
+    return turn
+
+
+@pytest.mark.parametrize("scope", ["abstract", "full_text", "dataset"])
+async def test_discovery_missing_open_gets_one_same_thread_correction(tmp_path, fake_sdk, scope):
+    output = discovery_output(scope=scope)
+    # Search and the actual source open occur in separate turns. Neither action
+    # may be inferred from the candidate's own fields or dropped on correction.
+    fake_sdk.turns = [
+        discovery_turn(output, omit_action="openPage"),
+        discovery_turn(output, omit_action="search"),
+    ]
+    content = ContentPreparation(live_editor(tmp_path))
+    result = await content.discover(
+        Instruction("03-world", "Synthetic instruction", "fixture"),
+        "2026-09-06",
+        tmp_path / "discovery",
+    )
+    assert result.candidates[0]["url"] == "https://example.com/evidence"
+    assert result.candidates[0]["published_at"] == ""
+    assert result.candidates[0]["provenance"] == "web_open"
+    assert fake_sdk.thread_starts == 1 and len(fake_sdk.prompts) == 2
+    assert fake_sdk.prompts[1]["unverified_urls"] == ["https://example.com/evidence"]
+    assert fake_sdk.schema == discovery_schema()
+    assert fake_sdk.closed
+
+
+async def test_discovery_still_unopened_after_one_correction_fails_without_third_turn(
+    tmp_path, fake_sdk
+):
+    # Opening /evidence never authenticates a different canonical/PDF URL.
+    fake_sdk.turn = FakeTurn(discovery_output(url="https://example.com/unread-pdf"))
+    with pytest.raises(editor.EditorError) as caught:
+        await ContentPreparation(live_editor(tmp_path)).discover(
+            Instruction("03-world", "Synthetic instruction", "fixture"),
+            "2026-09-06",
+            tmp_path / "discovery",
+        )
+    assert caught.value.code == "invalid_output"
+    assert fake_sdk.thread_starts == 1 and len(fake_sdk.prompts) == 2
+    assert fake_sdk.closed
+
+
+async def test_discovery_correction_keeps_original_execute_timeout(tmp_path, fake_sdk):
+    output = discovery_output(url="https://example.com/unread-pdf")
+    hanging = FakeTurn(output, hang=True)
+    fake_sdk.turns = [FakeTurn(output), hanging]
+    with pytest.raises(editor.EditorError) as caught:
+        await ContentPreparation(live_editor(tmp_path, timeout_seconds=0.05)).discover(
+            Instruction("03-world", "Synthetic instruction", "fixture"),
+            "2026-09-06",
+            tmp_path / "discovery",
+        )
+    assert caught.value.code == "timeout" and hanging.interrupted
+    assert fake_sdk.thread_starts == 1 and len(fake_sdk.prompts) == 2
+    assert fake_sdk.closed
+
+
+@pytest.mark.parametrize("trusted_seed", [False, True])
+async def test_metadata_does_not_trigger_open_correction_but_still_requires_real_seed(
+    tmp_path, fake_sdk, trusted_seed
+):
+    output = discovery_output(url="https://example.com/feed-only", scope="metadata")
+    seed = {
+        **output["candidates"][0],
+        "id": "fixture-seed",
+        "direction": "03-world",
+        "provenance": "crossref_metadata",
+        "summary": "Original feed title record only.",
+    }
+    fake_sdk.turn = FakeTurn(output)
+    content = ContentPreparation(live_editor(tmp_path))
+    args = (
+        Instruction("03-world", "Synthetic instruction", "fixture"),
+        "2026-09-06",
+        tmp_path / "discovery",
+    )
+    if trusted_seed:
+        result = await content.discover(*args, seeds=[seed])
+        assert result.candidates[0]["summary"] == seed["summary"]
+        assert result.candidates[0]["provenance"] == "crossref_metadata"
+    else:
+        with pytest.raises(editor.EditorError) as caught:
+            await content.discover(*args)
+        assert caught.value.code == "invalid_output"
+    assert fake_sdk.thread_starts == 1 and len(fake_sdk.prompts) == 1
+    assert fake_sdk.closed
+
+
+def test_discovery_source_inspection_preserves_fragment_and_input_boundaries():
+    value = discovery_output(url="https://example.com/evidence#section")
+    assert editor._unopened_sources(json.dumps(value), {"https://example.com/evidence"}) == []
+    assert editor._unopened_sources(json.dumps(value), set()) == [
+        "https://example.com/evidence#section"
+    ]
+    # Planning input references/history are not newly claimed evidence.
+    unrelated = {
+        "research_tasks": [{"source_urls": ["https://example.com/persisted"]}],
+        "history_untrusted": [{"url": "https://example.com/history"}],
+    }
+    assert editor._unopened_sources(json.dumps(unrelated), set()) == []
+    for invalid in ({"candidates": None}, {"candidates": [None]}, {"candidates": [{}]}):
+        with pytest.raises(editor.EditorError):
+            editor._unopened_sources(json.dumps(invalid), set())
 
 
 async def test_mock_deterministic_and_conspicuous(tmp_path, packet):

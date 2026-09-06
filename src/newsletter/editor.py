@@ -239,13 +239,19 @@ async def _collect(turn: AsyncTurnHandle) -> tuple[str, set[str], bool]:
 
 
 def _unopened_sources(text: str, opened: set[str]) -> list[str]:
-    """Inspect only new research, never require re-opening persisted input packets."""
+    """Inspect new evidence, never require re-opening persisted input packets.
+
+    Metadata candidates remain discovery's responsibility: only an exact trusted
+    feed seed can survive that parser without an observed open. A model-declared
+    metadata scope is not permission to accept an otherwise unverified URL.
+    """
     value = load_json(text)
     if not isinstance(value, dict):
         raise EditorError("invalid_output")
     materials = value.get("packets", [])
     supplements = value.get("supplemental_packets", [])
-    if not isinstance(materials, list) or not isinstance(supplements, list):
+    candidates = value.get("candidates", [])
+    if any(not isinstance(items, list) for items in (materials, supplements, candidates)):
         raise EditorError("invalid_output")
     try:
         sources = [
@@ -253,6 +259,7 @@ def _unopened_sources(text: str, opened: set[str]) -> list[str]:
             for material in materials + [s["content"] for s in supplements]
             for source in material["sources"]
         ]
+        sources.extend(c for c in candidates if c["access_scope"] != "metadata")
         missing = {s["url"] for s in sources if urldefrag(s["url"])[0] not in opened}
         if not all(isinstance(url, str) for url in missing):
             raise TypeError
