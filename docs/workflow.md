@@ -168,6 +168,35 @@ account/login or model transcript is persisted for accounting.
 
 ## Release checks
 
+After correcting a shared story-writer startup configuration failure, an
+operator may explicitly call `POST /v1/runs/{parent_id}/retry-stories` with the
+editor-role token and the existing `StartRunRequest` shape:
+`{"request_key":"one-explicit-story-restart","issue_date":"YYYY-MM-DD"}`.
+This creates at most **one new child per parent**, not a reset of the failed run.
+The same key retrieves that child, including after restart; another key or a
+retry of the child is rejected. The endpoint never sends mail.
+
+Eligibility is deliberately narrow: the parent must be terminal
+`no_publishable_content`, have no edition, frozen publication, approved body or
+signal, and have intact successful history/feed/discovery/selection/plan
+receipts. It accepts either a first-writer `configuration` failure or the older
+all-writer `writer:unavailable` launch-failure shape with one failed completed
+turn per writer and no token-usage report. Authentication, quota, timeout,
+incomplete/unknown turns and editorial-review rejection are not launch retries.
+Missing token reports remain **unknown consumption**, never zero.
+
+The child's SQLite `workflow_story_replays` receipt binds the source definition,
+inputs, selected tasks and every reused artifact hash. Local child attempts
+recheck those hashes and original input/map receipts immediately before reuse;
+they do not rerun feeds, discovery or ranking, nor repeat Notion side effects.
+All story writing and independent review run afresh. The original issue date,
+model, instructions, policy and recipe stay frozen; only the explicitly created
+child gets its own bounded start time. Parent attempts remain unchanged.
+The child's token footer includes parent and child invocation records exactly
+once, including missing/partial parent usage, so reused research cost is visible.
+The ordinary daily-send guard is unchanged; an explicitly authorized corrected
+test still uses the separate verification route below.
+
 An explicitly requested corrected-email test uses
 `POST /v1/editions/{id}/send-verification` with the same public
 `SendEditionRequest` body and send-role authentication. It requires a distinct

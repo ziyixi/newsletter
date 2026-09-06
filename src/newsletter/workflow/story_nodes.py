@@ -15,6 +15,7 @@ from newsletter.workflow.nodes import EditorialNodes
 from newsletter.workflow.publication import PublicationRepository, assemble
 from newsletter.workflow.sources import identity_keys
 from newsletter.workflow.story_editor import StoryEditor
+from newsletter.workflow.story_replay import REUSABLE_TYPES, StoryReplay
 
 
 def freeze_publication(
@@ -57,6 +58,8 @@ def _covered_history(candidates: list[Payload], pending: list[Payload]) -> list[
 
 class StoryNodes(EditorialNodes):
     async def execute(self, kind: str, ctx: NodeContext, path: Path) -> Any:
+        if "story_replay" in ctx.run_inputs and kind in REUSABLE_TYPES:
+            return StoryReplay(self.store).replay(ctx)
         publications = PublicationRepository(self.store)
         date = ctx.run_inputs["issue_date"]
         if kind == "history":

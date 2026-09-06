@@ -118,9 +118,42 @@ async def test_mock_checks_storage_real_package_resources_without_provider_calls
 
         patch.setattr(startup, "load_sdk", unexpected)
         report = await startup.preflight(settings)
-    assert report.checks == ("sqlite_wal_write_and_integrity", "proto_policy_template_cjk_png")
+    assert report.checks == (
+        "model_output_schema_subset",
+        "sqlite_wal_write_and_integrity",
+        "proto_policy_template_cjk_png",
+    )
     assert not report.limitations
     assert list(settings.data_dir.iterdir()) == []
+
+
+async def test_invalid_writer_schema_stops_startup_before_storage_or_provider_checks(
+    settings, monkeypatch
+):
+    from newsletter import schema_compat
+    from newsletter.errors import EditorError
+    from newsletter.workflow import story_editor
+
+    real_writer_schema = story_editor.story_writer_schema
+
+    def broken_writer(*args, **kwargs):
+        schema = real_writer_schema(*args, **kwargs)
+        schema["properties"]["supplemental_packets"]["uniqueItems"] = True
+        return schema
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("A bad schema must stop before other startup work")
+
+    monkeypatch.setattr(story_editor, "story_writer_schema", broken_writer)
+    monkeypatch.setattr(startup, "_check_storage", unexpected)
+    monkeypatch.setattr(startup, "_check_codex", unexpected)
+    with pytest.raises(startup.PreflightError) as error:
+        await startup.preflight(settings)
+    assert error.value.code == "MODEL_SCHEMA_CHECK_FAILED"
+    assert not settings.data_dir.exists()
+    # The independent catalog gate catches the same future regression offline.
+    with pytest.raises(EditorError, match="configuration"):
+        schema_compat.check_production_output_schemas()
 
 
 async def test_existing_database_is_checked_without_changing_records(settings):

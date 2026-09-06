@@ -30,6 +30,7 @@ from newsletter.types import Payload, Role
 from newsletter.worker import Worker
 from newsletter.workflow.definition import DefinitionError
 from newsletter.workflow.pipeline import DagPipeline, freeze_workflow
+from newsletter.workflow.story_replay import StoryReplay
 
 
 def create_app(
@@ -157,6 +158,18 @@ def create_app(
         run = runs.start(value, instructions, workflow_snapshot=workflow_snapshot)
         _worker(app).wake.set()
         return response(run, pb.CollectionRun, 202)
+
+    @app.post("/v1/runs/{run_id}/retry-stories", dependencies=[Depends(auth("editor"))])
+    async def retry_stories(run_id: str, request: Request) -> JSONResponse:
+        if start_worker and not task_healthy(app):
+            raise HTTPException(503, "Collection worker is unavailable")
+        pipeline = _worker(app).pipeline
+        if not isinstance(pipeline, DagPipeline):
+            raise HTTPException(409, "Story continuation requires the topic workflow")
+        value = await body(request, pb.StartRunRequest)
+        child = StoryReplay(_store(app)).start(run_id, value)
+        _worker(app).wake.set()
+        return response(pipeline.receipt(child["id"]), pb.CollectionRun, 202)
 
     @app.get("/v1/runs/{run_id}", dependencies=[Depends(auth("editor"))])
     async def get_run(run_id: str) -> JSONResponse:

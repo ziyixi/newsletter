@@ -875,13 +875,12 @@ def test_schema_text_and_chart_bounds_match_runtime_contract(rig):
     assert props["title"]["maxLength"] == 300 and props["limitations"]["maxLength"] == 4000
     paragraph = props["paragraphs"]["items"]["properties"]
     assert paragraph["text"]["maxLength"] == 8000
-    assert paragraph["citations"]["minItems"] == 1 and paragraph["citations"]["uniqueItems"]
+    assert paragraph["citations"]["minItems"] == 1
+    assert "uniqueItems" not in paragraph["citations"]
     reading = props["recommended_reading"]["anyOf"][0]["properties"]
     assert reading["reason"]["maxLength"] == 1000
-    assert (
-        reading["supporting_citations"]["maxItems"] == 31
-        and reading["supporting_citations"]["uniqueItems"]
-    )
+    assert reading["supporting_citations"]["maxItems"] == 31
+    assert "uniqueItems" not in reading["supporting_citations"]
     chart = props["chart"]["anyOf"][0]["properties"]
     assert chart["points"]["maxItems"] == 32
     assert all(

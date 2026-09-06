@@ -123,7 +123,7 @@ def _draft_schema(packets: Sequence[Payload]) -> Payload:
         citation
     )
     props["recommended_reading"]["anyOf"][0]["properties"]["supporting_citations"].update(
-        maxItems=31, uniqueItems=True
+        maxItems=31
     )
     return draft
 
@@ -170,5 +170,22 @@ def research_schema() -> Payload:
             "state": {"type": "string", "enum": ["collected", "no_findings"]},
             "note": {"type": "string"},
             "packets": {"type": "array", "maxItems": 2, "items": packet_body_schema()},
+        },
+    }
+
+
+def legacy_review_schema() -> Payload:
+    """Independent final-review envelope retained for immutable legacy graphs."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["passed", "findings"],
+        "properties": {
+            "passed": {"type": "boolean"},
+            "findings": {
+                "type": "array",
+                "maxItems": 24,
+                "items": {"type": "string", "maxLength": 2000},
+            },
         },
     }

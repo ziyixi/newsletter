@@ -75,9 +75,21 @@ class WorkflowState:
                 "WHERE parent_run_id=? OR child_run_id=?",
                 (scope_id, scope_id),
             ).fetchone()
-            scopes = tuple(family) if family is not None else (scope_id, scope_id)
+            scopes = set(family) if family is not None else {scope_id}
+            if self.store.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_story_replays'"
+            ).fetchone():
+                lineage = self.store.db.execute(
+                    "SELECT parent_run_id,child_run_id FROM workflow_story_replays "
+                    "WHERE parent_run_id=? OR child_run_id=?",
+                    (scope_id, scope_id),
+                ).fetchone()
+                if lineage is not None:
+                    scopes.update(lineage)
+            placeholders = ",".join("?" for _ in scopes)
             records = self.store.db.execute(
-                "SELECT body FROM model_usage WHERE scope_id IN (?,?) ORDER BY rowid", scopes
+                f"SELECT body FROM model_usage WHERE scope_id IN ({placeholders}) ORDER BY rowid",
+                sorted(scopes),
             ).fetchall()
         return summarize_usage([cast(UsageRecord, json.loads(row[0])) for row in records])
 

@@ -22,6 +22,7 @@ from newsletter import codex_runtime as runtime
 from newsletter.errors import EditorError as EditorError
 from newsletter.model_io import MAX_JSON_BYTES, load_json, prepare_workspace
 from newsletter.model_schema import editor_schema
+from newsletter.schema_compat import validate_output_schema
 from newsletter.types import Payload, ReviewResult
 from newsletter.usage import CodexUsage, codex_usage, observe_codex_usage
 
@@ -220,6 +221,15 @@ def _plain(value: object) -> Any:
 def _vendor_failure(value: object) -> EditorError:
     # Classification may inspect vendor text locally, but never returns or logs it.
     text = str(_plain(value)).lower()
+    # Request-schema rejection is deterministic configuration failure, not an
+    # unavailable topic. Check before broad authentication/quota string matching
+    # because a schema path/property name may itself contain those words.
+    if (
+        "invalid_json_schema" in text
+        or "invalid schema for response_format" in text
+        or "invalid schema for text.format" in text
+    ):
+        return EditorError("configuration")
     if any(
         x in text
         for x in (
@@ -492,6 +502,7 @@ class CodexEditor:
         approval_sources: ApprovalSources | None = None,
     ) -> tuple[str, set[str], bool]:
         """Isolated research with at most one provenance correction; no provider writes."""
+        validate_output_schema(schema)
         sources = _approval_snapshot(approval_sources)
         with codex_usage(self.model) as usage:
             return await self._execute(prompt, schema, instructions, workspace, usage, sources)

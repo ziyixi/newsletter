@@ -148,13 +148,11 @@ def story_writer_schema(
     }
     paragraph = props["paragraphs"]["items"]["properties"]
     paragraph["text"].update(minLength=1, maxLength=8000)
-    paragraph["citations"].update(
-        minItems=1, maxItems=32, uniqueItems=True, items=deepcopy(citation)
-    )
+    paragraph["citations"].update(minItems=1, maxItems=32, items=deepcopy(citation))
     reading = props["recommended_reading"]["properties"]
     reading["citation"] = deepcopy(citation)
     reading["reason"].update(minLength=1, maxLength=1000)
-    reading["supporting_citations"].update(maxItems=31, uniqueItems=True, items=deepcopy(citation))
+    reading["supporting_citations"].update(maxItems=31, items=deepcopy(citation))
     chart = props["chart"]["properties"]
     for name in ("question", "metric", "unit", "period", "caption", "alt_text"):
         chart[name].update(minLength=1, maxLength=1000)
@@ -163,7 +161,7 @@ def story_writer_schema(
     for variant in chart["points"]["items"]["anyOf"]:
         point = variant["properties"]
         point["label"].update(minLength=1, maxLength=120, pattern=r"^[^\u0000-\u001f\u007f]*$")
-        point["citations"].update(maxItems=32, uniqueItems=True, items=deepcopy(citation))
+        point["citations"].update(maxItems=32, items=deepcopy(citation))
         if "decimal_value" in point:
             point["citations"]["minItems"] = 1
             point["decimal_value"].update(

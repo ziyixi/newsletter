@@ -43,6 +43,7 @@ from newsletter.codex_runtime import (
     runtime_overrides,
 )
 from newsletter.rendering import load_template
+from newsletter.schema_compat import check_production_output_schemas
 from newsletter.settings import Settings
 from newsletter.todofy import validate_todofy_configuration
 from newsletter.types import Payload
@@ -361,6 +362,9 @@ async def preflight(
     stage = "CONFIGURATION"
     try:
         settings.validate()
+        stage = "MODEL_SCHEMA"
+        check_production_output_schemas()
+        checks.append("model_output_schema_subset")
         stage = "STORAGE"
         _check_storage(settings, store)
         checks.append("sqlite_wal_write_and_integrity")

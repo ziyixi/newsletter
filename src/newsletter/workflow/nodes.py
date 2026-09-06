@@ -21,7 +21,7 @@ from newsletter.contracts import (
 from newsletter.editor import CodexEditor, _result
 from newsletter.errors import EditorError
 from newsletter.model_io import load_json, prepare_workspace
-from newsletter.model_schema import editor_schema
+from newsletter.model_schema import editor_schema, legacy_review_schema
 from newsletter.store import Store
 from newsletter.types import Payload
 from newsletter.usage import usage_scope
@@ -480,19 +480,6 @@ class EditorialNodes:
         }
 
     async def review(self, ctx: NodeContext, path: Path, result: Payload) -> Payload:
-        schema: Payload = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["passed", "findings"],
-            "properties": {
-                "passed": {"type": "boolean"},
-                "findings": {
-                    "type": "array",
-                    "maxItems": 24,
-                    "items": {"type": "string", "maxLength": 2000},
-                },
-            },
-        }
         text, opened, searched = await self.editor.execute(
             canonical_json(
                 {
@@ -504,7 +491,7 @@ class EditorialNodes:
                     "prior_review_findings_untrusted": result.get("prior_review"),
                 }
             ),
-            schema,
+            legacy_review_schema(),
             ctx.run_inputs["policy"]["editorial.md"],
             path,
         )

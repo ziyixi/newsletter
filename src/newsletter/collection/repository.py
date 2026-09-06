@@ -40,53 +40,63 @@ class RunRepository:
         workflow_snapshot: Payload | None = None,
     ) -> Payload:
         with self.store.transaction():
-            if previous := self.existing(request):
-                return previous
-            count = self.store.db.execute(
-                "SELECT COUNT(*) FROM collection_runs WHERE state IN ('queued','collecting','projecting','editing')"
-            ).fetchone()[0]
-            if count >= self.store.max_pending_jobs:
-                raise StoreError("busy", "Collection queue is full")
-            snapshot = [item.snapshot() for item in instructions]
-            at = now()
-            run: Payload = {
-                "id": str(uuid4()),
-                "issue_date": request["issue_date"],
-                "state": "queued",
-                "instructions_hash": content_hash(snapshot),
-                "directions": [
-                    {
-                        "id": item.id,
-                        "instruction_hash": item.digest,
-                        "state": "queued",
-                        "packet_ids": [],
-                        "note": "",
-                    }
-                    for item in instructions
-                ],
-                "edition_id": "",
-                "error_code": "",
-                "created_at": at,
-                "updated_at": at,
-                "is_fixture": self.store.mode == "mock",
-            }
+            return self._start(request, instructions, workflow_snapshot=workflow_snapshot)
+
+    def _start(
+        self,
+        request: Payload,
+        instructions: list[Instruction],
+        *,
+        workflow_snapshot: Payload | None = None,
+    ) -> Payload:
+        """Internal transaction-owned creation, also used by audited continuations."""
+        if previous := self.existing(request):
+            return previous
+        count = self.store.db.execute(
+            "SELECT COUNT(*) FROM collection_runs WHERE state IN ('queued','collecting','projecting','editing')"
+        ).fetchone()[0]
+        if count >= self.store.max_pending_jobs:
+            raise StoreError("busy", "Collection queue is full")
+        snapshot = [item.snapshot() for item in instructions]
+        at = now()
+        run: Payload = {
+            "id": str(uuid4()),
+            "issue_date": request["issue_date"],
+            "state": "queued",
+            "instructions_hash": content_hash(snapshot),
+            "directions": [
+                {
+                    "id": item.id,
+                    "instruction_hash": item.digest,
+                    "state": "queued",
+                    "packet_ids": [],
+                    "note": "",
+                }
+                for item in instructions
+            ],
+            "edition_id": "",
+            "error_code": "",
+            "created_at": at,
+            "updated_at": at,
+            "is_fixture": self.store.mode == "mock",
+        }
+        self.store.db.execute(
+            "INSERT INTO collection_runs VALUES (?,?,?,?,?,?)",
+            (
+                run["id"],
+                request["request_key"],
+                content_hash(request),
+                run["state"],
+                canonical_json(run),
+                canonical_json(snapshot),
+            ),
+        )
+        if workflow_snapshot is not None:
             self.store.db.execute(
-                "INSERT INTO collection_runs VALUES (?,?,?,?,?,?)",
-                (
-                    run["id"],
-                    request["request_key"],
-                    content_hash(request),
-                    run["state"],
-                    canonical_json(run),
-                    canonical_json(snapshot),
-                ),
+                "INSERT INTO collection_workflow_snapshots VALUES(?,?)",
+                (run["id"], canonical_json(workflow_snapshot)),
             )
-            if workflow_snapshot is not None:
-                self.store.db.execute(
-                    "INSERT INTO collection_workflow_snapshots VALUES(?,?)",
-                    (run["id"], canonical_json(workflow_snapshot)),
-                )
-            return run
+        return run
 
     def workflow_snapshot(self, run_id: str) -> Payload | None:
         with self.store.lock:
