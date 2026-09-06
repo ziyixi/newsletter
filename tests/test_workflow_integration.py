@@ -32,6 +32,9 @@ from newsletter.workflow.pipeline import DagPipeline, freeze_workflow
 from newsletter.workflow.state import WorkflowState
 
 ISSUE_DATE = "2026-09-06"
+DISCOVERY_COUNT = 8
+# Eight discovery calls; the existing eight downstream model calls are unchanged.
+BASE_MODEL_INVOCATIONS = DISCOVERY_COUNT + 8
 LEGACY_RECIPE = Path(str(files("newsletter").joinpath("workflows/legacy-daily.yaml")))
 MODEL_KINDS = {
     "discovery",
@@ -55,7 +58,7 @@ def candidate(direction):
         "event_key": "",
         "published_at": ISSUE_DATE,
         "summary": "离线构造的候选，不是真实研究。",
-        "why_now": "仅检验六方向发现、选题和深读之间的数据流。",
+        "why_now": "仅检验八方向发现、选题和深读之间的数据流。",
         "access_scope": "metadata",
         "provenance": "fixture-handler",
     }
@@ -291,7 +294,7 @@ def rig(tmp_path, monkeypatch, request):
     instructions, snapshot = freeze_workflow(
         Settings(data_dir=tmp_path, workflow_file=LEGACY_RECIPE), rig.pipeline.state, ISSUE_DATE
     )
-    assert len(instructions) == 6
+    assert len(instructions) == DISCOVERY_COUNT
     rig.current_recipe = rig.pipeline.recipe_path
     if getattr(request, "param", None) == "legacy":
         snapshot["definition"]["nodes"] = [
@@ -366,7 +369,7 @@ async def legacy_hold(rig):
     rig.review_passed = False
     held = await drain(rig)
     assert held["state"] == "blocked" and held["error_code"] == "editorial_review_failed"
-    assert held["usage"]["invocations"] == 14
+    assert held["usage"]["invocations"] == BASE_MODEL_INVOCATIONS
     assert rig.pipeline.state.repair(rig.run["id"]) is None
     assert not rig.tail_model_calls
     return held
@@ -378,7 +381,7 @@ async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_rec
     finished = await drain(rig)
     assert finished["state"] == "ready", finished
     assert finished["workflow"]["state"] == "succeeded"
-    assert finished["workflow"]["candidate_count"] == 6
+    assert finished["workflow"]["candidate_count"] == DISCOVERY_COUNT
     assert finished["workflow"]["research_count"] == 3
     states = {node["id"]: node["state"] for node in finished["workflow"]["nodes"]}
     assert states["revision"] == states["final_review"] == "skipped"
@@ -395,11 +398,11 @@ async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_rec
     assert "https://example.org/gap" in edition["rendered"]["text"]
     assert "MOCK · 用量统计仅为流程演示" in edition["rendered"]["html"]
     assert "MOCK · 用量统计仅为流程演示" in edition["rendered"]["text"]
-    # 6 discovery + selection + 3 research + composition + gap + final + review.
-    assert finished["usage"]["invocations"] == 14
-    assert finished["usage"]["usage"]["total_tokens"] == 14 * 120
+    # 8 discovery + selection + 3 research + composition + gap + final + review.
+    assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS
+    assert finished["usage"]["usage"]["total_tokens"] == BASE_MODEL_INVOCATIONS * 120
     assert not finished["usage"]["partial"]
-    assert int(edition["usage"]["usage"]["total_tokens"]) == 14 * 120
+    assert int(edition["usage"]["usage"]["total_tokens"]) == BASE_MODEL_INVOCATIONS * 120
     assert len(rig.notion.calls) == 4  # Three research packets plus optional candidate index.
     assert_no_mail(rig)
 
@@ -445,7 +448,7 @@ async def test_restart_after_completed_research_preserves_artifacts_and_does_not
     assert all(attempt in attempts for attempt in before_attempts)
     assert all(count == 1 for count in rig.calls.values())
     assert len(rig.notion.calls) == len(set(rig.notion.calls)) == 4
-    assert receipt(rig)["usage"]["invocations"] == 14
+    assert receipt(rig)["usage"]["invocations"] == BASE_MODEL_INVOCATIONS
     assert_no_mail(rig)
 
 
@@ -460,8 +463,8 @@ async def test_independent_review_hold_blocks_worker_render_and_send(rig):
     assert edition["state"] == "blocked" and not edition["review"]["passed"]
     assert not edition.get("rendered")
     assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
-    assert finished["usage"]["invocations"] == 16
-    assert finished["usage"]["usage"]["total_tokens"] == 16 * 120
+    assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS + 2
+    assert finished["usage"]["usage"]["total_tokens"] == (BASE_MODEL_INVOCATIONS + 2) * 120
     assert rig.pipeline.state.repair(rig.run["id"]) is None
     assert await rig.worker.step() is False
     with pytest.raises(StoreError):
@@ -486,8 +489,8 @@ async def test_initial_hold_revises_once_then_independently_reviews_before_publi
     assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
     assert rig.tail_model_calls[1][1]["draft_untrusted"] == revised["draft"]
     assert rig.tail_model_calls[1][1]["prior_review_findings_untrusted"] == original["review"]
-    assert finished["usage"]["invocations"] == 16
-    assert int(edition["usage"]["usage"]["total_tokens"]) == 16 * 120
+    assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS + 2
+    assert int(edition["usage"]["usage"]["total_tokens"]) == (BASE_MODEL_INVOCATIONS + 2) * 120
     assert len(rig.notion.calls) == 4
     assert rig.pipeline.state.repair(rig.run["id"]) is None
     assert await rig.worker.step() is False
@@ -564,8 +567,8 @@ async def test_legacy_hold_upgrade_preserves_original_records_and_combines_child
     assert edition["packet_ids"] == original_edition["packet_ids"]
     assert rig.pipeline.state.edition(edition["id"])["run_id"] == child
     assert finished["usage"] == rig.pipeline.state.usage(child)
-    assert finished["usage"]["invocations"] == 16
-    assert int(edition["usage"]["usage"]["total_tokens"]) == 16 * 120
+    assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS + 2
+    assert int(edition["usage"]["usage"]["total_tokens"]) == (BASE_MODEL_INVOCATIONS + 2) * 120
     continuation = finished["workflow"]["continuations"][0]
     assert continuation["state"] == "succeeded"
     assert [node["type"] for node in continuation["nodes"]] == ["revision", "final_review"]
@@ -586,7 +589,7 @@ async def test_legacy_repair_final_hold_is_terminal_and_cannot_create_a_third_ro
     assert finished["state"] == "blocked" and finished["error_code"] == "editorial_review_failed"
     assert finished["edition_id"] != held["edition_id"]
     assert finished["workflow"]["continuations"][0]["state"] == "succeeded"
-    assert finished["usage"]["invocations"] == 16
+    assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS + 2
     assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
     assert await rig.worker.step() is False
     for identifier in (held["edition_id"], finished["edition_id"]):
@@ -641,7 +644,7 @@ async def test_completed_repair_recovers_local_publication_after_deadline_withou
     finished = await drain(rig)
     assert finished["state"] == "ready", finished
     assert rig.tail_model_calls == calls and rig.notion.calls == projections
-    assert finished["usage"]["invocations"] == 16
+    assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS + 2
     assert_no_mail(rig)
 
 
@@ -667,7 +670,7 @@ async def test_persisted_repair_receipt_recovers_after_deadline_but_cannot_start
     assert finished["state"] == "blocked" and finished["error_code"] == "workflow_deadline"
     assert finished["edition_id"] == held["edition_id"]
     assert rig.pipeline.state.repair(rig.run["id"]) == repair
-    assert finished["usage"]["invocations"] == 14
+    assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS
     assert not rig.tail_model_calls
     assert_no_mail(rig)
 
@@ -713,7 +716,7 @@ async def test_terminal_repair_attempt_recovers_original_failure_before_deadline
     assert finished["state"] == "blocked"
     assert finished["error_code"] == "workflow_" + failure
     assert attempted == [failure]  # Neither failure nor uncertain cancellation is retried.
-    assert finished["usage"]["invocations"] == 15
+    assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS + 1
     assert_no_mail(rig)
 
 

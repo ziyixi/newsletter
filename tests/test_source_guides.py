@@ -126,7 +126,7 @@ def test_packaged_guide_has_official_entrances_and_an_explicit_new_team_exceptio
     assert "https://openreview.net/" in source
     assert "新团队" in source and "白名单" in source
     assert "contribution" in source and "evidence_urls" in source
-    assert len(load_discovery_instructions(directory)) == 6
+    assert len(load_discovery_instructions(directory)) == 8
     project = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
     assert (
         "instructions/discovery/_sources/*.md"

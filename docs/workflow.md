@@ -3,14 +3,14 @@
 ## Topic-first publication
 
 Live deployments default to `NEWSLETTER_WORKFLOW=dag` and the packaged
-`src/newsletter/workflows/daily.yaml` (`daily-topics`). Six discovery directions
+`src/newsletter/workflows/daily.yaml` (`daily-topics`). Eight discovery directions
 remain under `instructions/discovery/`. The service, not an app routine or a
 human watching logs, performs the entire bounded preparation flow:
 
 ```text
 public history + unresolved topics + metadata feeds
                   ↓
-six-direction discovery → deduplicate → select up to 8 topics
+eight-direction discovery → deduplicate → select up to 8 topics
                   ↓
 freeze complete topic plan
                   ↓
@@ -25,6 +25,20 @@ private Todofy → render + frozen hash → protected external send
 
 All brief attempts precede deep attempts. Selection compares the supplied pool
 without another research pass; discovery collects bounded leads, not full papers.
+
+The directions are AI/ML, cross-disciplinary science, world events, economy,
+health, general CS/technology, search/advertising/recommendation systems
+(`07-search-ads-recs`), and LLM architectures/training-inference mechanisms
+(`08-llm-architectures`). The last two only broaden retrieval: every direction
+still returns at most five leads; the shared candidate pool remains capped at 30,
+selection at eight topics, deeper investigation at four, and displayed deep pieces
+at two. No extra selection/review pass, final output slot, or larger time budget
+is added. The specialized directions must use the same DOI/arXiv/event identity
+as a duplicate from a broader direction, not multiply one paper across workers.
+Discovery leads are interleaved round-robin in frozen direction order before
+the existing shared deduplication, history filtering and 30-candidate cap. This
+keeps later directions from being crowded out by earlier lists; it does not
+guarantee a candidate from every direction will be selected or published.
 
 ## Source-first discovery and reader-first writing
 
@@ -55,6 +69,30 @@ question rather than merely reproduce available numbers. These writing goals
 do not add a publication veto, model loop, or delay to the existing safe tail.
 See [source-first acceptance](../evals/source-first-acceptance.md) for the small
 real-content evaluation, distinct from offline contract and delivery tests.
+
+### Standalone chart cards
+
+An optional chart is a small, self-contained explanation, not a figure that
+requires the article. The existing fields jointly carry its subject and
+comparison question (`question`), measured outcome and readable category labels
+(`metric`, `points`), unit and actual data/experiment period (`unit`, `period`),
+comparison baseline, scale interpretation and one main insight (`caption`),
+image-independent comparison/trend (`alt_text`) and the relevant evidence boundary
+(`limitations`). They need not repeat the same text in every field.
+
+For example, an effect-size unit alone does not explain what was compared, which
+direction favors which group, or whether the result concerns a laboratory measure
+instead of a real-world outcome. Those explanations must come from the available
+sources; the writer must not invent thresholds, treat an effect size as a percent,
+or assume a larger value is better. Available numbers alone do not justify a chart.
+
+The existing independent reviewer assesses the complete chart without relying
+on the body for missing context. A materially ambiguous or misleading comparison
+can remove the optional chart, never an otherwise independent body; a wording
+preference adds no veto. No schema, model pass, lexical filter or chart-repair
+loop is added. Offline prompt-routing and component-isolation tests do not prove
+model readability: visual acceptance should also hide the article and check
+whether the image/card and its text alternative explain the comparison alone.
 
 ## Briefs and deeper explanations
 
@@ -114,9 +152,12 @@ remain hard stops. Daily delivery is more resilient, not an unconditional
 guarantee during a total source/account/mail outage.
 
 Use the external `newsletter-trigger --send --timeout 7200` for collection,
-render and delivery headroom. Cron stays external at 15:00 UTC daily, and the
-service never schedules its own next run. The research deadline is relative to
-the trigger, not a promise that the email arrives precisely at 15:00.
+render and delivery headroom. Deployment cron stays external at 07:00
+`America/Los_Angeles` daily, automatically following daylight saving time. This
+targets delivery before 09:30 local time: the 90-minute content budget nominally
+ends at 08:30 and the two-hour client wait at 09:00. The service never schedules
+its own next run; provider or inbox failures can still miss the target, and
+the margin does not authorize blind retries or extend these unchanged deadlines.
 
 ## Durable state and the Notion mirror
 

@@ -13,7 +13,7 @@ from typing import cast
 from jinja2 import Environment, StrictUndefined, Template, select_autoescape
 from ziyixi_protos.newsletter import editorial_pb2 as pb
 
-from .charts import render_chart_png
+from .charts import chart_metadata, render_chart_png
 from .contracts import (
     parse_message,
     to_dict,
@@ -25,7 +25,7 @@ from .contracts import (
 from .types import Payload, RenderResult
 from .usage import UsageSummary, normalize_usage_summary, usage_footer
 
-RENDERER_VERSION = "python-editorial/5"
+RENDERER_VERSION = "python-editorial/6"
 CHART_CID = "cid:newsletter-chart"
 _KIND_LABELS = {
     "world": "世界简报",
@@ -188,6 +188,15 @@ def render_edition(
                 for p in draft["chart"]["points"]
             ],
         }
+        chart["metadata"] = chart_metadata(chart)
+        chart_references = {
+            ref["number"]: ref for row in chart["rows"] for ref in row["references"]
+        }
+        chart["source_note"] = "来源：" + "；".join(
+            f"[{ref['number']}] {ref['title']}"
+            + (f" · {ref['published_at']}" if ref["published_at"] else "")
+            for ref in chart_references.values()
+        )
         chart_bytes = render_chart_png(chart, fixture)
     reading = None
     if draft.get("recommended_reading"):
@@ -238,8 +247,9 @@ def render_edition(
         text_lines.extend(
             [
                 f"数据视角｜{chart['question']}",
-                f"{chart['metric']} · 单位：{chart['unit']} · {chart['period']}",
                 chart["caption"],
+                chart["metadata"],
+                chart["source_note"],
             ]
         )
         text_lines.append(f"图表说明：{chart['alt_text']}")

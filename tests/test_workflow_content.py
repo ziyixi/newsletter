@@ -10,6 +10,7 @@ from ziyixi_protos.newsletter import editorial_pb2 as pb
 from newsletter.collection.instructions import Instruction, load_instructions
 from newsletter.contracts import ContractError, content_hash, parse_message, to_dict
 from newsletter.errors import EditorError
+from newsletter.settings import Settings
 from newsletter.store import Store
 from newsletter.workflow.content import (
     _DISCOVERY,
@@ -508,7 +509,7 @@ async def test_extra_private_fields_on_candidates_are_rejected_before_model(tmp_
     assert not engine.calls
 
 
-def test_schema_agrees_with_shared_proto_and_directions_are_six_separate_files():
+def test_schema_agrees_with_shared_proto_and_directions_are_eight_separate_files():
     assert set(CANDIDATE_FIELDS) == set(pb.Candidate.DESCRIPTOR.fields_by_name) - {
         "id",
         "direction",
@@ -531,9 +532,64 @@ def test_schema_agrees_with_shared_proto_and_directions_are_six_separate_files()
         "04-economy",
         "05-health",
         "06-technology",
+        "07-search-ads-recs",
+        "08-llm-architectures",
     ]
     assert all("最多5" in d.text for d in directions)
     assert len(load_instructions(directory.parent)) == 3
+
+
+@pytest.mark.parametrize("identifier", ["07-search-ads-recs", "08-llm-architectures"])
+def test_specialized_discovery_instructions_keep_source_and_dedup_boundaries(identifier):
+    directory = Path(__file__).resolve().parents[1] / "src/newsletter/instructions/discovery"
+    directions = {item.id: item for item in load_instructions(directory)}
+    text = directions[identifier].text
+    for required in (
+        "最多5",
+        "不凑数",
+        "近两周",
+        "六周",
+        "首发日期",
+        "未知留空",
+        "history",
+        "metadata_seeds",
+        "DOI",
+        "arXiv",
+        "event_key",
+        "01-ai-ml",
+        "search",
+        "open",
+        *CANDIDATE_RESEARCH_FIELDS,
+        "evidence_urls",
+    ):
+        assert required in text
+    assert directions[identifier].digest == content_hash(text)
+    # Prompt/packaging contracts only, not a claim about live retrieval quality.
+
+
+def test_eight_retrieval_directions_do_not_expand_selection_output_or_model_timeouts():
+    root = Path(__file__).resolve().parents[1]
+    definition = load_definition(root / "src/newsletter/workflows/daily.yaml")
+    roles = {node.type: node for node in definition.nodes}
+    assert roles["discovery"].map.max_items == 8
+    assert roles["discovery"].params == {"timeout_seconds": 150}
+    assert roles["api_feed"].params == {"timeout_seconds": 45}
+    assert roles["deduplicate"].params == {"max_candidates": 30}
+    assert roles["selection"].params == {"max_tasks": 8, "timeout_seconds": 150}
+    assert roles["story_plan"].params == {"max_deep": 4}
+    assert roles["story_brief"].params == {"timeout_seconds": 300}
+    assert roles["story_deep"].params == {"timeout_seconds": 420}
+    assert len([node for node in definition.nodes if node.type == "selection"]) == 1
+    assert Settings().workflow_timeout_seconds == 5400
+
+
+def test_one_paper_from_broad_and_specialized_retrievers_is_not_three_candidates():
+    records = [
+        parse_discovery(discovered(candidate()), {URL}, True, direction, DAY).candidates[0]
+        for direction in ("01-ai-ml", "07-search-ads-recs", "08-llm-architectures")
+    ]
+    assert len({record["id"] for record in records}) == 1
+    assert len(deduplicate_candidates(records)) == 1
 
 
 def test_legacy_candidate_view_and_discovery_do_not_rewrite_old_hashes():

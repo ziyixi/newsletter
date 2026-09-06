@@ -84,8 +84,27 @@ def _tick(value: Decimal) -> str:
     return format(value, ".2E")
 
 
+def chart_metadata(chart: Payload) -> str:
+    """Describe the measure without repeating a unit already written in its name.
+
+    This is typography only. In particular, the renderer cannot infer whether a
+    large effect, percentage or score is good, or invent a comparison baseline.
+    """
+    metric, unit = chart["metric"].strip(), chart["unit"].strip()
+    included = metric == unit or any(
+        metric.endswith(f"{left}{unit}{right}") for left, right in (("（", "）"), ("(", ")"))
+    )
+    measure = metric if included else f"{metric}（{unit}）"
+    return f"指标：{measure} · 范围：{chart['period']}"
+
+
 def render_chart_png(chart: Payload, is_fixture: bool) -> bytes:
-    """Render a single-dimensional chart; missing points never become zero."""
+    """Render a self-contained figure; preserve the supplied explanation verbatim.
+
+    Editorial context belongs in the image, not only in the surrounding email.
+    All text is measured before allocating the canvas; long supplied text grows
+    it rather than being clipped or silently shortened. No model or URL is used.
+    """
     points = chart["points"]
     if not 1 <= len(points) <= 32:
         raise ValueError("CHART_SIZE_UNSUPPORTED: chart requires 1–32 points")
@@ -94,20 +113,32 @@ def render_chart_png(chart: Payload, is_fixture: bool) -> bytes:
     if not observed or not all(v.is_finite() for v in observed):
         raise ValueError("CHART_VALUES_INVALID: at least one finite value is required")
     width = 1280
-    title_font = load_font(38)
+    title_font, caption_font, detail_font = load_font(46), load_font(36), load_font(28)
     label_font, axis_font = (
         (load_font(44), load_font(40)) if chart["kind"] == "bar" else (load_font(30), load_font(26))
     )
     image = Image.new("RGB", (width, 100), _PAPER)
     draw = ImageDraw.Draw(image)
-    title_lines = _wrap(
-        draw, f"{chart['metric']} · {chart['unit']} · {chart['period']}", title_font, 1160
+    title_lines = _wrap(draw, chart.get("question") or chart["metric"], title_font, 1160)
+    caption_lines = (
+        _wrap(draw, chart["caption"], caption_font, 1160) if chart.get("caption") else []
     )
-    header = 62 + len(title_lines) * 48
+    metadata_lines = _wrap(draw, chart_metadata(chart), detail_font, 1160)
+    header = 34 + len(title_lines) * (title_font.size + 8) + 18
+    if caption_lines:
+        header += len(caption_lines) * (caption_font.size + 8) + 18
+    header += len(metadata_lines) * (detail_font.size + 8) + 28
+    limitations = chart.get("limitations", [])
+    if isinstance(limitations, str):
+        limitations = [limitations] if limitations else []
+    notes = [f"边界：{value}" for value in limitations]
+    if chart.get("source_note"):
+        notes.append(chart["source_note"])
+    footer_lines = [_wrap(draw, note, detail_font, 1160) for note in notes]
     if chart["kind"] == "bar":
         label_lines = [_wrap(draw, p["label"], label_font, 274) for p in points]
         row_heights = [max(100, len(lines) * (label_font.size + 8) + 22) for lines in label_lines]
-        height = header + sum(row_heights) + 140
+        plot_end = header + sum(row_heights) + 100
     elif chart["kind"] == "line":
         label_count = min(6, len(points))
         label_indices = {
@@ -118,13 +149,24 @@ def render_chart_png(chart: Payload, is_fixture: bool) -> bytes:
             index: _wrap(draw, points[index]["label"], axis_font, 145) for index in label_indices
         }
         label_height = max(len(lines) for lines in line_labels.values()) * (axis_font.size + 4)
-        height = header + max(580, 380 + 53 + label_height + 130)
+        plot_end = header + max(500, 380 + 53 + label_height + 30)
     else:
         raise ValueError("CHART_KIND_UNSUPPORTED")
+    convention = (
+        "条形从零开始；缺失不作零值。"
+        if chart["kind"] == "bar"
+        else "纵轴按数值范围标注；缺失值断线。"
+    )
+    footer_lines.insert(0, _wrap(draw, convention, detail_font, 1160))
+    height = plot_end + 20 + sum(len(lines) * (detail_font.size + 8) + 12 for lines in footer_lines)
+    height += 76 if is_fixture else 28
     # All font sizes passed to load_font are integers; Pillow annotates size as float.
     image = Image.new("RGB", (width, cast(int, height)), _PAPER)
     draw = ImageDraw.Draw(image)
-    _lines(draw, title_lines, (60, 34), title_font)
+    y = _lines(draw, title_lines, (60, 34), title_font) + 18
+    if caption_lines:
+        y = _lines(draw, caption_lines, (60, y), caption_font) + 18
+    _lines(draw, metadata_lines, (60, y), detail_font, _MUTED)
     with localcontext() as context:
         context.prec = 100
         if chart["kind"] == "bar":
@@ -150,7 +192,7 @@ def render_chart_png(chart: Payload, is_fixture: bool) -> bytes:
                     fill=_MUTED,
                 )
             draw.line((baseline, header, baseline, bottom), fill=_INK, width=3)
-            y: float = header
+            y = header
             for point, observed_value, labels, row_height in zip(
                 points, values, label_lines, row_heights
             ):
@@ -226,12 +268,10 @@ def render_chart_png(chart: Payload, is_fixture: bool) -> bytes:
                         _MUTED,
                         4,
                     )
-            draw.text(
-                (60, height - 88),
-                "纵轴按数值范围标注；缺失值断线。完整原始值见下方数据表。",
-                font=axis_font,
-                fill=_MUTED,
-            )
+    y = plot_end + 20
+    draw.line((60, y - 10, width - 60, y - 10), fill="#e5e8df", width=2)
+    for lines in footer_lines:
+        y = _lines(draw, lines, (60, y), detail_font, _MUTED) + 12
     if is_fixture:
         label = "模拟数据 · 试刊样张"
         draw.text(

@@ -64,6 +64,20 @@ limitations只写会改变读者理解的关键边界，紧邻受影响结论；
 signal仍只确认最小事件，不强行铺开背景；repair只在原修订范围内改善解释，不扩展为新一轮采编。
 这些是写作目标，不是新增字数、术语或背景的审校阻断条件，也不能把低价值选题改写成重大进展。
 """
+_CHART_GUIDANCE = """只针对可选chart：把它作为不看正文也能读懂的小报道，不是正文的配图注脚。
+question是简短独立图题，点明研究/事件对象、具体场景和比较问题；不用“哪一层改善最大”等脱离主题的标题。
+优先用普通语言说明对象在做什么，模型名、组名不能替代背景；不要把所有实验细节挤进长图题。
+metric说明测的是什么；points.label用读者能懂的组别/维度名，不只列缩写。比较基线是谁必须在图内说清。
+unit保留准确单位，period交代数据或实验时期；未报告的时期如实说明，不拿发表日期冒充。
+caption先说一个主要洞见，再用短句解释尺度怎么读：数字大小/正负相对什么、意味着什么；不重复图题和指标名。
+如用Cohen's d等效应量，依据已读材料解释它是相对哪组的标准化差异、零点及方向，不把它当百分比或实际收益；
+不自行加入“大/中/小效果”等统计阈值，也不默认数越大越好。尺度解释与比较基线同样需要已有来源支持。
+alt_text用简短文字独立交代对象、比较和关键趋势，图片看不到时仍有意义，不只写“柱状图”或“见正文”。
+limitations只留影响这张图结论的关键边界，例如测的是录像理解而非实际驾驶安全；不堆审校过程。
+这些信息共同组成一张图卡，不必每字段重复；必要背景和术语在图内短释，不能让读者去正文找定义。
+样本次数、作者阈值或AI数值表格不自动构成图表价值；已有材料不足以支持自足比较就chart=null。
+不造数据、对照组、尺度或因果含义，不为图增加模型轮次；图被弃用仍保留独立成立的正文。
+"""
 
 
 class StoryOutputError(EditorError):
@@ -555,6 +569,7 @@ class StoryEditor:
                 else "为一个选题制作可独立阅读的中文报道。brief模式正文最多2段，解释已证实的变化和为何重要；同时另写最多1段signal，只确认事件本身及尚待核实的范围，不能靠免责声明发布未经证实事件。deep模式主动搜索补查、比较证据、解释机制与局限，按解释需要分段，最多16段；复用独立已核实brief但不重写它作为fallback，signal=null。"
             ),
             "writing_guidance": _WRITING_GUIDANCE,
+            "chart_guidance": _CHART_GUIDANCE,
             "packets_untrusted": packets,
             "available_citations": [
                 ref
@@ -693,6 +708,14 @@ class StoryEditor:
                     "issue_date": context["issue_date"],
                     "content_untrusted": value["content"],
                     "signal_untrusted": value["signal"],
+                    **(
+                        {
+                            "chart_review_rules": _CHART_GUIDANCE
+                            + "独立审chart时先遮住正文，连同question/metric/unit/period/caption/alt_text/limitations和points完整核对：陌生读者能否知道对象、基线、尺度、主要洞见及边界。不能只核对数字与来源相等。缺失或错误造成比较无法确定、结论误导时，只将chart标blocked并给具体原因；单纯措辞偏好留findings，不新增正文阻断、修图轮次或整题重跑。不存在的图仍not_present。"
+                        }
+                        if value["content"] and value["content"].get("chart")
+                        else {}
+                    ),
                     "packets_untrusted": value["packets"],
                     "available_citations": list(_packet_sources(value["packets"])),
                     "prior_verified_brief_untrusted": prior,

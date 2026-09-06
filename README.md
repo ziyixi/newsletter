@@ -6,7 +6,7 @@
 外部 scheduler / HTTP caller
           │ POST /v1/runs（日期 + 幂等键）
           ▼
-冻结 YAML/指令/日期 → 六方向发现 + API/RSS + 历史观察
+冻结 YAML/指令/日期 → 八方向发现 + API/RSS + 历史观察
           │
 去重候选池 → 全局选题 → 每题简版独立核验/保存 → 重点题独立深读/核验
           │                                       │
@@ -22,7 +22,7 @@ SQLite证据/已审版本 → Notion后台镜像        已审完整版本确定
 ## 修改你希望收集什么
 
 Live 默认使用 [可编辑 DAG](src/newsletter/workflows/daily.yaml) 和
-[六个发现方向](src/newsletter/instructions/discovery/)。流程、预算和依赖写 YAML；
+[八个发现方向](src/newsletter/instructions/discovery/)。流程、预算和依赖写 YAML；
 题材要求写 Markdown；数据契约仍在公共 proto。详细说明见 [DAG 与用量](docs/workflow.md)。
 
 默认最多30条候选，选最多8个问题（可配置到12）；每题先核实简版，再对最多4题深入调查、展示最多2篇深读；

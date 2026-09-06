@@ -15,6 +15,7 @@ from newsletter.editor import CodexEditor
 from newsletter.errors import EditorError
 from newsletter.workflow.publication import validate_result
 from newsletter.workflow.story_editor import (
+    _CHART_GUIDANCE,
     _WRITING_GUIDANCE,
     COMPONENTS,
     StoryEditor,
@@ -1078,6 +1079,72 @@ async def test_meaningful_same_source_chart_can_be_prepared_and_approved_in_brie
     validate_result(result)
 
 
+@pytest.mark.parametrize("mode", ["brief", "deep"])
+async def test_standalone_chart_guidance_reaches_author_and_independent_chart_review(rig, mode):
+    """Prompt plumbing only; a simulated approval does not prove chart clarity."""
+    content = story(chart=True)
+    content["chart"]["unit"] = "Cohen's d（离线虚构比较）"
+    rig.replies = [reply(writer(content)), reply(review(chart="approved"))]
+    result = await rig.run(mode=mode, policy=reader_policy())
+    author, reviewer = rig.calls
+    assert author["prompt"]["chart_guidance"] == _CHART_GUIDANCE
+    assert "独立图题" in _CHART_GUIDANCE
+    assert "模型名、组名不能替代背景" in _CHART_GUIDANCE
+    assert "比较基线是谁必须在图内说清" in _CHART_GUIDANCE
+    assert "数据或实验时期" in _CHART_GUIDANCE
+    assert "caption先说一个主要洞见" in _CHART_GUIDANCE
+    assert "零点及方向，不把它当百分比" in _CHART_GUIDANCE
+    assert "不自行加入“大/中/小效果”等统计阈值" in _CHART_GUIDANCE
+    assert "图片看不到时仍有意义" in _CHART_GUIDANCE
+    assert "limitations只留影响这张图结论的关键边界" in _CHART_GUIDANCE
+    assert "已有材料不足以支持自足比较就chart=null" in _CHART_GUIDANCE
+    review_rules = reviewer["prompt"]["chart_review_rules"]
+    assert review_rules.startswith(_CHART_GUIDANCE)
+    assert "先遮住正文" in review_rules and "不能只核对数字与来源相等" in review_rules
+    assert "只将chart标blocked" in review_rules
+    assert "单纯措辞偏好留findings" in review_rules
+    assert "图卡应脱离正文自足" in author["instructions"]
+    # Statistical labels are not lexical vetoes: source-backed review decides.
+    assert result["content"] == content and len(rig.calls) == 2
+    validate_result(result)
+
+
+async def test_ambiguous_chart_review_discards_only_chart_without_another_model_round(rig):
+    """Reproduce the opaque-title shape, with an explicitly simulated review finding."""
+    content = story(chart=True)
+    content["chart"].update(
+        question="哪一层情境意识改善最大",
+        metric="Cohen's d",
+        unit="Cohen's d",
+        caption="离线虚构说明，仅描述哪根柱最高。",
+    )
+    issue = {
+        "component": "chart",
+        "claim": content["chart"]["question"],
+        "reason": "离线模拟：图中缺少对象、比较基线及尺度方向，正文不能替图补全。",
+        "evidence": ["packet/source"],
+        "action": "remove",
+    }
+    rig.replies = [reply(writer(content)), reply(review(chart="blocked", issues=[issue]))]
+    result = await rig.run()
+    assert result["content"] == body_content(content) and len(rig.calls) == 2
+    assert result["reason"] == "approved"
+    assert result["issues"][0]["component"] == "chart"
+    assert result["issues"][0]["reason"] == issue["reason"]
+    validate_result(result)
+
+
+async def test_absent_chart_adds_no_chart_review_instruction_or_extra_model_round(rig):
+    rig.replies = [reply(writer(story())), reply(review())]
+    result = await rig.run()
+    assert result["content"] == story() and len(rig.calls) == 2
+    assert "chart_review_rules" not in rig.calls[1]["prompt"]
+    assert next(a for a in result["assessments"] if a["component"] == "chart")["status"] == (
+        "not_present"
+    )
+    validate_result(result)
+
+
 def reader_policy():
     directory = Path(__file__).resolve().parents[1] / "src/newsletter/policy"
     return {
@@ -1161,6 +1228,7 @@ async def test_local_repair_preserves_reader_guidance_and_independently_approved
     for index in (0, 2):
         prompt = rig.calls[index]["prompt"]
         assert prompt["writing_guidance"] == _WRITING_GUIDANCE
+        assert prompt["chart_guidance"] == _CHART_GUIDANCE
         assert prompt["reader_profile"] == policy["reader-profile.md"]
     assert "repair只在原修订范围内改善解释" in _WRITING_GUIDANCE
     assert "不得更改已批准的简讯" in rig.calls[2]["prompt"]["task"]

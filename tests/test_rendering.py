@@ -5,13 +5,16 @@ import copy
 import hashlib
 import io
 import json
+import re
 from html.parser import HTMLParser
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
+from test_charts import compact, final_text, record_draw_text
 
-from newsletter.charts import render_chart_png
-from newsletter.contracts import ContractError
+from newsletter.adapters import _frozen
+from newsletter.charts import chart_metadata, render_chart_png
+from newsletter.contracts import ContractError, content_hash
 from newsletter.rendering import CHART_CID, render_edition
 from newsletter.todofy import unavailable_digest
 
@@ -170,6 +173,93 @@ def test_render_does_not_mutate_inputs_and_is_byte_deterministic():
     assert "timestamp" not in image.info
 
 
+def test_rendered_png_contains_chart_context_and_only_its_own_source_titles(monkeypatch):
+    records = record_draw_text(monkeypatch)
+    rendered = render_edition(SAMPLE_DRAFT, SAMPLE_PACKETS, "2026-09-05")
+    image = Image.open(io.BytesIO(base64.b64decode(rendered["chart_png"])))
+    drawn = "".join(record["text"] for record in final_text(records, image))
+    chart = SAMPLE_DRAFT["chart"]
+    for field in ("question", "caption", "limitations"):
+        assert compact(chart[field]) in compact(drawn)
+    assert compact(chart_metadata(chart)) in compact(drawn)
+    assert "来源：[1]" in drawn
+    assert "模拟调查：工具使用与流程变化" in drawn
+    assert "2026-09-04" in drawn
+    assert "模拟方法说明：为什么采用率不是生产率" not in drawn
+    assert "模拟数据 · 试刊样张" in drawn
+
+
+@pytest.mark.parametrize("kind", ["bar", "line"])
+def test_graph_card_without_images_or_body_preserves_supplied_explanation_and_data(kind):
+    draft = copy.deepcopy(SAMPLE_DRAFT)
+    chart = draft["chart"]
+    chart.update(
+        kind=kind,
+        question="虚构两组训练后，测试成绩差异意味着什么？",
+        caption=(
+            "离线样张比较测试组与参照组。Cohen's d 用组内分散程度衡量均值差异："
+            "正值表示测试组分数较高，零表示均值相同；这不是百分比或真实疗效。"
+        ),
+        metric="成绩均值标准化差异（Cohen's d）",
+        unit="Cohen's d",
+        period="虚构短期测试，非长期随访",
+        limitations="仅用于绘图测试；不能推断真实人群、持久效果或通用效应阈值。",
+    )
+    chart["points"][0]["decimal_value"] = "-0.4"
+    chart["points"][1]["decimal_value"] = "0"
+    chart["points"][2]["decimal_value"] = "0.7"
+    rendered = render_edition(draft, SAMPLE_PACKETS, "2026-09-05")
+    degraded_html = re.sub(
+        r"<style\b[^>]*>.*?</style>|<img\b[^>]*>", "", rendered["html"], flags=re.S
+    )
+    card_html = degraded_html.split("一图看懂 / 数据视角", 1)[1].split("研究介绍", 1)[0]
+    parsed = ParsedEmail(card_html)
+    visible = "".join(parsed.text)
+    assert not parsed.images
+    assert "图表原始数据" in card_html
+    for field in ("question", "caption", "limitations"):
+        assert chart[field] in visible
+    assert chart_metadata(chart) in visible
+    assert "Cohen's d）（Cohen's d）" not in visible
+    assert "来源：[1] 模拟调查：工具使用与流程变化 · 2026-09-04" in visible
+    for point in chart["points"]:
+        assert point["label"] in visible
+        expected = point.get("decimal_value", f"缺失（{point.get('missing_reason')}）")
+        assert expected in visible
+    assert "小效应" not in visible and "大效应" not in visible
+    for section in draft["sections"]:
+        assert section["paragraphs"][0]["text"] not in visible
+
+
+@pytest.mark.parametrize("with_chart", [False, True])
+def test_legacy_frozen_artifacts_never_use_the_current_chart_or_template(monkeypatch, with_chart):
+    # A synthetic old-format payload: no current renderer is used to build it.
+    buffer = io.BytesIO()
+    if with_chart:
+        Image.new("RGB", (2, 2), "white").save(buffer, format="PNG")
+    png = buffer.getvalue()
+    rendered = {
+        "html": "<p>离线旧版样张</p>"
+        + ('<img src="cid:newsletter-chart" alt="旧图">' if png else ""),
+        "text": "离线旧版样张\n",
+        "chart_png": base64.b64encode(png).decode("ascii"),
+    }
+    rendered["render_hash"] = content_hash(rendered)
+    rendered["renderer_version"] = "python-editorial/5"
+    edition = {"draft": {"subject": "离线旧版样张"}, "rendered": rendered}
+    original = copy.deepcopy(edition)
+
+    def fail_rerender(*args, **kwargs):
+        pytest.fail("frozen delivery must not rerender an earlier approved edition")
+
+    monkeypatch.setattr("newsletter.rendering.render_edition", fail_rerender)
+    monkeypatch.setattr("newsletter.rendering.render_chart_png", fail_rerender)
+    monkeypatch.setattr("newsletter.rendering.load_template", fail_rerender)
+    monkeypatch.setattr("newsletter.charts.render_chart_png", fail_rerender)
+    assert _frozen(edition) == ("离线旧版样张", rendered["html"], rendered["text"], png)
+    assert edition == original
+
+
 def test_reading_support_is_numbered_without_adding_primary_reading_links():
     draft, packets = copy.deepcopy(SAMPLE_DRAFT), copy.deepcopy(SAMPLE_PACKETS)
     packets[0]["content"]["sources"].append(
@@ -248,7 +338,7 @@ def test_chart_zero_and_missing_are_distinct():
     assert render_edition(changed, SAMPLE_PACKETS, "2026-09-05")["chart_png"] != result["chart_png"]
 
 
-def test_line_chart_breaks_at_missing_instead_of_connecting():
+def test_line_chart_breaks_at_missing_instead_of_connecting(monkeypatch):
     chart = copy.deepcopy(SAMPLE_DRAFT["chart"])
     chart["kind"] = "line"
     chart["points"] = [
@@ -256,15 +346,23 @@ def test_line_chart_breaks_at_missing_instead_of_connecting():
         {"label": "乙", "missing_reason": "未公布"},
         {"label": "丙", "decimal_value": "10"},
     ]
-    image = Image.open(io.BytesIO(render_chart_png(chart, False))).convert("RGB")
-    green = (40, 96, 78)
-    # A horizontal segment would cross the center strip; missing creates no green pixels there.
-    assert all(image.getpixel((x, y)) != green for x in range(650, 690) for y in range(180, 480))
+    segments = []
+    original = ImageDraw.ImageDraw.line
+
+    def line(draw, xy, *args, **kwargs):
+        if kwargs.get("fill") == "#28604e":
+            segments.append(xy)
+        return original(draw, xy, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "line", line)
+    render_chart_png(chart, False)
+    # Observe data segments, not a pixel strip whose Y coordinates move with
+    # self-contained chart headers. Missing resets the previous point.
+    assert segments == []
     chart["points"][1] = {"label": "乙", "decimal_value": "10"}
-    connected = Image.open(io.BytesIO(render_chart_png(chart, False))).convert("RGB")
-    assert any(
-        connected.getpixel((x, y)) == green for x in range(650, 690) for y in range(180, 480)
-    )
+    render_chart_png(chart, False)
+    assert len(segments) == 2
+    assert segments[0][2:] == segments[1][:2]
 
 
 def test_without_chart_or_reading_is_valid_and_no_fixture_claim_without_flag():

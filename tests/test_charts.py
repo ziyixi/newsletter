@@ -4,9 +4,9 @@ import copy
 import io
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
-from newsletter.charts import load_font, render_chart_png
+from newsletter.charts import chart_metadata, load_font, render_chart_png
 
 
 def make_chart(kind, values):
@@ -23,6 +23,125 @@ def make_chart(kind, values):
             for index, value in enumerate(values)
         ],
     }
+
+
+def record_draw_text(monkeypatch):
+    """Observe actual drawing, including its final image bounds; no PNG goldens."""
+    records = []
+    original = ImageDraw.ImageDraw.text
+
+    def draw_text(draw, xy, text, *args, **kwargs):
+        records.append(
+            {
+                "text": text,
+                "bbox": draw.textbbox(xy, text, font=kwargs.get("font")),
+                "image_size": draw._image.size,
+            }
+        )
+        return original(draw, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", draw_text)
+    return records
+
+
+def compact(text):
+    return "".join(text.split())
+
+
+def final_text(records, image):
+    return [record for record in records if record["image_size"] == image.size]
+
+
+@pytest.mark.parametrize("kind", ["bar", "line"])
+@pytest.mark.parametrize("is_fixture", [False, True])
+def test_chart_draws_its_own_question_explanation_metadata_limits_and_source(
+    monkeypatch, kind, is_fixture
+):
+    chart = make_chart(kind, ["-0.4", "0", None, "0.7"])
+    chart.update(
+        question="离线测试：两组的标准化差异说明什么？",
+        caption="虚构比较：正值表示测试组高于参照组，零表示无差异。这不是百分比。",
+        metric="虚构标准化差异（测试单位）",
+        limitations="仅是离线绘图数据，不能推出真实实验效果或通用阈值。",
+        source_note="来源：[7] 离线测试材料 · https://example.org/synthetic",
+    )
+    original = copy.deepcopy(chart)
+    records = record_draw_text(monkeypatch)
+    image = Image.open(io.BytesIO(render_chart_png(chart, is_fixture)))
+    drawn = "".join(record["text"] for record in final_text(records, image))
+    for field in ("question", "caption", "limitations", "source_note"):
+        assert compact(chart[field]) in compact(drawn), field
+    assert compact(chart_metadata(chart)) in compact(drawn)
+    assert compact(drawn).index(compact(chart["question"])) < compact(drawn).index(
+        compact(chart["caption"])
+    )
+    assert compact(drawn).index(compact(chart["limitations"])) < compact(drawn).index(
+        compact(chart["source_note"])
+    )
+    assert ("模拟数据 · 试刊样张" in drawn) is is_fixture
+    assert "小效应" not in drawn and "大效应" not in drawn
+    assert chart == original
+
+
+@pytest.mark.parametrize("kind", ["bar", "line"])
+@pytest.mark.parametrize("field", ["question", "caption", "metadata", "limitations", "source_note"])
+def test_long_cjk_and_unbroken_latin_chart_copy_is_drawn_in_full_inside_png(
+    monkeypatch, kind, field
+):
+    chart = make_chart(kind, ["-5", "0", None, "12"])
+    chart.update(
+        question="离线长文本测试",
+        caption="这是绘图回归，不是研究。",
+        limitations="",
+        source_note="",
+    )
+    long_copy = ("中英混排边界检查UnbrokenLatinToken0123456789" * 18) + "终点END"
+    if field == "metadata":
+        chart["metric"] = long_copy
+        expected = chart_metadata(chart)
+    else:
+        chart[field] = long_copy
+        expected = long_copy
+    records = record_draw_text(monkeypatch)
+    image = Image.open(io.BytesIO(render_chart_png(chart, True)))
+    final = final_text(records, image)
+    assert compact(expected) in compact("".join(record["text"] for record in final))
+    assert all(
+        0 <= left <= right <= image.width and 0 <= top <= bottom <= image.height
+        for record in final
+        if record["text"].strip()
+        for left, top, right, bottom in [record["bbox"]]
+    ), [record for record in final if record["text"].strip()]
+    # No fixed image height: wrapped text may grow on different CJK font stacks.
+    assert image.width == 1280
+
+
+@pytest.mark.parametrize("limitations", ["甲条限制。\n乙条限制。", ["甲条限制。", "乙条限制。"]])
+def test_raw_and_rendering_normalized_limitations_remain_drawn(monkeypatch, limitations):
+    chart = make_chart("bar", ["-1", "1"])
+    chart["limitations"] = limitations
+    records = record_draw_text(monkeypatch)
+    image = Image.open(io.BytesIO(render_chart_png(chart, False)))
+    drawn = "".join(record["text"] for record in final_text(records, image))
+    assert "甲条限制。" in drawn and "乙条限制。" in drawn
+
+
+@pytest.mark.parametrize(
+    "metric,unit,expected",
+    [
+        ("Cohen's d", "Cohen's d", "指标：Cohen's d · 范围：离线时点"),
+        ("标准化差异（Cohen's d）", "Cohen's d", "指标：标准化差异（Cohen's d） · 范围：离线时点"),
+        ("Difference (Cohen's d)", "Cohen's d", "指标：Difference (Cohen's d) · 范围：离线时点"),
+        (
+            "Cohen's d sensitivity",
+            "Cohen's d",
+            "指标：Cohen's d sensitivity（Cohen's d） · 范围：离线时点",
+        ),
+        ("响应占比", "%", "指标：响应占比（%） · 范围：离线时点"),
+    ],
+)
+def test_metadata_deduplicates_only_identical_or_parenthesized_unit(metric, unit, expected):
+    assert chart_metadata({"metric": metric, "unit": unit, "period": "离线时点"}) == expected
 
 
 @pytest.mark.parametrize(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any, cast
 
@@ -264,10 +265,19 @@ class EditorialNodes:
             )
             return asdict(discovered)
         if kind == "deduplicate":
-            candidates = []
-            for group in self.inputs(ctx, "discovery"):
-                for result in group or []:
-                    candidates.extend(result["candidates"])
+            groups = [
+                result["candidates"]
+                for group in self.inputs(ctx, "discovery")
+                for result in group or []
+            ]
+            # Frozen map order breaks ties; retain each direction's local order.
+            # Interleave before dedup/capping so later directions get pool space.
+            candidates = [
+                candidate
+                for batch in zip_longest(*groups)
+                for candidate in batch
+                if candidate is not None
+            ]
             candidates.extend(
                 item
                 for value in self.inputs(ctx, "api_feed")
