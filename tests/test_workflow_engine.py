@@ -168,11 +168,10 @@ async def test_serial_dependencies_persist_outputs_before_next_handler(repo):
     assert seen == ["first", "later"]
 
 
-async def test_dynamic_fanout_is_pinned_sorted_and_runs_each_item_once(repo):
+async def test_dynamic_fanout_preserves_input_order_and_runs_each_item_once(repo):
     graph = definition(node("discover", map={"from": "run.instructions", "max_items": 3}))
-    repo.start(
-        "run", graph, {"instructions": [{"id": "z", "text": "last"}, {"id": "a", "text": "first"}]}
-    )
+    pinned = [{"id": "z", "text": "first"}, {"id": "a", "text": "second"}]
+    repo.start("run", graph, {"instructions": pinned})
     seen = []
 
     async def handler(context):
@@ -182,14 +181,76 @@ async def test_dynamic_fanout_is_pinned_sorted_and_runs_each_item_once(repo):
     engine = WorkflowEngine(repo, {"discovery": handler})
     assert await engine.step("run") is True
     assert not seen and repo.get("run")["nodes"]["discover"]["map_expanded"]
-    pinned = [{"id": "a", "text": "first"}, {"id": "z", "text": "last"}]
-    repo.expand_map("run", "discover", list(reversed(pinned)))
+    repo.expand_map("run", "discover", pinned)
+    frozen = repo.get("run")["nodes"]["discover"]
+    with pytest.raises(WorkflowError) as caught:
+        repo.expand_map("run", "discover", list(reversed(pinned)))
+    assert caught.value.code == "conflict"
+    assert repo.get("run")["nodes"]["discover"] == frozen
     with pytest.raises(WorkflowError) as caught:
         repo.expand_map("run", "discover", [{"id": "another"}])
     assert caught.value.code == "conflict"
     assert (await engine.run("run"))["state"] == "succeeded"
-    assert seen == ["a", "z"] and repo.output("run", "discover") == pinned
+    assert seen == ["z", "a"] and repo.output("run", "discover") == pinned
     assert len(repo.artifacts("run")) == 3
+    attempts = repo.attempts("run")
+    assert await engine.step("run") is False
+    assert repo.attempts("run") == attempts and seen == ["z", "a"]
+
+
+async def test_engine_runs_selected_research_by_frozen_priority_not_item_id(repo):
+    repo.start(
+        "run",
+        definition(
+            node("selection", "selection"),
+            node(
+                "research",
+                "research",
+                needs=["selection"],
+                map={"from": "selection.research_tasks", "max_items": 2},
+            ),
+        ),
+        {},
+    )
+    tasks = [{"id": "methane", "priority": 1}, {"id": "bhutan", "priority": 2}]
+    seen = []
+
+    async def selection(context):
+        return {"research_tasks": tasks}
+
+    async def research(context):
+        seen.append((context.item_id, context.item["priority"]))
+        return context.item
+
+    engine = WorkflowEngine(repo, {"selection": selection, "research": research})
+    assert await engine.step("run") is True  # Selection result persisted.
+    assert await engine.step("run") is True  # Map expansion persisted.
+    assert await engine.step("run") is True  # Highest priority runs first.
+    assert seen == [("methane", 1)]
+    assert (await engine.run("run"))["state"] == "succeeded"
+    assert seen == [("methane", 1), ("bhutan", 2)]
+    assert repo.output("run", "research") == tasks
+
+
+async def test_existing_expanded_map_order_is_not_migrated_or_recomputed(repo):
+    original = [{"id": "z", "priority": 1}, {"id": "a", "priority": 2}]
+    old_order = list(reversed(original))
+    repo.start(
+        "run", definition(node(map={"from": "run.items", "max_items": 2})), {"items": original}
+    )
+    # Simulate an already persisted expansion from the old ID-sorting executor.
+    repo.expand_map("run", "discover", old_order)
+    frozen_hash = repo.get("run")["nodes"]["discover"]["map_hash"]
+    seen = []
+
+    async def handler(context):
+        seen.append(context.item_id)
+        return context.item
+
+    assert (await WorkflowEngine(repo, {"discovery": handler}).run("run"))["state"] == "succeeded"
+    assert seen == ["a", "z"] and repo.output("run", "discover") == old_order
+    assert repo.get("run")["nodes"]["discover"]["map_hash"] == frozen_hash
+    assert repo.snapshot("run")["inputs"]["items"] == original
 
 
 async def test_empty_supplement_map_skips_but_finalization_still_runs(repo):

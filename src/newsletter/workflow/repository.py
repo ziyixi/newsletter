@@ -260,8 +260,9 @@ class WorkflowRepository:
                 raise WorkflowError("invalid_input")
             if len({item["id"] for item in items}) != len(items):
                 raise WorkflowError("invalid_input")
-            ordered = sorted(items, key=lambda item: item["id"])
-            serialized, digest = json_value(ordered)
+            # Upstream planners own priority; stable item identity is not a sort key.
+            # The ordered array is frozen too, so reordered replays conflict.
+            serialized, digest = json_value(items)
             state = run["nodes"][node_id]
             if state["map_expanded"]:
                 if state["map_hash"] != digest:

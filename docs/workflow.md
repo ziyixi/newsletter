@@ -57,7 +57,9 @@ SQLite remains authoritative. `collection_workflow_snapshots` freezes the DAG,
 operator instructions, editorial policies, date, model, public history and total
 budget before the HTTP run is accepted. `workflow_runs`, `workflow_attempts` and
 `workflow_artifacts` record each node/item and immutable outputs. Map input items
-are fixed once with stable IDs. No transaction spans a model or provider call.
+are fixed once with stable IDs. New maps preserve the upstream array's priority
+order; replaying different order conflicts, and existing expansions are never
+reordered or migrated. No transaction spans a model or provider call.
 
 Already completed stages survive restart. An in-flight request becomes `unknown`
 and is not blindly reissued; operators must inspect before arranging a retry.
