@@ -1,13 +1,21 @@
 """Offline URL provenance regressions; no SDK, redirects, or network requests."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from test_editor import FakeTurn, live_editor
 from test_editor import fake_sdk as fake_sdk
 
 from newsletter.contracts import validate_draft
-from newsletter.editor import EditorError, _result, _unobserved_approval_actions
+from newsletter.editor import (
+    ApprovalSources,
+    EditorError,
+    _approval_snapshot,
+    _result,
+    _unobserved_approval_actions,
+    _unopened_approval_sources,
+)
 
 SHORT_URL = "https://example.org/article/synthetic-123"
 CANONICAL_URL = "https://example.org/article/synthetic-news-story-synthetic-123"
@@ -233,3 +241,194 @@ def test_exact_prior_retraction_claim_needs_fresh_actions_even_without_new_body_
     assert _unobserved_approval_actions(json.dumps(value), {SHORT_URL}, True) == []
     value["prior_withdrawal"] = None
     assert _unobserved_approval_actions(json.dumps(value), set(), False) == []
+
+
+def component_review(**statuses):
+    return {
+        "assessments": [
+            {"component": key, "status": status, "findings": []} for key, status in statuses.items()
+        ],
+        "issues": [],
+        "prior_withdrawal": None,
+    }
+
+
+class SourceTurn(FakeTurn):
+    def __init__(self, value, urls, *, searched=True, **kwargs):
+        super().__init__(value, research=False, **kwargs)
+        self.urls, self.searched = urls, searched
+
+    async def stream(self):
+        actions = ([{"type": "search", "query": "synthetic"}] if self.searched else []) + [
+            {"type": "openPage", "url": url} for url in self.urls
+        ]
+        for action in actions:
+            yield SimpleNamespace(
+                method="item/completed", payload={"item": {"type": "webSearch", "action": action}}
+            )
+        async for event in super().stream():
+            yield event
+
+
+def test_only_approved_components_select_code_owned_missing_urls():
+    sources = ApprovalSources(
+        {
+            "body": [SHORT_URL, CANONICAL_URL],
+            "reading": ["https://example.org/unneeded"],
+            "signal": [SHORT_URL],
+        }
+    )
+    value = component_review(
+        body="approved", reading="blocked", chart="not_present", signal="approved"
+    )
+    value["assessments"][0]["url"] = "https://example.org/model-invented"
+    assert _unopened_approval_sources(json.dumps(value), {SHORT_URL}, sources) == [CANONICAL_URL]
+
+
+@pytest.mark.parametrize("status", ["blocked", "not_present", None, True, "APPROVED"])
+def test_blocked_or_absent_component_never_selects_missing_urls(status):
+    sources = ApprovalSources({"body": [CANONICAL_URL]})
+    assert (
+        _unopened_approval_sources(json.dumps(component_review(body=status)), set(), sources) == []
+    )
+
+
+def test_withdrawal_only_selects_its_declared_known_evidence_not_all_sources():
+    sources = ApprovalSources({}, {"p/first": SHORT_URL, "p/second": CANONICAL_URL})
+    value = component_review(body="not_present")
+    value["prior_withdrawal"] = {
+        "target_body_hash": "a" * 64,
+        "evidence": ["p/second", "https://example.org/model-url", None],
+    }
+    assert _unopened_approval_sources(json.dumps(value), set(), sources) == [CANONICAL_URL]
+    value["prior_withdrawal"] = None
+    assert _unopened_approval_sources(json.dumps(value), set(), sources) == []
+
+
+def test_exact_review_url_matching_ignores_only_fragment_not_query_or_canonical_alias():
+    sources = ApprovalSources({"body": [SHORT_URL + "?v=1#table", CANONICAL_URL]})
+    text = json.dumps(component_review(body="approved"))
+    assert _unopened_approval_sources(text, {SHORT_URL + "?v=1", CANONICAL_URL}, sources) == []
+    assert _unopened_approval_sources(text, {SHORT_URL, CANONICAL_URL}, sources) == [
+        SHORT_URL + "?v=1#table"
+    ]
+
+
+async def test_first_open_does_not_hide_second_required_url_and_only_one_correction_runs(
+    tmp_path, fake_sdk
+):
+    value = component_review(body="approved", signal="approved")
+    fake_sdk.turns = [
+        SourceTurn(value, [SHORT_URL]),
+        SourceTurn(value, [CANONICAL_URL], searched=False),
+    ]
+    sources = ApprovalSources({"body": [SHORT_URL, CANONICAL_URL], "signal": [SHORT_URL]})
+    text, opened, searched = await live_editor(tmp_path).execute(
+        "{}", {}, "fixture", tmp_path / "job", approval_sources=sources
+    )
+    assert json.loads(text) == value and opened == {SHORT_URL, CANONICAL_URL} and searched
+    assert len(fake_sdk.prompts) == 2 and fake_sdk.thread_starts == 1
+    correction = fake_sdk.prompts[1]
+    assert correction["unverified_urls"] == [CANONICAL_URL]
+    assert correction["missing_approval_actions"] == []
+    assert "逐个独立open" in correction["task"] and "不要一次调用批量打开" in correction["task"]
+
+
+async def test_still_missing_second_url_returns_observations_without_third_turn_or_global_failure(
+    tmp_path, fake_sdk
+):
+    value = component_review(body="approved", reading="approved")
+    fake_sdk.turn = SourceTurn(value, [SHORT_URL])
+    sources = ApprovalSources({"body": [SHORT_URL], "reading": [CANONICAL_URL]})
+    text, opened, searched = await live_editor(tmp_path).execute(
+        "{}", {}, "fixture", tmp_path / "job", approval_sources=sources
+    )
+    assert json.loads(text) == value and opened == {SHORT_URL} and searched
+    assert len(fake_sdk.prompts) == 2
+    # Caller keeps the independently verified body and blocks the reading card.
+    assert _unopened_approval_sources(text, opened, sources) == [CANONICAL_URL]
+
+
+async def test_correction_can_block_only_unverifiable_component_and_keep_body(tmp_path, fake_sdk):
+    first, final = (
+        component_review(body="approved", reading="approved"),
+        component_review(body="approved", reading="blocked"),
+    )
+    fake_sdk.turns = [SourceTurn(first, [SHORT_URL]), SourceTurn(final, [], searched=False)]
+    sources = ApprovalSources({"body": [SHORT_URL], "reading": [CANONICAL_URL]})
+    text, opened, _ = await live_editor(tmp_path).execute(
+        "{}", {}, "fixture", tmp_path / "job", approval_sources=sources
+    )
+    assert json.loads(text) == final and len(fake_sdk.prompts) == 2
+    assert _unopened_approval_sources(text, opened, sources) == []
+
+
+async def test_source_packet_and_component_misses_share_one_correction_slot(
+    tmp_path, fake_sdk, bundle
+):
+    value = component_review(body="approved")
+    value["supplemental_packets"] = bundle["supplemental_packets"]
+    third_url = "https://example.org/third-source"
+    fake_sdk.turns = [SourceTurn(value, [SHORT_URL]), SourceTurn(value, [CANONICAL_URL, third_url])]
+    sources = ApprovalSources({"body": [third_url]})
+    _, opened, _ = await live_editor(tmp_path).execute(
+        "{}", {}, "fixture", tmp_path / "job", approval_sources=sources
+    )
+    assert len(fake_sdk.prompts) == 2
+    assert set(fake_sdk.prompts[1]["unverified_urls"]) == {CANONICAL_URL, third_url}
+    assert opened == {SHORT_URL, CANONICAL_URL, third_url}
+
+
+async def test_withdrawal_missing_specific_evidence_gets_existing_correction(tmp_path, fake_sdk):
+    value = component_review(body="not_present")
+    value["prior_withdrawal"] = {"target_body_hash": "a" * 64, "evidence": ["p/second"]}
+    fake_sdk.turns = [SourceTurn(value, [SHORT_URL]), SourceTurn(value, [CANONICAL_URL])]
+    sources = ApprovalSources({}, {"p/first": SHORT_URL, "p/second": CANONICAL_URL})
+    await live_editor(tmp_path).execute(
+        "{}", {}, "fixture", tmp_path / "job", approval_sources=sources
+    )
+    assert fake_sdk.prompts[1]["unverified_urls"] == [CANONICAL_URL]
+
+
+async def test_missing_component_url_correction_stays_inside_original_timeout(tmp_path, fake_sdk):
+    value = component_review(body="approved")
+    fake_sdk.turns = [SourceTurn(value, [SHORT_URL]), SourceTurn(value, [], hang=True)]
+    with pytest.raises(EditorError) as error:
+        await live_editor(tmp_path, timeout_seconds=0.01).execute(
+            "{}",
+            {},
+            "fixture",
+            tmp_path / "job",
+            approval_sources=ApprovalSources({"body": [CANONICAL_URL]}),
+        )
+    assert error.value.code == "timeout" and len(fake_sdk.prompts) == 2
+
+
+@pytest.mark.parametrize(
+    "sources",
+    [
+        {"body": [SHORT_URL]},
+        ApprovalSources({"unknown": [SHORT_URL]}),
+        ApprovalSources({"body": SHORT_URL}),
+        ApprovalSources({"body": ["http://127.0.0.1/private"]}),
+        ApprovalSources({"body": [SHORT_URL] * 1025}),
+        ApprovalSources({}, {"no-slash": SHORT_URL}),
+        ApprovalSources({}, {"p/s": "https://user:secret@example.org/private"}),
+    ],
+)
+async def test_invalid_review_source_configuration_fails_before_starting_sdk(
+    tmp_path, fake_sdk, sources
+):
+    with pytest.raises(EditorError) as error:
+        await live_editor(tmp_path).execute(
+            "{}", {}, "fixture", tmp_path / "job", approval_sources=sources
+        )
+    assert error.value.code == "invalid_input" and not fake_sdk.started
+
+
+def test_review_source_snapshot_cannot_be_changed_by_later_caller_mutation():
+    urls, evidence = [SHORT_URL], {"p/first": SHORT_URL}
+    frozen = _approval_snapshot(ApprovalSources({"body": urls}, evidence))
+    urls.append(CANONICAL_URL)
+    evidence["p/second"] = CANONICAL_URL
+    assert frozen.components == {"body": (SHORT_URL,)} and frozen.evidence == {"p/first": SHORT_URL}

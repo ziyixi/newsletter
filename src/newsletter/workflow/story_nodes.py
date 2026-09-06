@@ -13,6 +13,7 @@ from newsletter.types import Payload
 from newsletter.workflow.engine import NodeContext
 from newsletter.workflow.nodes import EditorialNodes
 from newsletter.workflow.publication import PublicationRepository, assemble
+from newsletter.workflow.sources import identity_keys
 from newsletter.workflow.story_editor import StoryEditor
 
 
@@ -28,12 +29,40 @@ def freeze_publication(
     return publications.record_publication(run_id, issue_date, tasks, result)
 
 
+def _covered_history(candidates: list[Payload], pending: list[Payload]) -> list[Payload]:
+    """Unfinished investigations are not already-covered discovery exclusions.
+
+    Historical aliases inherit the exception, but identities/dates themselves do
+    not change. The ordinary discovery, pool and selection deduplicators still
+    merge equivalent items within today's pool and suppress other covered topics.
+    """
+    pending_ids = {candidate_id for story in pending for candidate_id in story["candidate_ids"]}
+    pending_keys = set().union(*(identity_keys(story) for story in pending))
+    for story in pending:
+        for url in story["source_urls"]:
+            pending_keys.update(identity_keys({"url": url}))
+    remaining = list(candidates)
+    while True:
+        covered = []
+        for candidate in remaining:
+            keys = identity_keys(candidate)
+            if candidate.get("id") in pending_ids or keys & pending_keys:
+                pending_keys.update(keys)
+            else:
+                covered.append(candidate)
+        if len(covered) == len(remaining):
+            return covered
+        remaining = covered
+
+
 class StoryNodes(EditorialNodes):
     async def execute(self, kind: str, ctx: NodeContext, path: Path) -> Any:
         publications = PublicationRepository(self.store)
         date = ctx.run_inputs["issue_date"]
         if kind == "history":
             history = await super().execute(kind, ctx, path)
+            unfinished = ctx.run_inputs.get("pending_stories", [])
+            history["candidates"] = _covered_history(history["candidates"], unfinished)
             # These are questions to investigate, never recycled verified claims.
             pending = [
                 {
@@ -41,10 +70,15 @@ class StoryNodes(EditorialNodes):
                     "title": item["title"],
                     "issue_date": item["issue_date"],
                     "question": item["question"],
-                    "summary": item["reason"] + " " + item["evidence_context"],
+                    "summary": (
+                        "这是未完成调查，不是新发表或新版本；保留真实日期，仍须重新打开原始来源核验。"
+                        + item["reason"]
+                        + " "
+                        + item["evidence_context"]
+                    ),
                     "url": next(iter(item["source_urls"]), ""),
                 }
-                for item in ctx.run_inputs.get("pending_stories", [])
+                for item in unfinished
             ]
             history["watchlist"] = (pending + history["watchlist"])[:30]
             return history

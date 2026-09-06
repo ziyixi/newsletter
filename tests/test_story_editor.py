@@ -113,8 +113,15 @@ def rig(tmp_path, monkeypatch):
     }
     state = SimpleNamespace(replies=[], calls=[], checkpoints=[], packet=packet)
 
-    async def execute(editor, prompt, schema, instructions, workspace):
-        state.calls.append({"prompt": json.loads(prompt), "schema": schema, "path": workspace})
+    async def execute(editor, prompt, schema, instructions, workspace, *, approval_sources=None):
+        state.calls.append(
+            {
+                "prompt": json.loads(prompt),
+                "schema": schema,
+                "path": workspace,
+                "approval_sources": approval_sources,
+            }
+        )
         assert state.replies, "No unbounded retry or unexpected model call"
         response = state.replies.pop(0)
         if isinstance(response, BaseException):
@@ -747,3 +754,97 @@ async def test_brief_stage_cannot_issue_a_prior_withdrawal(rig):
     rig.replies = [reply(writer(story())), reply(review(prior_withdrawal=withdrawal(prior)))]
     result = await rig.run(mode="brief", prior=prior)
     assert "withdrawals" not in result and result["content"] is not None
+
+
+async def test_review_receives_code_owned_component_urls_including_reading_support(rig):
+    rig.replies = [
+        reply(writer(story(reading=True, chart=True))),
+        reply(review(reading="approved", chart="approved")),
+    ]
+    result = await rig.run(mode="deep")
+    validate_result(result)
+    expected = rig.calls[1]["approval_sources"]
+    assert expected.components["body"] == [URL]
+    assert expected.components["reading"] == [URL, SECOND_URL]
+    assert expected.components["chart"] == [URL]
+    assert expected.evidence == {} and rig.calls[0]["approval_sources"] is None
+
+
+async def test_missing_url_diagnostic_identifies_exact_component_reference_and_url(rig):
+    rig.replies = [
+        reply(writer(story(reading=True))),
+        reply(review(reading="approved"), opened={URL}),
+    ]
+    result = await rig.run(mode="deep")
+    assert result["content"] == story() and len(rig.calls) == 2
+    assert any(
+        SECOND_URL in finding
+        for assessment in result["assessments"]
+        if assessment["component"] == "reading"
+        for finding in assessment["findings"]
+    )
+    assert any(
+        issue["component"] == "reading"
+        and "missing_review_open_url" in issue["reason"]
+        and issue["evidence"] == ["packet/publication"]
+        for issue in result["issues"]
+    )
+    validate_result(result)
+
+
+async def test_metadata_diagnostic_explains_actual_problem_to_repair_without_raising_scope(rig):
+    rig.packet["content"]["sources"][0]["access_scope"] = "metadata"
+    rig.replies = [reply(writer(story())), reply(review()), reply(writer(story())), reply(review())]
+    result = await rig.run()
+    assert result["content"] is None
+    first = next(a for a in result["assessments"] if a["component"] == "body")
+    assert any(
+        "metadata_citations_not_publishable: packet/source" in finding
+        for finding in first["findings"]
+    )
+    assert not any("missing_review_open" in finding for finding in first["findings"])
+    repair = rig.calls[2]["prompt"]["repair_untrusted"]
+    assert any(
+        "metadata_citations_not_publishable" in issue["reason"] and issue["action"] == "remove"
+        for issue in repair["issues"]
+    )
+    rules = rig.calls[0]["prompt"]["output_rules"]
+    assert "不得为了过审把来源access_scope标高" in rules
+    assert "必须另外写出1段最小signal" in rules
+    assert "只有事件本身无法确认时signal才为null" in rules
+
+
+async def test_missing_search_diagnostic_is_distinct_from_url_or_scope_problem(rig):
+    rig.replies = [
+        reply(writer(story())),
+        reply(review(), searched=False),
+        reply(writer(story())),
+        reply(review(), searched=False),
+    ]
+    result = await rig.run()
+    first = next(a for a in result["assessments"] if a["component"] == "body")
+    assert any("missing_review_search" in finding for finding in first["findings"])
+    assert not any(
+        "missing_review_open" in finding or "metadata_citations" in finding
+        for finding in first["findings"]
+    )
+    assert any(
+        "missing_review_search" in issue["reason"] and issue["action"] == "research"
+        for issue in result["issues"]
+    )
+
+
+async def test_only_deep_initial_review_receives_withdrawal_evidence_lookup(rig):
+    prior = await verified_prior(rig)
+    rig.replies = [
+        reply(writer(story())),
+        reply(review(body="blocked")),
+        reply(writer(story())),
+        reply(review()),
+    ]
+    await rig.run(mode="deep", prior=prior)
+    assert rig.calls[1]["approval_sources"].evidence == {
+        "packet/source": URL,
+        "packet/publication": SECOND_URL,
+    }
+    assert rig.calls[3]["approval_sources"].evidence == {}

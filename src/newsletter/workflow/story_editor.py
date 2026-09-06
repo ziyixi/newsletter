@@ -30,7 +30,7 @@ from newsletter.contracts import (
     validate_draft,
     validate_packet_body,
 )
-from newsletter.editor import CodexEditor
+from newsletter.editor import ApprovalSources, CodexEditor
 from newsletter.errors import EditorError
 from newsletter.model_io import load_json, prepare_workspace
 from newsletter.model_schema import _message_schema, packet_body_schema
@@ -419,9 +419,12 @@ class StoryEditor:
                 "必须本轮公开web search并独立open原始来源；摘要只支持摘要陈述，未读全文不能标full_text。"
                 "新事实和来源写入至多6个supplemental_packets，id为supplement-1至supplement-6。新source.url必须逐字匹配本轮独立open的完整URL，不自行canonicalize/PDF替换、不批量open。"
                 "每段所有事实须由本段citations支持，逐字使用available_citations或本轮supplement引用。保持story_id不变。"
+                "正文、阅读卡、图表及signal只能引用access_scope为abstract/full_text/dataset的来源；metadata仅供发现线索，不能作为发布引用。"
+                "若题名、发表日期或期刊等出版信息不能由已实际读到的非metadata来源支持，省略这些信息；不得为了过审把来源access_scope标高。"
                 "正文含标题和limitations必须独立成立，不引用下方图表/阅读卡作为论据、不写见图或点击阅读全文才知关键信息。"
                 "recommended_reading主citation是唯一主阅读链接；reason是自足的方法结果限制介绍，其他事实出处放supporting_citations。chart和reading是独立可删除组件，缺证据就null，不影响正文。"
                 "brief通常不带图和推荐卡，signal绝无图卡且最多1段；deep以及repair必须signal=null。"
+                "brief初稿只要事件本身已证实，就必须另外写出1段最小signal并附非metadata出处，以保留关键选题；只有事件本身无法确认时signal才为null。signal不是待填占位，不得为了非null制造事实。"
                 "核心事件不成立就content和signal为null；不为有稿可发制造结论。"
             ),
         }
@@ -506,6 +509,18 @@ class StoryEditor:
     ) -> Payload:
         job = str(uuid4())
         prior = self._reviewable_prior(context, round_name)
+        sources = _packet_sources(value["packets"])
+        approval_sources = ApprovalSources(
+            components={
+                name: [sources[ref]["url"] for ref in component_citations(component, name)]
+                for name in COMPONENTS
+                if (component := component_content(value["content"], value["signal"], name))
+                is not None
+            },
+            evidence={reference: source["url"] for reference, source in sources.items()}
+            if prior
+            else {},
+        )
         path = prepare_workspace(workspace / f"reviewer-{job}", context["issue_date"])
         text, opened, searched = await self.editor.execute(
             canonical_json(
@@ -530,6 +545,7 @@ class StoryEditor:
             story_review_schema(),
             policy.get("editorial.md", ""),
             path,
+            approval_sources=approval_sources,
         )
         review = load_json(text)
         if not isinstance(review, dict) or set(review) not in (
@@ -572,6 +588,51 @@ class StoryEditor:
             if component is not None and status == "approved":
                 refs = component_citations(component, name)
                 required_urls = {urldefrag(sources[ref]["url"])[0] for ref in refs}
+                missing_urls = sorted(required_urls - opened)
+                metadata_refs = [ref for ref in refs if sources[ref]["access_scope"] == "metadata"]
+                checks: list[tuple[str, list[str], str]] = []
+                if not searched:
+                    checks.append(
+                        (
+                            "missing_review_search: 未观测到本轮公开搜索，不能批准此组件。",
+                            [],
+                            "research",
+                        )
+                    )
+                if not required_urls:
+                    checks.append(
+                        ("missing_review_citations: 此组件没有可核对的引用来源。", [], "research")
+                    )
+                if missing_urls:
+                    missing_refs = [
+                        ref for ref in refs if urldefrag(sources[ref]["url"])[0] not in opened
+                    ]
+                    details = [
+                        url if len(url) <= 1800 else "URL过长，请按引用ID读取材料中完整source.url"
+                        for url in missing_urls[:4]
+                    ]
+                    checks.extend(
+                        ("missing_review_open_url: " + url, missing_refs[:16], "research")
+                        for url in details
+                    )
+                    if len(missing_urls) > 4:
+                        checks.append(
+                            (
+                                f"missing_review_open_urls_remaining: 还有{len(missing_urls) - 4}个来源未独立打开，请逐项核对材料完整URL。",
+                                missing_refs[:16],
+                                "research",
+                            )
+                        )
+                if metadata_refs:
+                    checks.append(
+                        (
+                            "metadata_citations_not_publishable: "
+                            + ", ".join(metadata_refs[:8])
+                            + "。只可使用已实际读取的非metadata证据，不能抬高access_scope；无法支持的出版信息或细节应省略。",
+                            metadata_refs[:16],
+                            "remove",
+                        )
+                    )
                 if (
                     not searched
                     or not required_urls
@@ -579,8 +640,21 @@ class StoryEditor:
                     or any(sources[ref]["access_scope"] == "metadata" for ref in refs)
                 ):
                     status = "blocked"
-                    findings.append(
-                        "Approval lacks observed search and opening of every cited source URL."
+                    findings.extend(message for message, _, _ in checks)
+                    output["issues"].append(
+                        {
+                            "round": round_name,
+                            "component": name,
+                            "claim": "",
+                            "reason": "; ".join(
+                                dict.fromkeys(message.split(":", 1)[0] for message, _, _ in checks)
+                            )
+                            + "。详见本组件findings中的精确URL和引用IDs。",
+                            "evidence": list(
+                                dict.fromkeys(ref for _, evidence, _ in checks for ref in evidence)
+                            )[:16],
+                            "action": "remove" if metadata_refs else "research",
+                        }
                     )
             output["assessments"].append(
                 {

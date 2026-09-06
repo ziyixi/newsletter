@@ -13,7 +13,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from test_publication import DAY, result, task
+from test_publication import DAY, delivery_receipt, result, task
+from test_workflow_content import Engine as ContentEngine
+from test_workflow_content import candidate as discovery_candidate
+from test_workflow_content import discovered, planned
 
 from newsletter.adapters import AdapterError
 from newsletter.collection.collector import MockCollector
@@ -24,11 +27,13 @@ from newsletter.settings import Settings
 from newsletter.store import Store, StoreError
 from newsletter.todofy import unavailable_digest
 from newsletter.worker import Worker
+from newsletter.workflow.content import ContentPreparation, parse_discovery
 from newsletter.workflow.definition import parse_definition
 from newsletter.workflow.engine import NodeContext
 from newsletter.workflow.nodes import EditorialNodes
 from newsletter.workflow.pipeline import DagPipeline, freeze_workflow
-from newsletter.workflow.publication import PublicationRepository
+from newsletter.workflow.publication import PublicationRepository, assemble
+from newsletter.workflow.sources import candidate_id
 from newsletter.workflow.story_editor import StoryEditor
 from newsletter.workflow.story_nodes import StoryNodes
 
@@ -406,6 +411,141 @@ async def test_complete_default_topic_graph_freezes_all_briefs_before_deepening_
     assert len(calls) == 6
     assert rig.pipeline.repository.attempts(run["id"]) == attempts
     assert len(rig.notion.calls) == len(set(rig.notion.calls)) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("match", ["candidate_id", "arxiv_url", "doi_url", "identity_title"])
+async def test_next_day_unfinished_source_survives_all_history_filters_without_faking_novelty(
+    rig_factory, match
+):
+    rig = rig_factory()
+    pending_candidate = discovery_candidate(
+        title="A synthetic unfinished controlled study",
+        doi="10.1234/unfinished",
+        published_at=DAY,
+        version="v2",
+    )
+    covered_candidate = discovery_candidate(
+        title="A different synthetic already delivered deep study",
+        doi="10.1234/delivered",
+        url="https://arxiv.org/abs/2609.00002v2",
+        published_at=DAY,
+        version="v2",
+    )
+    for candidate in (pending_candidate, covered_candidate):
+        candidate["id"] = candidate_id(candidate)
+    alias = {
+        **pending_candidate,
+        "id": "older-source-alias",
+        "title": "An older alias of the unfinished study",
+        "url": "https://doi.org/10.1234/unfinished",
+    }
+    # Alias first proves that a candidate-ID match propagates to older DOI/URL
+    # identities, regardless of the order in the frozen historical snapshot.
+    rig.pipeline.state.remember([alias, pending_candidate, covered_candidate], DAY)
+    selected = task(
+        candidate_ids=[pending_candidate["id"]]
+        if match == "candidate_id"
+        else ["old-selection-id"],
+        source_urls=[
+            "https://arxiv.org/pdf/2609.00001v2"
+            if match == "arxiv_url"
+            else "https://doi.org/10.1234/unfinished"
+            if match == "doi_url"
+            else "https://example.org/discovery-route"
+        ],
+        question=pending_candidate["title"] if match == "identity_title" else task()["question"],
+    )
+    covered_task = task(
+        2, candidate_ids=[covered_candidate["id"]], source_urls=[covered_candidate["url"]]
+    )
+    previous_tasks = [selected, covered_task]
+    approved_deep = result(2, "deep")
+    rig.publications.save_plan("previous-issue", DAY, previous_tasks)
+    rig.publications.save("previous-issue", covered_task, "deep", approved_deep, issue_date=DAY)
+    previous = assemble("previous-issue", DAY, previous_tasks, [approved_deep])
+    rig.publications.record_publication("previous-issue", DAY, previous_tasks, previous)
+    delivery_receipt(rig.publications, "previous-issue", previous)
+
+    next_day = "2026-09-07"
+    _, snapshot = freeze_workflow(
+        Settings(data_dir=rig.path, workflow_file=rig.pipeline.recipe_path),
+        rig.pipeline.state,
+        next_day,
+    )
+    original_inputs = deepcopy(snapshot["inputs"])
+    assert len(snapshot["inputs"]["pending_stories"]) == 1
+    assert snapshot["inputs"]["pending_stories"][0]["story_id"] == selected["id"]
+    nodes = StoryNodes(rig.store, rig.definition, rig.pipeline.editor, rig.path / "followup")
+
+    def context(node_id, inputs, item=None):
+        return NodeContext(
+            run_id="next-day",
+            node_id=node_id,
+            item_id=item["id"] if item else "",
+            params={},
+            inputs=inputs,
+            run_inputs=snapshot["inputs"],
+            item=item,
+        )
+
+    history = await nodes.execute("history", context("history", {}), rig.path / "history")
+    assert [candidate["id"] for candidate in history["candidates"]] == [covered_candidate["id"]]
+    assert history["watchlist"][0]["issue_date"] == DAY
+    assert "不是新发表或新版本" in history["watchlist"][0]["summary"]
+    chosen = task(candidate_ids=[pending_candidate["id"]], source_urls=[pending_candidate["url"]])
+    engine = ContentEngine(
+        (
+            discovered(pending_candidate, covered_candidate),
+            {pending_candidate["url"], covered_candidate["url"]},
+            True,
+        ),
+        (planned(chosen), set(), False),
+    )
+    nodes.content = ContentPreparation(engine)
+    instruction = rig.instructions[0].snapshot()
+    found = await nodes.execute(
+        "discovery",
+        context("discovery", {"history": history, "feeds": {"candidates": []}}, instruction),
+        rig.path / "next-discovery",
+    )
+    assert [candidate["id"] for candidate in found["candidates"]] == [pending_candidate["id"]]
+    assert found["candidates"][0]["published_at"] == DAY
+    assert found["candidates"][0]["version"] == "v2"
+    # Ordinary same-pool deduplication is unchanged even when two discovery
+    # directions both rediscover the permissible unfinished investigation.
+    pool = await nodes.execute(
+        "deduplicate",
+        context("candidates", {"history": history, "discovery": [found, deepcopy(found)]}),
+        rig.path / "next-pool",
+    )
+    assert len(pool["candidates"]) == 1
+    selected_again = await nodes.execute(
+        "selection",
+        context("selection", {"history": history, "candidates": pool}),
+        rig.path / "next-selection",
+    )
+    assert selected_again["research_tasks"] == [chosen]
+    assert len(engine.calls) == 2
+    assert engine.calls[0][0]["history_untrusted"][0]["id"] == covered_candidate["id"]
+    assert engine.calls[1][0]["candidates_untrusted"][0]["published_at"] == DAY
+    assert snapshot["inputs"] == original_inputs
+
+    # Only the new story recipe opts unfinished topics out of covered history.
+    # The generic/legacy boundary still suppresses unchanged historical sources.
+    legacy_history = await EditorialNodes.execute(
+        nodes, "history", context("history", {}), rig.path / "legacy-history"
+    )
+    assert len(legacy_history["candidates"]) == 3
+    legacy_found = parse_discovery(
+        discovered(pending_candidate),
+        {pending_candidate["url"]},
+        True,
+        instruction["id"],
+        next_day,
+        history=legacy_history["candidates"],
+    )
+    assert legacy_found.candidates == []
 
 
 @pytest.mark.asyncio
