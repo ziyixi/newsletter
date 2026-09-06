@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -11,15 +13,15 @@ from newsletter.collection.collector import Collector
 from newsletter.collection.instructions import Instruction, load_instructions
 from newsletter.collection.pipeline import CollectionPipeline
 from newsletter.collection.repository import RunRepository
-from newsletter.contracts import validate_draft, validate_packet_body
+from newsletter.contracts import content_hash, validate_draft, validate_packet_body
 from newsletter.editor import POLICY_DIR, CodexEditor
 from newsletter.settings import Settings
 from newsletter.store import StoreError
 from newsletter.types import Payload
 from newsletter.workflow.definition import load_definition, parse_definition
 from newsletter.workflow.engine import WorkflowEngine
-from newsletter.workflow.nodes import EditorialNodes, validate_recipe
-from newsletter.workflow.repository import WorkflowRepository
+from newsletter.workflow.nodes import EditorialNodes, validate_recipe, validate_revision_subgraph
+from newsletter.workflow.repository import WorkflowError, WorkflowRepository
 from newsletter.workflow.state import WorkflowState
 
 
@@ -64,9 +66,11 @@ class DagPipeline(CollectionPipeline):
         max_packets: int,
         *,
         editor: CodexEditor,
+        recipe_path: Path | None = None,
     ) -> None:
         super().__init__(runs, collector, workspace, timeout, max_packets)
         self.editor = editor
+        self.recipe_path = recipe_path or Path(__file__).parents[1] / "workflows" / "daily.yaml"
         self.repository = WorkflowRepository(runs.store)
         self.state = WorkflowState(runs.store)
 
@@ -96,6 +100,23 @@ class DagPipeline(CollectionPipeline):
         return run
 
     def progress(self, run_id: str) -> Payload:
+        progress = self.graph_progress(run_id)
+        repair = self.state.repair(run_id)
+        if repair:
+            try:
+                continuation = self.graph_progress(repair["child_run_id"])
+            except WorkflowError:
+                definition = parse_definition(repair["snapshot"]["definition"])
+                continuation = {
+                    "id": definition.id,
+                    "definition_hash": definition.digest,
+                    "state": "queued",
+                    "nodes": [],
+                }
+            progress["continuations"] = [continuation]
+        return progress
+
+    def graph_progress(self, run_id: str) -> Payload:
         run = self.repository.get(run_id)
         definition = parse_definition(self.repository.snapshot(run_id)["definition"])
         nodes = []
@@ -136,9 +157,21 @@ class DagPipeline(CollectionPipeline):
             self.runs.update(run["id"], state="queued")
             return await super().collect_next()
         try:
+            repair = self.state.repair(run["id"])
+            execution_id = run["id"]
+            if repair:
+                snapshot = repair["snapshot"]
+                execution_id = repair["child_run_id"]
             definition = parse_definition(snapshot["definition"])
-            validate_recipe(definition)
-            self.repository.start(run["id"], definition, snapshot["inputs"])
+            if repair:
+                validate_revision_subgraph(definition)
+            else:
+                validate_recipe(definition)
+            status = self.repository.start(execution_id, definition, snapshot["inputs"])
+            # A crash may leave completed artifacts without an edition receipt.
+            # Recover that local, idempotent tail even after the model deadline.
+            if self.finish_graph(run, definition, execution_id, status):
+                return True
             elapsed = (
                 datetime.now(UTC) - datetime.fromisoformat(snapshot["inputs"]["started_at"])
             ).total_seconds()
@@ -155,21 +188,9 @@ class DagPipeline(CollectionPipeline):
                 self.repository, {node.type: handlers for node in definition.nodes}
             )
             async with asyncio.timeout(remaining):
-                await engine.step(run["id"])
-            status = self.repository.get(run["id"])
-            if status["state"] in {"failed", "unknown"}:
-                codes = [
-                    node["error_code"]
-                    for node in status["nodes"].values()
-                    if node["state"] in {"failed", "unknown"}
-                ]
-                self.runs.update(
-                    run["id"],
-                    state="blocked",
-                    error_code="workflow_" + (codes[0] if codes else "failed"),
-                )
-            elif status["state"] == "succeeded":
-                self.queue_edition(run, definition)
+                await engine.step(execution_id)
+            status = self.repository.get(execution_id)
+            self.finish_graph(run, definition, execution_id, status)
             return True
         except asyncio.CancelledError:
             raise
@@ -182,24 +203,60 @@ class DagPipeline(CollectionPipeline):
             self.runs.update(run["id"], state="failed", error_code="workflow_invalid_result")
         return True
 
-    def queue_edition(self, run: Payload, definition: Any) -> None:
-        review_node = next(node for node in definition.nodes if node.type == "review")
-        result = self.repository.output(run["id"], review_node.id)
+    def finish_graph(
+        self, run: Payload, definition: Any, execution_id: str, status: Payload
+    ) -> bool:
+        if status["state"] in {"failed", "unknown"}:
+            codes = [
+                node["error_code"]
+                for node in status["nodes"].values()
+                if node["state"] in {"failed", "unknown"}
+            ]
+            self.runs.update(
+                run["id"],
+                state="blocked",
+                error_code="workflow_" + (codes[0] if codes else "failed"),
+            )
+            return True
+        if status["state"] == "succeeded":
+            self.queue_edition(run, definition, execution_id=execution_id)
+            return True
+        return False
+
+    def queue_edition(
+        self,
+        run: Payload,
+        definition: Any,
+        *,
+        execution_id: str | None = None,
+    ) -> None:
+        execution_id = execution_id or run["id"]
+        review_node = next(
+            (node for node in definition.nodes if node.type == "final_review"),
+            next((node for node in definition.nodes if node.type == "review"), None),
+        )
+        if review_node is None:
+            raise ValueError("Missing publication review")
+        result = self.repository.output(execution_id, review_node.id)
         validate_draft(result["draft"], result["packets"])
         required = adopted_packets(result["draft"])
         edition = self.runs.store.prepare(
             {
-                "request_key": "collection:" + run["id"],
+                "request_key": "collection:" + execution_id,
                 "issue_date": run["issue_date"],
                 "packet_ids": [p["id"] for p in result["packets"]],
             },
             workflow_binding={
-                "run_id": run["id"],
+                "run_id": execution_id,
                 "result": {"draft": result["draft"], "review": result["review"]},
                 "required_packets": required,
             },
         )
-        self.runs.update(run["id"], state="editing", edition_id=edition["id"])
+        self.runs.update(run["id"], state="editing", edition_id=edition["id"], error_code="")
+        if execution_id != run["id"]:
+            # The original index and research writes already have durable receipts.
+            # Never rewrite/recreate them just because a held draft is revised.
+            return
         try:
             self.archive_candidates(run, definition, required, result["packets"])
         except Exception:
@@ -264,7 +321,11 @@ class DagPipeline(CollectionPipeline):
     def advance(self) -> bool:
         changed = super().advance()
         for run in self.runs.active():
-            if self.runs.workflow_snapshot(run["id"]) is None or not run["edition_id"]:
+            if (
+                self.runs.workflow_snapshot(run["id"]) is None
+                or run["state"] != "editing"
+                or not run["edition_id"]
+            ):
                 continue
             edition = self.runs.store.get(run["edition_id"])
             if edition["state"] in {"failed", "blocked"}:
@@ -287,7 +348,102 @@ class DagPipeline(CollectionPipeline):
             elif all(state == "done" for state in states):
                 self.runs.update(run["id"], state="ready")
                 changed = True
-        return changed
+        return self.start_legacy_repair() or changed
+
+    def start_legacy_repair(self) -> bool:
+        """Resume one old editorial HOLD through a new, frozen two-node subgraph.
+
+        New recipes already contain revision/final_review and never enter here.
+        This upgrade bridge changes no old node, edition, request key or receipt.
+        It is also crash-resumable between creating the audit record and queueing.
+        """
+        with self.runs.store.lock:
+            pending = self.runs.store.db.execute(
+                "SELECT COUNT(*) FROM collection_runs "
+                "WHERE state IN ('queued','collecting','projecting','editing')"
+            ).fetchone()[0]
+            if pending >= self.runs.store.max_pending_jobs:
+                return False
+            rows = self.runs.store.db.execute(
+                "SELECT body FROM collection_runs WHERE state='blocked' "
+                "ORDER BY rowid DESC LIMIT 100"
+            ).fetchall()
+        for row in rows:
+            run = json.loads(row[0])
+            if run.get("error_code") != "editorial_review_failed" or not run.get("edition_id"):
+                continue
+            snapshot = self.runs.workflow_snapshot(run["id"])
+            if snapshot is None:
+                continue
+            try:
+                original = parse_definition(snapshot["definition"])
+                validate_recipe(original)
+                if any(node.type in {"revision", "final_review"} for node in original.nodes):
+                    continue  # A second HOLD is terminal, never a third review cycle.
+                repair = self.state.repair(run["id"])
+                if repair and repair["source_edition_id"] != run["edition_id"]:
+                    continue  # The continuation's revised edition also held.
+                inputs = snapshot["inputs"]
+                elapsed = (
+                    datetime.now(UTC) - datetime.fromisoformat(inputs["started_at"])
+                ).total_seconds()
+                if repair is None and elapsed >= inputs["timeout_seconds"]:
+                    continue  # Upgrading must not reset or extend a run's deadline.
+                if repair is None:
+                    current = load_definition(self.recipe_path)
+                    validate_recipe(current)
+                    roles = {node.type: node for node in current.nodes}
+                    if not {"revision", "final_review"} <= roles.keys():
+                        continue
+                    definition = parse_definition(
+                        {
+                            "version": 1,
+                            "id": "editorial-repair",
+                            "nodes": [
+                                {
+                                    "id": "revision",
+                                    "type": "revision",
+                                    "params": roles["revision"].params,
+                                },
+                                {
+                                    "id": "final_review",
+                                    "type": "final_review",
+                                    "needs": ["revision"],
+                                    "params": roles["final_review"].params,
+                                },
+                            ],
+                        }
+                    )
+                    validate_revision_subgraph(definition)
+                    review_node = next(node for node in original.nodes if node.type == "review")
+                    result = self.repository.output(run["id"], review_node.id)
+                    binding = self.state.edition(run["edition_id"])
+                    if binding is None or binding["result"] != {
+                        "draft": result["draft"],
+                        "review": result["review"],
+                    }:
+                        raise ValueError("Held result does not match its original artifact")
+                    frozen = deepcopy(inputs)
+                    frozen.update(
+                        prior_review_result=result,
+                        parent_run_id=run["id"],
+                        parent_definition_hash=original.digest,
+                        parent_result_hash=content_hash(result),
+                    )
+                    repair = self.state.create_repair(
+                        run["id"], run["edition_id"], definition.snapshot(), frozen
+                    )
+                definition = parse_definition(repair["snapshot"]["definition"])
+                validate_revision_subgraph(definition)
+                self.repository.start(
+                    repair["child_run_id"], definition, repair["snapshot"]["inputs"]
+                )
+                self.runs.update(run["id"], state="collecting", error_code="")
+                return True
+            except Exception:
+                self.runs.update(run["id"], error_code="workflow_repair_invalid")
+                return True
+        return False
 
 
 def adopted_packets(draft: Payload) -> list[str]:

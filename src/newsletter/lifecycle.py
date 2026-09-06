@@ -127,7 +127,11 @@ async def service_lifespan(
                 settings.max_packets,
             )
             pipeline: CollectionPipeline = (
-                DagPipeline(*pipeline_args, editor=cast(CodexEditor, research_editor))
+                DagPipeline(
+                    *pipeline_args,
+                    editor=cast(CodexEditor, research_editor),
+                    recipe_path=settings.workflow_file,
+                )
                 if dag_enabled
                 else CollectionPipeline(*pipeline_args)
             )

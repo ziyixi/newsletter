@@ -5,8 +5,11 @@ Only the content handlers are replaced; scheduling, artifacts, packets, projecti
 dispatch, edition binding, rendering, usage accounting and send guards stay real.
 """
 
+import asyncio
+import json
 from collections import Counter
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +20,7 @@ from newsletter.collection.collector import MockCollector
 from newsletter.collection.repository import RunRepository
 from newsletter.contracts import parse_message, to_dict, validate_draft
 from newsletter.editor import CodexEditor, MockEditor
+from newsletter.errors import EditorError
 from newsletter.settings import Settings
 from newsletter.store import Store, StoreError
 from newsletter.usage import codex_usage, observe_codex_usage
@@ -150,7 +154,7 @@ def attach(rig):
 
 
 @pytest.fixture
-def rig(tmp_path, monkeypatch):
+def rig(tmp_path, monkeypatch, request):
     rig = SimpleNamespace(
         path=tmp_path,
         store=Store(tmp_path / "state.sqlite3", "mock"),
@@ -158,20 +162,61 @@ def rig(tmp_path, monkeypatch):
         calls=Counter(),
         forbidden_calls=[],
         review_passed=True,
+        revision_passed=True,
+        final_review_passed=True,
+        tail_model_calls=[],
     )
 
     async def forbidden(*args, **kwargs):
         rig.forbidden_calls.append("model-or-legacy-collector")
         raise AssertionError("The frozen DAG must never run an SDK or a second editor")
 
-    monkeypatch.setattr(CodexEditor, "execute", forbidden)
+    async def synthetic_tail(editor, prompt, schema, policy, path):
+        # Only the new tail may reach this explicit SDK boundary substitute.
+        # Its real handlers still enforce skip/provenance/author-HOLD rules.
+        value = json.loads(prompt)
+        assert path.is_dir() and policy
+        if "prior_draft_untrusted" in value:
+            kind = "revision"
+            packets = value["research_packets_untrusted"]
+            revised = deepcopy(value["prior_draft_untrusted"])
+            revised["title"] += " · synthetic revision"
+            output = {
+                "draft": revised,
+                "review": {
+                    "passed": rig.revision_passed,
+                    "findings": [] if rig.revision_passed else ["HOLD: author still uncertain"],
+                },
+                "supplemental_packets": [],
+            }
+        elif "prior_review_findings_untrusted" in value:
+            kind = "final_review"
+            packets = value["packets_untrusted"]
+            output = {
+                "passed": rig.final_review_passed,
+                "findings": [] if rig.final_review_passed else ["HOLD: final synthetic finding"],
+            }
+        else:
+            return await forbidden()
+        assert all(packet["is_fixture"] for packet in packets)
+        assert value["issue_date"] == ISSUE_DATE
+        rig.tail_model_calls.append((kind, value))
+        record_synthetic_usage()
+        opened = {source["url"] for p in packets for source in p["content"]["sources"]}
+        return json.dumps(output, ensure_ascii=False), opened, True
+
+    monkeypatch.setattr(CodexEditor, "execute", synthetic_tail)
     monkeypatch.setattr(CodexEditor, "prepare", forbidden)
     monkeypatch.setattr(MockEditor, "prepare", forbidden)
     monkeypatch.setattr(MockCollector, "collect", forbidden)
 
+    real_execute = EditorialNodes.execute
+
     async def execute(nodes, kind, ctx, path):
         rig.calls[(ctx.node_id, ctx.item_id)] += 1
         assert path.is_dir()
+        if kind in {"revision", "final_review"}:
+            return await real_execute(nodes, kind, ctx, path)
         if kind in MODEL_KINDS:
             record_synthetic_usage()
         if kind == "history":
@@ -243,6 +288,17 @@ def rig(tmp_path, monkeypatch):
         Settings(data_dir=tmp_path), rig.pipeline.state, ISSUE_DATE
     )
     assert len(instructions) == 6
+    rig.current_recipe = rig.pipeline.recipe_path
+    if getattr(request, "param", None) == "legacy":
+        snapshot["definition"]["nodes"] = [
+            node
+            for node in snapshot["definition"]["nodes"]
+            if node["type"] not in {"revision", "final_review"}
+        ]
+        rig.pipeline.recipe_path = tmp_path / "legacy.yaml"
+        # JSON is valid YAML. No SQL mutations or nonpublic snapshot rewrites.
+        rig.pipeline.recipe_path.write_text(json.dumps(snapshot["definition"]), encoding="utf-8")
+    rig.instructions = instructions
     rig.snapshot = snapshot
     rig.run = rig.runs.start(
         {"request_key": "synthetic-daily", "issue_date": ISSUE_DATE},
@@ -288,6 +344,30 @@ def assert_no_mail(rig):
     assert not rig.forbidden_calls
 
 
+def expire_budget(rig, monkeypatch):
+    frozen = rig.snapshot["inputs"]
+    deadline = datetime.fromisoformat(frozen["started_at"]) + timedelta(
+        seconds=frozen["timeout_seconds"] + 1
+    )
+
+    class PastDeadline(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return deadline.astimezone(tz or UTC)
+
+    monkeypatch.setattr("newsletter.workflow.pipeline.datetime", PastDeadline)
+
+
+async def legacy_hold(rig):
+    rig.review_passed = False
+    held = await drain(rig)
+    assert held["state"] == "blocked" and held["error_code"] == "editorial_review_failed"
+    assert held["usage"]["invocations"] == 14
+    assert rig.pipeline.state.repair(rig.run["id"]) is None
+    assert not rig.tail_model_calls
+    return held
+
+
 @pytest.mark.asyncio
 async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_receipt(rig):
     assert receipt(rig)["state"] == "queued"
@@ -296,6 +376,9 @@ async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_rec
     assert finished["workflow"]["state"] == "succeeded"
     assert finished["workflow"]["candidate_count"] == 6
     assert finished["workflow"]["research_count"] == 3
+    states = {node["id"]: node["state"] for node in finished["workflow"]["nodes"]}
+    assert states["revision"] == states["final_review"] == "skipped"
+    assert not rig.tail_model_calls
     assert all(count == 1 for count in rig.calls.values())
     edition = rig.store.get(finished["edition_id"])
     bound = WorkflowState(rig.store).edition(edition["id"])
@@ -365,14 +448,268 @@ async def test_restart_after_completed_research_preserves_artifacts_and_does_not
 @pytest.mark.asyncio
 async def test_independent_review_hold_blocks_worker_render_and_send(rig):
     rig.review_passed = False
+    rig.final_review_passed = False
     finished = await drain(rig)
     assert finished["state"] == "blocked", finished
     assert finished["error_code"] == "editorial_review_failed"
     edition = rig.store.get(finished["edition_id"])
     assert edition["state"] == "blocked" and not edition["review"]["passed"]
     assert not edition.get("rendered")
+    assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
+    assert finished["usage"]["invocations"] == 16
+    assert finished["usage"]["usage"]["total_tokens"] == 16 * 120
+    assert rig.pipeline.state.repair(rig.run["id"]) is None
+    assert await rig.worker.step() is False
     with pytest.raises(StoreError):
         rig.store.reserve_send(approval(edition))
+    assert_no_mail(rig)
+
+
+@pytest.mark.asyncio
+async def test_initial_hold_revises_once_then_independently_reviews_before_publication(rig):
+    rig.review_passed = False
+    finished = await drain(rig)
+    assert finished["state"] == "ready", finished
+    edition = rig.store.get(finished["edition_id"])
+    original = rig.pipeline.repository.output(rig.run["id"], "review")
+    revised = rig.pipeline.repository.output(rig.run["id"], "revision")
+    final = rig.pipeline.repository.output(rig.run["id"], "final_review")
+    assert not original["review"]["passed"]
+    assert revised["prior_review"] == original["review"]
+    assert revised["revision"]["performed"] is True
+    assert final["review"]["passed"] and edition["review"]["passed"]
+    assert edition["draft"]["title"].endswith("synthetic revision")
+    assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
+    assert rig.tail_model_calls[1][1]["draft_untrusted"] == revised["draft"]
+    assert rig.tail_model_calls[1][1]["prior_review_findings_untrusted"] == original["review"]
+    assert finished["usage"]["invocations"] == 16
+    assert int(edition["usage"]["usage"]["total_tokens"]) == 16 * 120
+    assert len(rig.notion.calls) == 4
+    assert rig.pipeline.state.repair(rig.run["id"]) is None
+    assert await rig.worker.step() is False
+    assert_no_mail(rig)
+
+
+@pytest.mark.asyncio
+async def test_revision_author_hold_cannot_be_overruled_by_a_passing_final_review(rig):
+    rig.review_passed = rig.revision_passed = False
+    finished = await drain(rig)
+    assert finished["state"] == "blocked" and finished["error_code"] == "editorial_review_failed"
+    edition = rig.store.get(finished["edition_id"])
+    assert not edition["review"]["passed"]
+    assert any("定稿总编仍报告" in finding for finding in edition["review"]["findings"])
+    assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
+    assert not edition.get("rendered")
+    assert await rig.worker.step() is False
+    with pytest.raises(StoreError):
+        rig.store.reserve_send(approval(edition))
+    assert_no_mail(rig)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rig", ["legacy"], indirect=True)
+async def test_legacy_hold_upgrade_preserves_original_records_and_combines_child_usage(rig):
+    held = await legacy_hold(rig)
+    original_edition = rig.store.get(held["edition_id"])
+    original_artifacts = rig.pipeline.repository.artifacts(rig.run["id"])
+    original_graph = rig.pipeline.repository.snapshot(rig.run["id"])
+    original_calls = rig.calls.copy()
+    original_projections = list(rig.notion.calls)
+    rig.pipeline.recipe_path = rig.current_recipe
+    assert rig.pipeline.advance() is True
+    repair = rig.pipeline.state.repair(rig.run["id"])
+    child = repair["child_run_id"]
+    assert child == rig.run["id"] + ":repair-1"
+    assert repair["source_edition_id"] == held["edition_id"]
+    frozen = repair["snapshot"]["inputs"]
+    assert all(frozen[key] == value for key, value in rig.snapshot["inputs"].items())
+    assert frozen["prior_review_result"] == rig.pipeline.repository.output(rig.run["id"], "review")
+    # A collecting repair must not be put back in HOLD by its original edition.
+    assert rig.pipeline.advance() is False
+    assert rig.runs.get(rig.run["id"])["state"] == "collecting"
+    assert len(receipt(rig)["workflow"]["continuations"]) == 1
+
+    # Reopen all repositories at the durable parent/child handoff boundary.
+    rig.store.close()
+    rig.store = Store(rig.path / "state.sqlite3", "mock")
+    attach(rig)
+    rig.store.recover()
+    rig.runs.recover()
+    rig.pipeline.recover()
+    finished = await drain(rig)
+    assert finished["state"] == "ready", finished
+    assert finished["id"] == held["id"] and finished["issue_date"] == ISSUE_DATE
+    assert finished["edition_id"] != held["edition_id"]
+    assert (
+        rig.runs.start(
+            {"request_key": "synthetic-daily", "issue_date": ISSUE_DATE},
+            rig.instructions,
+            workflow_snapshot=rig.snapshot,
+        )["id"]
+        == held["id"]
+    )
+    assert rig.runs.workflow_snapshot(rig.run["id"]) == rig.snapshot
+    assert rig.pipeline.repository.snapshot(rig.run["id"]) == original_graph
+    assert rig.pipeline.repository.artifacts(rig.run["id"]) == original_artifacts
+    assert rig.store.get(held["edition_id"]) == original_edition
+    assert all(rig.calls[key] == count for key, count in original_calls.items())
+    assert rig.notion.calls == original_projections
+    assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
+    edition = rig.store.get(finished["edition_id"])
+    assert edition["issue_date"] == original_edition["issue_date"]
+    assert edition["packet_ids"] == original_edition["packet_ids"]
+    assert rig.pipeline.state.edition(edition["id"])["run_id"] == child
+    assert finished["usage"] == rig.pipeline.state.usage(child)
+    assert finished["usage"]["invocations"] == 16
+    assert int(edition["usage"]["usage"]["total_tokens"]) == 16 * 120
+    continuation = finished["workflow"]["continuations"][0]
+    assert continuation["state"] == "succeeded"
+    assert [node["type"] for node in continuation["nodes"]] == ["revision", "final_review"]
+    assert_no_mail(rig)
+    with pytest.raises(StoreError):
+        rig.store.reserve_send(approval(original_edition))
+    assert rig.store.reserve_send(approval(edition))[1] is True
+    assert rig.store.reserve_send(approval(edition))[1] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rig", ["legacy"], indirect=True)
+async def test_legacy_repair_final_hold_is_terminal_and_cannot_create_a_third_round(rig):
+    held = await legacy_hold(rig)
+    rig.final_review_passed = False
+    rig.pipeline.recipe_path = rig.current_recipe
+    finished = await drain(rig)
+    assert finished["state"] == "blocked" and finished["error_code"] == "editorial_review_failed"
+    assert finished["edition_id"] != held["edition_id"]
+    assert finished["workflow"]["continuations"][0]["state"] == "succeeded"
+    assert finished["usage"]["invocations"] == 16
+    assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
+    assert await rig.worker.step() is False
+    for identifier in (held["edition_id"], finished["edition_id"]):
+        edition = rig.store.get(identifier)
+        assert not edition.get("rendered")
+        with pytest.raises(StoreError):
+            rig.store.reserve_send(approval(edition))
+    assert_no_mail(rig)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rig", ["legacy"], indirect=True)
+async def test_expired_legacy_hold_does_not_start_a_new_repair(rig, monkeypatch):
+    await legacy_hold(rig)
+    rig.pipeline.recipe_path = rig.current_recipe
+    expire_budget(rig, monkeypatch)
+    assert await rig.worker.step() is False
+    assert rig.pipeline.state.repair(rig.run["id"]) is None
+    assert not rig.tail_model_calls
+    assert_no_mail(rig)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rig", ["legacy"], indirect=True)
+async def test_completed_repair_recovers_local_publication_after_deadline_without_model_retry(
+    rig, monkeypatch
+):
+    await legacy_hold(rig)
+    rig.pipeline.recipe_path = rig.current_recipe
+
+    def interrupted_tail(*args, **kwargs):
+        raise StoreError("busy", "Synthetic interruption before edition receipt")
+
+    monkeypatch.setattr(rig.pipeline, "queue_edition", interrupted_tail)
+    for _ in range(20):
+        assert await rig.worker.step()
+        repair = rig.pipeline.state.repair(rig.run["id"])
+        if repair and rig.pipeline.repository.get(repair["child_run_id"])["state"] == "succeeded":
+            break
+    else:
+        pytest.fail("Repair did not complete before the interrupted local tail")
+    assert rig.runs.get(rig.run["id"])["state"] == "collecting"
+    calls = list(rig.tail_model_calls)
+    projections = list(rig.notion.calls)
+    expire_budget(rig, monkeypatch)
+    rig.store.close()
+    rig.store = Store(rig.path / "state.sqlite3", "mock")
+    attach(rig)
+    rig.store.recover()
+    rig.runs.recover()
+    rig.pipeline.recover()
+    finished = await drain(rig)
+    assert finished["state"] == "ready", finished
+    assert rig.tail_model_calls == calls and rig.notion.calls == projections
+    assert finished["usage"]["invocations"] == 16
+    assert_no_mail(rig)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rig", ["legacy"], indirect=True)
+async def test_persisted_repair_receipt_recovers_after_deadline_but_cannot_start_models(
+    rig, monkeypatch
+):
+    held = await legacy_hold(rig)
+    rig.pipeline.recipe_path = rig.current_recipe
+
+    def crash_before_child_start(*args, **kwargs):
+        raise KeyboardInterrupt("Synthetic crash after durable repair record")
+
+    with monkeypatch.context() as crash:
+        crash.setattr(rig.pipeline.repository, "start", crash_before_child_start)
+        with pytest.raises(KeyboardInterrupt):
+            rig.pipeline.advance()
+    repair = rig.pipeline.state.repair(rig.run["id"])
+    assert repair is not None
+    expire_budget(rig, monkeypatch)
+    finished = await drain(rig)
+    assert finished["state"] == "blocked" and finished["error_code"] == "workflow_deadline"
+    assert finished["edition_id"] == held["edition_id"]
+    assert rig.pipeline.state.repair(rig.run["id"]) == repair
+    assert finished["usage"]["invocations"] == 14
+    assert not rig.tail_model_calls
+    assert_no_mail(rig)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rig", ["legacy"], indirect=True)
+@pytest.mark.parametrize("failure", ["invalid_output", "interrupted"])
+async def test_terminal_repair_attempt_recovers_original_failure_before_deadline_classification(
+    rig, monkeypatch, failure
+):
+    await legacy_hold(rig)
+    rig.pipeline.recipe_path = rig.current_recipe
+    assert rig.pipeline.advance()
+    attempted = []
+
+    async def failed_model(*args, **kwargs):
+        attempted.append(failure)
+        record_synthetic_usage()
+        if failure == "interrupted":
+            raise asyncio.CancelledError
+        raise EditorError("invalid_output")
+
+    original_finish = rig.pipeline.finish_graph
+
+    def crash_after_failed_artifact(run, definition, execution_id, status):
+        if status["state"] == "failed":
+            raise KeyboardInterrupt("Synthetic crash before parent failure receipt")
+        return original_finish(run, definition, execution_id, status)
+
+    monkeypatch.setattr(CodexEditor, "execute", failed_model)
+    monkeypatch.setattr(rig.pipeline, "finish_graph", crash_after_failed_artifact)
+    with pytest.raises(asyncio.CancelledError if failure == "interrupted" else KeyboardInterrupt):
+        await rig.worker.step()
+    assert attempted == [failure]
+    expire_budget(rig, monkeypatch)
+    rig.store.close()
+    rig.store = Store(rig.path / "state.sqlite3", "mock")
+    attach(rig)
+    rig.store.recover()
+    rig.runs.recover()
+    rig.pipeline.recover()
+    finished = await drain(rig)
+    assert finished["state"] == "blocked"
+    assert finished["error_code"] == "workflow_" + failure
+    assert attempted == [failure]  # Neither failure nor uncertain cancellation is retried.
+    assert finished["usage"]["invocations"] == 15
     assert_no_mail(rig)
 
 

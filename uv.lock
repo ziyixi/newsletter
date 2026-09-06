@@ -346,7 +346,7 @@ requires-dist = [
     { name = "protobuf", specifier = "==7.36.1" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "uvicorn", specifier = "==0.52.4" },
-    { name = "ziyixi-protos", url = "https://github.com/ziyixi/protos/releases/download/python-v0.1.0.dev2/ziyixi_protos-0.1.0.dev2-py3-none-any.whl" },
+    { name = "ziyixi-protos", url = "https://github.com/ziyixi/protos/releases/download/python-v0.1.0.dev3/ziyixi_protos-0.1.0.dev3-py3-none-any.whl" },
 ]
 provides-extras = ["codex"]
 
@@ -594,13 +594,13 @@ wheels = [
 
 [[package]]
 name = "ziyixi-protos"
-version = "0.1.0.dev2"
-source = { url = "https://github.com/ziyixi/protos/releases/download/python-v0.1.0.dev2/ziyixi_protos-0.1.0.dev2-py3-none-any.whl" }
+version = "0.1.0.dev3"
+source = { url = "https://github.com/ziyixi/protos/releases/download/python-v0.1.0.dev3/ziyixi_protos-0.1.0.dev3-py3-none-any.whl" }
 dependencies = [
     { name = "protobuf" },
 ]
 wheels = [
-    { url = "https://github.com/ziyixi/protos/releases/download/python-v0.1.0.dev2/ziyixi_protos-0.1.0.dev2-py3-none-any.whl", hash = "sha256:5b21eadc0bcb28cc77aefa1fc4747fda4bce4401bf43e33aefa7d1155c6cdc13" },
+    { url = "https://github.com/ziyixi/protos/releases/download/python-v0.1.0.dev3/ziyixi_protos-0.1.0.dev3-py3-none-any.whl", hash = "sha256:cbb2ab75d97445c2c364c4f93006fc3d7edd065d29a9f3652c0aaf905a380ebf" },
 ]
 
 [package.metadata]

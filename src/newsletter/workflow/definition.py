@@ -30,6 +30,8 @@ NODE_TYPES = frozenset(
         "gap_plan",
         "finalization",
         "review",
+        "revision",
+        "final_review",
     }
 )
 CONTINUE_TYPES = frozenset({"discovery", "api_feed", "history", "research"})

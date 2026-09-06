@@ -5,7 +5,7 @@ from importlib.resources import files
 import pytest
 
 from newsletter.workflow.definition import DefinitionError, load_definition, parse_definition
-from newsletter.workflow.nodes import validate_recipe
+from newsletter.workflow.nodes import validate_recipe, validate_revision_subgraph
 from newsletter.workflow.pipeline import adopted_packets
 
 
@@ -22,13 +22,28 @@ def by_type(value, kind):
 def test_packaged_default_recipe_passes_both_syntax_and_semantic_safety_checks():
     definition = parse_definition(recipe())
     validate_recipe(definition)
-    assert [node.type for node in definition.nodes][-2:] == ["finalization", "review"]
+    assert [node.type for node in definition.nodes][-4:] == [
+        "finalization",
+        "review",
+        "revision",
+        "final_review",
+    ]
     assert {node.type for node in definition.nodes}.isdisjoint({"send", "mail", "notion", "render"})
 
 
 @pytest.mark.parametrize(
     "kind",
-    ["history", "deduplicate", "selection", "composition", "gap_plan", "finalization", "review"],
+    [
+        "history",
+        "deduplicate",
+        "selection",
+        "composition",
+        "gap_plan",
+        "finalization",
+        "review",
+        "revision",
+        "final_review",
+    ],
 )
 def test_critical_role_cannot_be_deleted_even_if_dag_stays_valid(kind):
     value = recipe()
@@ -42,7 +57,10 @@ def test_critical_role_cannot_be_deleted_even_if_dag_stays_valid(kind):
         validate_recipe(parse_definition(value))
 
 
-@pytest.mark.parametrize("kind", ["selection", "composition", "gap_plan", "finalization", "review"])
+@pytest.mark.parametrize(
+    "kind",
+    ["selection", "composition", "gap_plan", "finalization", "review", "revision", "final_review"],
+)
 def test_critical_role_cannot_run_as_zero_item_map_or_continue_after_failure(kind):
     for bypass in ("map", "continue"):
         value = recipe()
@@ -67,6 +85,8 @@ def test_critical_role_cannot_run_as_zero_item_map_or_continue_after_failure(kin
         ("finalization", "research"),
         ("finalization", "history"),
         ("review", "finalization"),
+        ("revision", "review"),
+        ("final_review", "revision"),
         ("deduplicate", "history"),
         ("deduplicate", "discovery"),
     ],
@@ -171,3 +191,58 @@ def test_material_only_used_outside_body_is_still_required_for_publication(optio
 
 def test_uncited_packets_are_not_added_to_adopted_material():
     assert adopted_packets({"sections": [{"paragraphs": [{"citations": []}]}]}) == []
+
+
+def test_pre_revision_immutable_recipe_remains_valid():
+    value = recipe()
+    value["nodes"] = [
+        node for node in value["nodes"] if node["type"] not in {"revision", "final_review"}
+    ]
+    validate_recipe(parse_definition(value))
+    assert value["nodes"][-1]["type"] == "review"
+
+
+@pytest.mark.parametrize("kind", ["revision", "final_review"])
+def test_revision_stages_cannot_be_duplicated_or_have_extra_dependency(kind):
+    value = recipe()
+    target = by_type(value, kind)
+    duplicate = {**target, "id": "duplicate-" + kind}
+    value["nodes"].append(duplicate)
+    with pytest.raises(DefinitionError):
+        validate_recipe(parse_definition(value))
+    value = recipe()
+    by_type(value, kind)["needs"].append(by_type(value, "history")["id"])
+    with pytest.raises(DefinitionError):
+        validate_recipe(parse_definition(value))
+
+
+def test_recovery_subgraph_requires_separate_code_owned_validator():
+    value = {
+        "version": 1,
+        "id": "held-edition-revision",
+        "nodes": [
+            {"id": "repair", "type": "revision"},
+            {"id": "audit", "type": "final_review", "needs": ["repair"]},
+        ],
+    }
+    definition = parse_definition(value)
+    validate_revision_subgraph(definition)
+    with pytest.raises(DefinitionError):
+        validate_recipe(definition)
+    value["nodes"][1]["needs"] = []
+    with pytest.raises(DefinitionError):
+        validate_revision_subgraph(parse_definition(value))
+
+
+@pytest.mark.parametrize("bad", [None, "bad", 0, 901, True])
+def test_recovery_subgraph_cannot_relax_timeout_or_add_work(bad):
+    value = {
+        "version": 1,
+        "id": "held-edition-revision",
+        "nodes": [
+            {"id": "repair", "type": "revision", "params": {"timeout_seconds": bad}},
+            {"id": "audit", "type": "final_review", "needs": ["repair"]},
+        ],
+    }
+    with pytest.raises(DefinitionError):
+        validate_revision_subgraph(parse_definition(value))

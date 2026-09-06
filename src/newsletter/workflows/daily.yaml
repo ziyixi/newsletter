@@ -50,3 +50,11 @@ nodes:
     type: review
     needs: [finalization]
     params: {timeout_seconds: 360}
+  - id: revision
+    type: revision
+    needs: [review]
+    params: {timeout_seconds: 600}
+  - id: final_review
+    type: final_review
+    needs: [revision]
+    params: {timeout_seconds: 360}

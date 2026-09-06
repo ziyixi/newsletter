@@ -21,7 +21,8 @@ fine when all references are updated. New APIs require a reviewed adapter.
 
 The default stages are history, public metadata feeds, per-direction discovery,
 deduplication, selection, per-question research, composition, gap planning,
-optional follow-up research, finalization and a new-session review. Private
+optional follow-up research, finalization, a new-session review, conditional
+revision and final review. Private
 Todofy, rendering, Notion confirmation and delivery remain a protected service
 tail: YAML cannot grant publication or remove its safety checks.
 
@@ -37,6 +38,12 @@ tail: YAML cannot grant publication or remove its safety checks.
   follow-up is a persisted skipped node, not a loop. Finalization cannot produce
   another set of supplemental packets; unresolved critical claims must be removed
   or held. Independent-session review is not independent-model verification.
+- Editorial repair: an initial PASS skips both additional model calls. A HOLD
+  allows one fresh-session minimal revision, followed by a separate fresh-session
+  review. Prefer correcting or removing unsupported claims and shortening the
+  issue. No new packet round, automatic factual waiver, or third revision is
+  allowed. The final reviewer must search and open evidence; a second HOLD stops
+  publication. This is service behavior, not a daily manual editing task.
 - Models execute serially against one dedicated login. More map items are not
   automatically more concurrent processes. Node deadlines are in the recipe;
   `NEWSLETTER_WORKFLOW_TIMEOUT_SECONDS=5400` bounds total elapsed collection time.
@@ -84,6 +91,24 @@ or raw model transcripts. Candidate/history and archive diagnostics are private
 SQLite state, not a public web endpoint. An interrupted or rejected run retains
 its already acquired materials.
 
+For an unsent HOLD produced by an older recipe without revision nodes, startup
+can automatically continue through a separately frozen two-node repair graph.
+`workflow_repairs` permits exactly one continuation per original run. The old
+definition hash, attempts, review artifact and held edition remain unchanged;
+the date and external request key stay the same. Research and Notion projections
+are reused. The repaired edition has its own immutable binding. The public
+`workflow.continuations` field exposes the child graph without pretending it was
+part of the old snapshot. No new model attempt starts after the original total
+deadline; restoring already-completed local receipts does not consume a new
+model budget. A continuation that also holds cannot start another continuation.
+
+External cron performs the entire prepare/wait/protected-send call. Reading node
+progress or container logs is diagnostic only and is not needed for advancement.
+Authentication expiry, exhausted model budget, unresolved review failures or
+ambiguous external writes stop with durable error codes and a failing trigger
+exit status. Reliability means bounded automatic recovery and visible failures,
+not guaranteeing delivery of unverified content during provider outages.
+
 ## Token accounting
 
 The pinned Python SDK emits `thread/tokenUsage/updated`. Its `tokenUsage.total`
@@ -99,6 +124,8 @@ reports received before failed/cancelled/invalid results; missing reports and
 unfinished invocations mark the summary partial. Provider totals are retained,
 not replaced by estimated context sizes. The frozen edition and HTML/text footer
 include this summary, so changing it changes the approved render hash.
+For upgrade continuations, querying either run includes the original and repair
+usage by unique invocation ID; no ledger rows are copied or counted twice.
 
 The small lower-right footer says **recorded** tokens, with partial/unknown labels
 when necessary. It is not a cost estimate or a ChatGPT plan allowance meter.
