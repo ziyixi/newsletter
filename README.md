@@ -90,6 +90,7 @@ Content-Type: application/json
 
 | 操作 | HTTP | 权限 |
 | --- | --- | --- |
+| 用户明确要求的修订验证邮件（每日期额外至多一次，保留原投递记录） | POST /v1/editions/{id}/send-verification | send |
 | 启动/查询整期 | POST /v1/runs；GET /v1/runs/{id} | editor |
 | 可选外部材料补充 | POST /v1/packets | ingest |
 | 查材料 | POST /v1/inbox/query | editor |

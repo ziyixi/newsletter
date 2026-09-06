@@ -379,43 +379,21 @@ def _merge_packets(chosen: Sequence[Payload]) -> list[Payload]:
     return list(by_id.values())
 
 
-def _section(content: Payload, *, kind: str = "feature") -> Payload:
+def _section(content: Payload) -> Payload:
     return {
-        "kind": kind,
+        "kind": content["kind"],
         "heading": content["title"],
         "paragraphs": deepcopy(content["paragraphs"]),
         "limitations": content["limitations"],
     }
 
 
-def _combined_section(choices: Sequence[Payload], *, kind: str, heading: str) -> Payload:
-    paragraphs: list[Payload] = []
-    limitations: list[str] = []
-    for choice in choices:
-        content = choice["content"]
-        copied = deepcopy(content["paragraphs"])
-        copied[0]["text"] = content["title"] + "\n" + copied[0]["text"]
-        paragraphs.extend(copied)
-        if content["limitations"]:
-            limitations.append(content["title"] + "：" + content["limitations"])
-    return {
-        "kind": kind,
-        "heading": heading,
-        "paragraphs": paragraphs,
-        "limitations": "\n".join(limitations),
-    }
-
-
 def _draft(choices: Sequence[Payload], issue_date: str) -> Payload:
-    briefs = [item for item in choices if item["disposition"] == "brief"]
-    deeps = [item for item in choices if item["disposition"] == "deep"]
-    watches = [item for item in choices if item["disposition"] == "watch"]
-    sections = []
-    if briefs:
-        sections.append(_combined_section(briefs, kind="world", heading="今日简讯"))
-    sections.extend(_section(item["content"]) for item in deeps)
-    if watches:
-        sections.append(_combined_section(watches, kind="context", heading="继续观察"))
+    # Topic identity is independent of publication depth: an AI brief is not
+    # world news, and a world deep-dive is not automatically a research paper.
+    # Each reviewed title/body/limitation stays together in its own section.
+    # Preserve priority order and the reviewed kind; never infer it from a title.
+    sections = [_section(item["content"]) for item in choices]
     draft: Payload = {
         "subject": f"每日简报 · {issue_date}",
         "title": "每日简报",
@@ -779,6 +757,9 @@ class PublicationRepository:
             if row is not None:
                 if row["digest"] != digest:
                     raise StoreError("conflict", "Frozen publication snapshot cannot change")
+                # A persisted layout is authoritative across renderer/assembler
+                # upgrades. Verify its exact receipt, not today's layout rules;
+                # otherwise a restart could rewrite or reject an older issue.
                 return json.loads(row["body"])
             reason = assembled.get("coverage", {}).get("reason")
             max_features = sum(
@@ -812,12 +793,14 @@ class PublicationRepository:
             raise PublicationError()
         with self.store.lock:
             rows = self.store.db.execute(
-                "SELECT p.issue_date,p.tasks,s.body,e.body AS edition,d.edition_id AS attempted "
+                "SELECT p.issue_date,p.tasks,s.body,e.body AS edition,"
+                "COALESCE(d.edition_id,v.edition_id) AS attempted "
                 "FROM publication_plans p "
                 "LEFT JOIN publication_snapshots s ON p.run_id=s.run_id "
                 "LEFT JOIN workflow_editions w ON w.run_id=p.run_id "
                 "LEFT JOIN editions e ON e.id=w.edition_id "
-                "LEFT JOIN sends d ON d.edition_id=e.id WHERE p.issue_date<? "
+                "LEFT JOIN sends d ON d.edition_id=e.id "
+                "LEFT JOIN verification_sends v ON v.edition_id=e.id WHERE p.issue_date<? "
                 "ORDER BY p.issue_date DESC,p.rowid DESC LIMIT 120",
                 (issue_date,),
             ).fetchall()

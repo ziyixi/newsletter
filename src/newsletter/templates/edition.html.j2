@@ -29,6 +29,7 @@
       .muted { color:#bac4b9 !important; }
       .accent { color:#b8d8bc !important; }
       .personal-panel,.reading-panel { background-color:#2b382d !important; }
+      .story-note { background-color:#29332b !important; }
       .fixture { background-color:#3b3428 !important; color:#ecd4a1 !important; }
       a { color:#b8d8bc !important; }
     }
@@ -62,15 +63,26 @@
    <p class="body-copy muted" style="font-family:{{ sans }};font-size:16px;line-height:1.9;color:#596858;margin:0;word-wrap:break-word;overflow-wrap:anywhere;">{{ lines(draft.introduction) }}</p>
   </td></tr>
 {% for section in sections %}
-  <tr><td class="inset" style="padding:0 40px 26px;">
-   <p class="accent" style="font-family:{{ sans }};border-top:1px solid #dce2d9;margin:0 0 13px;padding-top:23px;font-size:12px;line-height:1.7;font-weight:700;letter-spacing:1px;color:#426449;">{{ '%02d'|format(loop.index) }} &nbsp; {{ section.label }}</p>
-   <h2 class="{% if section.kind == 'feature' %}feature-title {% endif %}ink" style="font-family:{{ serif if section.kind == 'feature' else sans }};font-size:{{ 27 if section.kind == 'feature' else 20 }}px;line-height:1.5;font-weight:{{ 700 if section.kind == 'feature' else 600 }};color:#202d25;margin:0 0 15px;word-wrap:break-word;overflow-wrap:anywhere;">{{ section.heading }}</h2>
+  <tr><td class="inset" style="padding:0 40px 30px;">
+   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="story-panel" style="width:100%;table-layout:fixed;border-top:1px solid #dce2d9;">
+    <tr><td style="padding:23px 0 0;">
+   <p class="accent" style="font-family:{{ sans }};margin:0 0 11px;font-size:11px;line-height:1.7;font-weight:700;letter-spacing:1.3px;color:#426449;">{{ '%02d'|format(loop.index) }} &nbsp;/&nbsp; {{ section.label }}</p>
+   <h2 class="{% if section.kind == 'feature' %}feature-title {% endif %}ink" style="font-family:{{ serif }};font-size:{{ 27 if section.kind == 'feature' else 24 }}px;line-height:1.5;font-weight:700;color:#202d25;margin:0 0 17px;word-wrap:break-word;overflow-wrap:anywhere;">{{ section.heading }}</h2>
 {% for paragraph in section.paragraphs %}
-   <p class="body-copy ink" style="font-family:{{ sans }};font-size:16px;line-height:1.95;margin:0 0 15px;color:#334037;word-wrap:break-word;overflow-wrap:anywhere;">{{ lines(paragraph.text) }}{% for ref in paragraph.references %}<sup class="muted" style="font-family:{{ sans }};font-size:11px;line-height:0;color:#697669;margin-left:3px;">[{{ ref.number }}]</sup>{% endfor %}</p>
+   <p class="body-copy ink" style="font-family:{{ sans }};font-size:16px;line-height:1.9;margin:0 0 15px;color:#334037;word-wrap:break-word;overflow-wrap:anywhere;">{{ lines(paragraph.text) }}{% for ref in paragraph.references %}<sup class="muted" style="font-family:{{ sans }};font-size:11px;line-height:0;color:#697669;margin-left:3px;">[{{ ref.number }}]</sup>{% endfor %}</p>
 {% endfor %}
+{% if section.limitations %}
+   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f5f7f2" class="story-note" style="width:100%;table-layout:fixed;background-color:#f5f7f2;border-left:2px solid #c5d0bd;">
+    <tr><td style="padding:11px 14px;">
+     <p class="muted" style="font-family:{{ sans }};font-size:11px;line-height:1.7;font-weight:700;color:#61705d;letter-spacing:0.5px;margin:0 0 4px;">阅读边界</p>
 {% for limitation in section.limitations %}
-   <p class="muted" style="font-family:{{ sans }};font-size:12px;line-height:1.8;color:#697669;border-left:2px solid #c5d0bd;padding-left:12px;margin:6px 0 0;word-wrap:break-word;overflow-wrap:anywhere;">阅读边界：{{ limitation }}</p>
+     <p class="muted" style="font-family:{{ sans }};font-size:12px;line-height:1.8;color:#61705d;margin:0;word-wrap:break-word;overflow-wrap:anywhere;">{{ lines(limitation) }}</p>
 {% endfor %}
+    </td></tr>
+   </table>
+{% endif %}
+    </td></tr>
+   </table>
   </td></tr>
 {% endfor %}
 {% if chart %}

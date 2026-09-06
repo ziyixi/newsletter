@@ -5,7 +5,14 @@ from copy import deepcopy
 import pytest
 from ziyixi_protos.newsletter import editorial_pb2 as pb
 
-from newsletter.contracts import content_hash, parse_message, validate_draft
+from newsletter.contracts import (
+    MAX_SECTIONS,
+    SECTION_KINDS,
+    canonical_json,
+    content_hash,
+    parse_message,
+    validate_draft,
+)
 from newsletter.rendering import render_edition
 from newsletter.store import Store, StoreError
 from newsletter.workflow.publication import (
@@ -154,7 +161,7 @@ def withdrawal_result(prior=None, *, signal=False, content=False):
     return value
 
 
-def delivery_receipt(repository, run_id, built, state="simulated"):
+def delivery_receipt(repository, run_id, built, state="simulated", *, verification=False):
     store = repository.store
     store.save_workflow_supplements(run_id, built["packets"])
     ids = [packet["id"] for packet in built["packets"]]
@@ -172,7 +179,8 @@ def delivery_receipt(repository, run_id, built, state="simulated"):
         issue["id"], state="ready", draft=built["draft"], review=built["review"], rendered=rendered
     )
     if state != "not_requested":
-        store.reserve_send(
+        reserve = store.reserve_verification_send if verification else store.reserve_send
+        reserve(
             {
                 "id": issue["id"],
                 "request_key": "send-" + run_id,
@@ -199,9 +207,10 @@ def test_approved_story_and_summary_use_public_proto():
     validate_draft(built["draft"], built["packets"])
     assert built["review"]["passed"] is True
     assert built["notion_required"] is False
-    assert built["draft"]["sections"][0]["paragraphs"][0]["text"] == (
-        value["content"]["title"] + "\n" + value["content"]["paragraphs"][0]["text"]
-    )
+    section = built["draft"]["sections"][0]
+    assert section["heading"] == value["content"]["title"]
+    assert section["paragraphs"] == value["content"]["paragraphs"]
+    assert section["limitations"] == value["content"]["limitations"]
     assert value == result()  # Assembly cannot mutate an approved source object.
 
 
@@ -320,7 +329,12 @@ def test_each_topic_has_disposition_and_another_story_failure_does_not_block_iss
     assert built["coverage"]["mode"] == "partial"
     assert built["coverage"]["reason"] == "deadline"
     assert len(built["draft"]["sections"]) == 3
-    assert [s["kind"] for s in built["draft"]["sections"]] == ["world", "feature", "context"]
+    assert [s["kind"] for s in built["draft"]["sections"]] == ["feature"] * 3
+    assert [s["heading"] for s in built["draft"]["sections"]] == [
+        values[1]["content"]["title"],
+        values[2]["content"]["title"],
+        values[4]["signal"]["title"],
+    ]
     assert {p["id"] for p in built["packets"]} == {"packet-1", "packet-2", "packet-3"}
     assert "Synthetic research question 4" not in str(built["draft"])
     assert "2 个入选选题暂未刊出" in built["draft"]["introduction"]
@@ -351,8 +365,8 @@ def test_only_two_priority_deeps_and_other_complete_briefs_are_preserved():
         "brief",
         "brief",
     ]
-    assert len(built["draft"]["sections"]) == 3
-    assert built["draft"]["sections"][1]["paragraphs"] == values[1]["content"]["paragraphs"]
+    assert len(built["draft"]["sections"]) == 4
+    assert built["draft"]["sections"][0]["paragraphs"] == values[1]["content"]["paragraphs"]
 
 
 def test_later_failure_or_corrupt_result_does_not_replace_earlier_approved_checkpoint():
@@ -483,9 +497,36 @@ def test_capacity_marks_whole_topic_deferred_instead_of_cutting_approved_paragra
     built = assemble("run-1", DAY, tasks, [result(i) for i in range(1, 19)])
     coverage = built["coverage"]["stories"]
     assert len(coverage) == 18
-    assert [s["disposition"] for s in coverage[:16]] == ["brief"] * 16
-    assert [s["disposition"] for s in coverage[16:]] == ["deferred"] * 2
-    assert all("容量" in s["reason"] for s in coverage[16:])
+    assert [s["disposition"] for s in coverage[:MAX_SECTIONS]] == ["brief"] * MAX_SECTIONS
+    assert [s["disposition"] for s in coverage[MAX_SECTIONS:]] == ["deferred"] * (18 - MAX_SECTIONS)
+    assert all("容量" in s["reason"] for s in coverage[MAX_SECTIONS:])
+
+
+@pytest.mark.parametrize("kind", SECTION_KINDS)
+def test_topic_semantics_survive_publication_independently_of_brief_or_deep(kind):
+    for mode in ("brief", "deep"):
+        value = result(mode=mode, content=story(kind=kind))
+        built = assemble("run-1", DAY, [task()], [value])
+        assert built["draft"]["sections"][0]["kind"] == kind
+        assert built["draft"]["sections"][0]["heading"] == value["content"]["title"]
+        assert built["draft"]["sections"][0]["paragraphs"] == value["content"]["paragraphs"]
+
+
+def test_twelve_briefs_keep_individual_titles_and_limitations_not_one_giant_world_block():
+    values = [
+        result(i, content=story(i, kind=SECTION_KINDS[(i - 1) % len(SECTION_KINDS)]))
+        for i in range(1, 13)
+    ]
+    built = assemble("run-1", DAY, [task(i) for i in range(1, 13)], values)
+    assert len(built["draft"]["sections"]) == 12
+    assert all(s["disposition"] == "brief" for s in built["coverage"]["stories"])
+    for section, value in zip(built["draft"]["sections"], values, strict=True):
+        assert section == {
+            "kind": value["content"]["kind"],
+            "heading": value["content"]["title"],
+            "paragraphs": value["content"]["paragraphs"],
+            "limitations": value["content"]["limitations"],
+        }
 
 
 def test_no_approved_public_content_is_explicit_error_not_empty_success():
@@ -612,6 +653,58 @@ def test_fake_pass_or_unrecorded_approved_text_cannot_be_frozen(repository):
     assert repository.get_publication("run-1") is None
 
 
+def test_existing_combined_layout_replays_exactly_after_per_story_layout_upgrade(
+    repository, monkeypatch
+):
+    from newsletter.workflow.story_nodes import freeze_publication
+
+    tasks, values = [task(), task(2)], [result(), result(2)]
+    repository.save_plan("old-run", DAY, tasks)
+    for selected, value in zip(tasks, values, strict=True):
+        repository.save("old-run", selected, "brief", value, issue_date=DAY)
+    old = assemble("old-run", DAY, tasks, values)
+    old["draft"]["sections"] = [
+        {
+            "kind": "world",
+            "heading": "今日简讯",
+            "paragraphs": [
+                {
+                    **value["content"]["paragraphs"][0],
+                    "text": value["content"]["title"]
+                    + "\n"
+                    + value["content"]["paragraphs"][0]["text"],
+                }
+                for value in values
+            ],
+            "limitations": "\n".join(
+                value["content"]["title"] + "：" + value["content"]["limitations"]
+                for value in values
+            ),
+        }
+    ]
+    validate_draft(old["draft"], old["packets"])
+    # Synthetic disk snapshot represents the previous release's valid immutable
+    # publication. No current API is allowed to newly certify this old layout.
+    digest = content_hash({"issue_date": DAY, "tasks": tasks, "result": old})
+    with repository.store.transaction():
+        repository.store.db.execute(
+            "INSERT INTO publication_snapshots VALUES(?,?,?,?,?,?)",
+            ("old-run", DAY, canonical_json(tasks), canonical_json(old), digest, DAY),
+        )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Existing publication must not be reassembled after an upgrade")
+
+    monkeypatch.setattr("newsletter.workflow.publication.assemble", forbidden)
+    assert repository.get_publication("old-run") == old
+    assert repository.record_publication("old-run", DAY, tasks, old) == old
+    assert freeze_publication(repository, "old-run", DAY, reason="restart") == old
+    altered = deepcopy(old)
+    altered["draft"]["sections"][0]["heading"] = "不能借升级改动旧邮件"
+    with pytest.raises(StoreError):
+        repository.record_publication("old-run", DAY, tasks, altered)
+
+
 @pytest.mark.parametrize("feature_cap", [0, 1, 2])
 def test_freeze_reconstruction_preserves_admission_order_at_feature_and_paragraph_capacity(
     repository, feature_cap
@@ -675,12 +768,18 @@ def test_brief_watch_and_deferred_priorities_survive_next_day_history(repository
     "state",
     ["not_requested", "unknown", "submitting", "rejected", "simulated", "provider_accepted"],
 )
-def test_deep_topic_memory_closes_only_after_a_confirmed_send_receipt(repository, state):
+@pytest.mark.parametrize("verification", [False, True])
+def test_deep_topic_memory_closes_only_after_a_confirmed_send_receipt(
+    repository, state, verification
+):
+    if verification:
+        original = assemble("original", DAY, [task(99)], [result(99)])
+        delivery_receipt(repository, "original", original)
     value = result(mode="deep")
     repository.save("run-1", task(), "deep", value, issue_date=DAY)
     built = assemble("run-1", DAY, [task()], [value])
     repository.record_publication("run-1", DAY, [task()], built)
-    delivery_receipt(repository, "run-1", built, state)
+    edition = delivery_receipt(repository, "run-1", built, state, verification=verification)
     before = repository.store.db.execute("SELECT COUNT(*) FROM sends").fetchone()[0]
     pending = repository.pending_history(NEXT_DAY)
     assert repository.store.db.execute("SELECT COUNT(*) FROM sends").fetchone()[0] == before
@@ -690,3 +789,7 @@ def test_deep_topic_memory_closes_only_after_a_confirmed_send_receipt(repository
         assert len(pending) == 1
         assert pending[0]["disposition"] == "deferred"
         assert "勿自动重发原稿" in pending[0]["reason"]
+    if state in {"provider_accepted", "unknown"}:
+        # Existing general edition history already includes explicit verification
+        # outcomes; it must not need a fake normal-send row to remember them.
+        assert edition["id"] in {item["id"] for item in repository.store.recent_history()}

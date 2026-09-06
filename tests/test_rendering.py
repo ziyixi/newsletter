@@ -13,6 +13,7 @@ from PIL import Image
 from newsletter.charts import render_chart_png
 from newsletter.contracts import ContractError
 from newsletter.rendering import CHART_CID, render_edition
+from newsletter.todofy import unavailable_digest
 
 SAMPLE_PACKETS = [
     {
@@ -362,3 +363,99 @@ def test_ai_and_cross_disciplinary_research_can_both_be_feature_sections():
     assert result["text"].index(draft["sections"][0]["heading"]) < result["text"].index(
         draft["sections"][1]["heading"]
     )
+
+
+def test_eight_semantic_topics_have_independent_titles_bodies_and_local_boundaries():
+    kinds = [
+        ("ai_ml", "AI / ML 进展"),
+        ("science", "科学进展"),
+        ("economy", "经济与产业"),
+        ("technology", "技术与工程"),
+        ("health", "健康与公共卫生"),
+        ("world", "世界简报"),
+        ("feature", "研究与进展"),
+        ("context", "背景与观察"),
+    ]
+    draft = {
+        "title": "分类排版离线样张",
+        "subject": "分类排版离线样张",
+        "introduction": "模拟数据，仅验证邮件排版。",
+        "sections": [
+            {
+                "kind": kind,
+                "heading": f"第{index}题：已经审阅的完整标题",
+                "paragraphs": [
+                    {
+                        "text": f"第{index}题的完整已审段落{part}。",
+                        "citations": ["sample-packet/methods"],
+                    }
+                    for part in range(1, 3)
+                ],
+                "limitations": f"第{index}题的独立边界，不属于下一题。",
+            }
+            for index, (kind, _) in enumerate(kinds, 1)
+        ],
+    }
+    frozen = copy.deepcopy(draft)
+    rendered = render_edition(
+        draft, SAMPLE_PACKETS, "2026-09-05", personal_digest=unavailable_digest()
+    )
+    panels = rendered["html"].split('class="story-panel"')[1:]
+    assert len(panels) == 8
+    for index, ((_, label), section, panel) in enumerate(
+        zip(kinds, draft["sections"], panels, strict=True), 1
+    ):
+        assert label in panel
+        assert f">{section['heading']}</h2>" in panel
+        assert "font-weight:700" in panel
+        assert section["limitations"] in panel
+        assert 'class="story-note"' in panel
+        for paragraph in section["paragraphs"]:
+            assert paragraph["text"] in panel
+        assert panel.index(section["paragraphs"][-1]["text"]) < panel.index(section["limitations"])
+        assert f"{label}｜{section['heading']}" in rendered["text"]
+        assert rendered["html"].count(section["heading"]) == 1
+        if index < 8:
+            assert draft["sections"][index]["limitations"] not in panel
+    assert "今日简讯" not in rendered["html"]
+    assert "今日深读" not in rendered["html"]  # The category cannot imply a brief is a deep dive.
+    assert rendered["chart_png"] == ""
+    assert not ParsedEmail(
+        rendered["html"]
+    ).images  # No invented chart when no approved data exists.
+    assert rendered["html"].index("TODOFY / 与你有关") > rendered["html"].index(
+        draft["sections"][-1]["limitations"]
+    )
+    assert rendered["text"].index("TODOFY / 与你有关") > rendered["text"].index(
+        draft["sections"][-1]["limitations"]
+    )
+    assert draft == frozen
+    assert (
+        render_edition(draft, SAMPLE_PACKETS, "2026-09-05", personal_digest=unavailable_digest())
+        == rendered
+    )
+
+
+def test_topic_boundary_preserves_newlines_and_escapes_markup_without_parsing_titles():
+    draft = sample_without_chart()
+    draft.pop("recommended_reading")
+    draft["sections"] = [
+        {
+            "kind": "feature",
+            "heading": "原样标题，不按字面猜分类",
+            "paragraphs": [
+                {
+                    "text": "段落首行不是另一个标题。\n第二行仍属正文。",
+                    "citations": ["sample-packet/methods"],
+                }
+            ],
+            "limitations": "第一条限制。\n第二条限制 <b>不是HTML</b>。",
+        }
+    ]
+    rendered = render_edition(draft, SAMPLE_PACKETS, "2026-09-05")
+    assert "研究与进展" in rendered["html"]
+    assert "第一条限制。<br>第二条限制 &lt;b&gt;不是HTML&lt;/b&gt;。" in rendered["html"]
+    assert "段落首行不是另一个标题。<br>第二行仍属正文。" in rendered["html"]
+    assert "<h2" in rendered["html"] and "font-size:27px" in rendered["html"]
+    assert "<b>不是HTML</b>" not in rendered["html"]
+    assert draft["sections"][0]["limitations"] in rendered["text"]

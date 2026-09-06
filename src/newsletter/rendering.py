@@ -25,9 +25,18 @@ from .contracts import (
 from .types import Payload, RenderResult
 from .usage import UsageSummary, normalize_usage_summary, usage_footer
 
-RENDERER_VERSION = "python-editorial/4"
+RENDERER_VERSION = "python-editorial/5"
 CHART_CID = "cid:newsletter-chart"
-_KIND_LABELS = {"world": "世界简报", "feature": "今日深读", "context": "背景与边界"}
+_KIND_LABELS = {
+    "world": "世界简报",
+    "ai_ml": "AI / ML 进展",
+    "science": "科学进展",
+    "economy": "经济与产业",
+    "technology": "技术与工程",
+    "health": "健康与公共卫生",
+    "feature": "研究与进展",
+    "context": "背景与观察",
+}
 _ACCESS_LABELS = {
     "metadata": "元数据",
     "abstract": "摘要",

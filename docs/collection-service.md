@@ -41,7 +41,7 @@ live部署需单独配置本地持久data目录与专用可写Codex auth目录�
 
 ## 外部触发器迁移
 
-源码中的daily workflow改为手动或repository_dispatch，仅运行trigger_run.py，且不持有发送权限；无schedule。GitHub线上旧工作流只有在这次修改经用户同意推送后才变化，本地修改不会自动关闭旧schedule。切换前确认旧sender已停，避免新旧重复；当前任务没有推送或替用户改线上配置。
+源码中的daily workflow改为手动或repository_dispatch，仅运行trigger_run.py，且不持有发送权限；无schedule。生产每日投递由self-host-on-vultr的独立cron容器在15:00 UTC触发。迁移新主机时仍须确认旧sender已停，避免新旧重复；不要从本地配置推断线上调度状态。
 ## Current live workflow
 
 Live deployments now default to the versioned DAG described in [workflow.md](workflow.md).

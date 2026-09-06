@@ -23,7 +23,9 @@ deterministic publication from approved whole versions
 private Todofy → render + frozen hash → protected external send
 ```
 
-All brief attempts precede deep attempts. Up to four selected topics receive a
+All brief attempts precede deep attempts. Selection compares the supplied pool
+without another research pass; discovery collects bounded leads, not full papers.
+Up to four selected topics receive a
 deepening attempt; at most two complete deep pieces are displayed. Other topics
 use their separately researched and approved brief, not a truncated deep piece.
 Discovery and ranking do not count as verified writing. A minimal watch signal
@@ -37,6 +39,15 @@ missing graphic/card. A blocked body gets at most one targeted rewrite and a new
 review; there is no whole-issue HOLD/rewrite/review loop. Review sessions search
 and open every cited source. Observed opens and exact hashes are necessary
 provenance, not a guarantee of factual correctness or independent-model review.
+
+Each published topic retains its own heading, paragraphs, category and local
+limitations in the email. Up to 12 sections are accepted; briefs are not merged
+into a single world section. New writing uses explicit AI/ML, science, world,
+economy, technology or health categories, while legacy feature/context values
+remain readable. Graphs can accompany a brief when verified comparable data
+help explain it; they do not depend on successful deepening. No data means no
+invented graph. Empty drafts do not receive an empty review; malformed components
+receive bounded, specific diagnostics for the existing repair opportunity.
 
 An approved brief/signal is synchronously checkpointed before further repair or
 deepening. Every selected topic receives an explicit `deep`, `brief`, `watch`
@@ -144,7 +155,8 @@ include this summary, so changing it changes the approved render hash.
 For upgrade continuations, querying either run includes the original and repair
 usage by unique invocation ID; no ledger rows are copied or counted twice.
 
-The small lower-right footer says **recorded** tokens, with partial/unknown labels
+The small lower-right footer says **recorded** tokens, with mutually exclusive
+uncached input, cached input and output counts, plus partial/unknown labels
 when necessary. It is not a cost estimate or a ChatGPT plan allowance meter.
 Todofy's current response does not return its upstream Gemini usage: that usage
 is explicitly excluded, not invented from logs or assumed zero. Mock footer text
@@ -155,6 +167,16 @@ The implementation also checks the installed SDK's pinned event schema; no raw
 account/login or model transcript is persisted for accounting.
 
 ## Release checks
+
+An explicitly requested corrected-email test uses
+`POST /v1/editions/{id}/send-verification` with the same public
+`SendEditionRequest` body and send-role authentication. It requires a distinct
+ready edition, its exact frozen render hash and a confirmed original delivery
+for that date. The separate `verification_sends` receipt allows only one such
+attempt per date. A repeated request never calls the provider again, including
+after an unknown outcome. Original daily receipts remain unchanged. Cron and the
+standard trigger never use this endpoint; it is not an automatic retry or a way
+to bypass a failed/unknown daily send.
 
 Run `make check`, `make smoke`, `make smoke-codex`, `make build` and the installed
 wheel smoke. Tests cover graph validation, stable maps, failure coverage,

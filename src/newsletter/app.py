@@ -213,18 +213,23 @@ def create_app(
         rendered = await asyncio.to_thread(render_edition, **value)
         return response(rendered, pb.RenderedEdition)
 
-    @app.post("/v1/editions/{edition_id}/send", dependencies=[Depends(auth("send"))])
-    async def send(edition_id: str, request: Request) -> JSONResponse:
+    async def dispatch(
+        edition_id: str, request: Request, *, verification: bool = False
+    ) -> JSONResponse:
         value = await body(request, pb.SendEditionRequest)
         if value["id"] != edition_id:
             raise StoreError("conflict", "Body ID must match the resource path")
         if settings.mail_backend == "resend" and _store(app).get(edition_id)["is_fixture"]:
             raise StoreError("conflict", "Fixtures cannot be published")
-        edition, first_attempt = _store(app).reserve_send(value)
+        reserve = (
+            _store(app).reserve_verification_send if verification else _store(app).reserve_send
+        )
+        edition, first_attempt = reserve(value)
         if first_attempt:
             try:
                 async with asyncio.timeout(35):
-                    result = await _mail(app).send(edition, "newsletter-" + edition["id"])
+                    prefix = "newsletter-verification-" if verification else "newsletter-"
+                    result = await _mail(app).send(edition, prefix + edition["id"])
                 edition = _store(app).finish(edition_id, **result)
             except AdapterError as exc:
                 edition = _store(app).finish(
@@ -239,6 +244,16 @@ def create_app(
                 if isinstance(exc, asyncio.CancelledError):
                     raise
         return response(edition, pb.Edition)
+
+    @app.post("/v1/editions/{edition_id}/send", dependencies=[Depends(auth("send"))])
+    async def send(edition_id: str, request: Request) -> JSONResponse:
+        return await dispatch(edition_id, request)
+
+    @app.post("/v1/editions/{edition_id}/send-verification", dependencies=[Depends(auth("send"))])
+    async def send_verification(edition_id: str, request: Request) -> JSONResponse:
+        # Same strict public SendEditionRequest, but a distinct explicit purpose.
+        # Normal trigger/cron never calls this once-per-date verification route.
+        return await dispatch(edition_id, request, verification=True)
 
     return app
 

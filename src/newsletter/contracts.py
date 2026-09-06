@@ -28,9 +28,19 @@ MAX_PACKET_BYTES = 1024 * 1024
 MAX_PACKETS = 32
 MAX_SOURCES = 32
 MAX_CHART_POINTS = 32
+MAX_SECTIONS = 12
 # Ordered immutable values shared with the editor's structured-output schema.
 SOURCE_ACCESS_SCOPES = ("metadata", "abstract", "full_text", "dataset")
-SECTION_KINDS = ("world", "feature", "context")
+SECTION_KINDS = (
+    "world",
+    "feature",
+    "context",
+    "ai_ml",
+    "science",
+    "economy",
+    "technology",
+    "health",
+)
 CHART_KINDS = ("bar", "line")
 IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}"
 _IDENTIFIER = re.compile(IDENTIFIER_PATTERN + r"\Z")
@@ -302,8 +312,8 @@ def validate_draft(
     _text(article.title, "title", 300, single_line=True)
     _text(article.introduction, "introduction", 4000, required=False)
     _text(article.limitations, "limitations", 8000, required=False)
-    if not 1 <= len(article.sections) <= 4:
-        _fail("INVALID_ARGUMENT", "Draft needs 1..4 sections")
+    if not 1 <= len(article.sections) <= MAX_SECTIONS:
+        _fail("INVALID_ARGUMENT", f"Draft needs 1..{MAX_SECTIONS} sections")
     for section in article.sections:
         if section.kind not in SECTION_KINDS:
             _fail("INVALID_ARGUMENT", "Unsupported section kind")

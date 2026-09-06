@@ -7,6 +7,7 @@ import pytest
 from ziyixi_protos.newsletter import editorial_pb2 as pb
 
 from newsletter.contracts import (
+    MAX_SECTIONS,
     ContractError,
     canonical_json,
     content_hash,
@@ -302,9 +303,15 @@ def test_limits_and_header_injection(draft, packets):
     with pytest.raises(ContractError):
         validate_draft(draft, packets)
     draft["subject"] = "Daily"
-    draft["sections"] *= 5
+    draft["sections"] *= MAX_SECTIONS + 1
     with pytest.raises(ContractError):
         validate_draft(draft, packets)
+
+
+def test_one_section_per_topic_fits_the_operator_topic_ceiling(draft, packets):
+    draft["sections"] *= MAX_SECTIONS
+    validate_draft(draft, packets)
+    assert MAX_SECTIONS == 12
 
 
 @pytest.mark.parametrize(

@@ -48,6 +48,10 @@ class Store:
             CREATE TABLE IF NOT EXISTS sends (
                 issue_date TEXT PRIMARY KEY, edition_id TEXT UNIQUE NOT NULL,
                 request_key TEXT UNIQUE NOT NULL, render_hash TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS verification_sends (
+                issue_date TEXT PRIMARY KEY, edition_id TEXT UNIQUE NOT NULL,
+                request_key TEXT UNIQUE NOT NULL, render_hash TEXT NOT NULL,
+                previous_edition_id TEXT NOT NULL, created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS workflow_editions (
                 edition_id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL,
                 editor_result TEXT NOT NULL, required_packets TEXT NOT NULL,
@@ -462,6 +466,59 @@ class Store:
                     edition["id"],
                     request["request_key"],
                     request["expected_render_hash"],
+                ),
+            )
+            edition["delivery_state"] = "submitting"
+            self._write(edition)
+            return edition, True
+
+    def reserve_verification_send(self, request: Payload) -> tuple[EditionRecord, bool]:
+        """One explicit corrected-issue verification, separate from daily delivery.
+
+        Never called by cron. The original accepted receipt remains untouched;
+        an ambiguous/failed original or verification cannot be bypassed with a
+        new key or edition. The same frozen approval is idempotent after restart.
+        """
+        with self.transaction():
+            edition = self.get(request["id"])
+            if edition["state"] != "ready":
+                raise StoreError("conflict", "Only a ready edition can be verified")
+            if edition["rendered"]["render_hash"] != request["expected_render_hash"]:
+                raise StoreError("conflict", "Approval does not match the frozen preview")
+            reused = self.db.execute(
+                "SELECT edition_id,render_hash FROM verification_sends WHERE request_key=?",
+                (request["request_key"],),
+            ).fetchone()
+            if reused and tuple(reused) != (request["id"], request["expected_render_hash"]):
+                raise StoreError("conflict", "Verification key belongs to another approval")
+            previous = self.db.execute(
+                "SELECT edition_id FROM sends WHERE issue_date=?", (edition["issue_date"],)
+            ).fetchone()
+            if previous is None or previous[0] == edition["id"]:
+                raise StoreError("conflict", "Verification requires a distinct delivered issue")
+            accepted = "simulated" if self.mode == "mock" else "provider_accepted"
+            if self.get(previous[0])["delivery_state"] != accepted:
+                raise StoreError("conflict", "Original delivery must have confirmed acceptance")
+            row = self.db.execute(
+                "SELECT edition_id,render_hash FROM verification_sends WHERE issue_date=?",
+                (edition["issue_date"],),
+            ).fetchone()
+            if row:
+                if tuple(row) != (request["id"], request["expected_render_hash"]):
+                    raise StoreError("conflict", "This date already has a verification attempt")
+                return edition, False
+            if edition["delivery_state"] != "not_requested":
+                raise StoreError("conflict", "Edition already has a delivery attempt")
+            self.assert_workflow_research(edition["id"])
+            self.db.execute(
+                "INSERT INTO verification_sends VALUES(?,?,?,?,?,?)",
+                (
+                    edition["issue_date"],
+                    edition["id"],
+                    request["request_key"],
+                    request["expected_render_hash"],
+                    previous[0],
+                    now(),
                 ),
             )
             edition["delivery_state"] = "submitting"

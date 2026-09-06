@@ -87,7 +87,16 @@ def draft():
 
 
 def test_schema_enums_exactly_match_shared_contract_values(enum_fields):
-    assert SECTION_KINDS == ("world", "feature", "context")
+    assert SECTION_KINDS == (
+        "world",
+        "feature",
+        "context",
+        "ai_ml",
+        "science",
+        "economy",
+        "technology",
+        "health",
+    )
     assert CHART_KINDS == ("bar", "line")
     assert SOURCE_ACCESS_SCOPES == ("metadata", "abstract", "full_text", "dataset")
     for field, values in (

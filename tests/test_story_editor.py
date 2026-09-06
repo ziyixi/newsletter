@@ -2,13 +2,14 @@
 
 import asyncio
 import json
+import re
 from copy import deepcopy
 from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 
-from newsletter.contracts import ContractError, content_hash
+from newsletter.contracts import SECTION_KINDS, ContractError, content_hash
 from newsletter.editor import CodexEditor
 from newsletter.errors import EditorError
 from newsletter.workflow.publication import validate_result
@@ -234,7 +235,7 @@ async def test_malformed_optional_component_never_invalidates_independent_body(r
     rig.replies = [reply(writer(content)), reply(review())]
     result = await rig.run()
     assert result["content"] == story() and len(rig.calls) == 2
-    assert result["issues"][0]["reason"] == "component_contract_invalid"
+    assert result["issues"][0]["reason"].startswith("component_contract_invalid:")
 
 
 async def test_bad_body_repairs_once_and_never_changes_approved_signal(rig):
@@ -445,10 +446,12 @@ async def test_malformed_body_can_still_leave_independently_checked_signal(rig):
     rig.replies = [
         reply(writer(bad, story("事件存在。"))),
         reply(review(body="not_present", signal="approved")),
+        reply(writer(bad)),
     ]
     result = await rig.run()
     assert result["content"] is None and result["signal"] == story("事件存在。")
-    assert len(rig.calls) == 2
+    assert len(rig.calls) == 3
+    assert rig.checkpoints[0]["signal"] == story("事件存在。")
 
 
 async def test_unconfirmed_event_produces_no_signal_and_no_fabricated_body(rig):
@@ -524,7 +527,7 @@ def test_model_schema_derives_public_story_fields_and_multiple_reading_sources()
         "recommended_reading",
         "chart",
     }
-    assert fields["kind"]["enum"] == ["world", "feature", "context"]
+    assert fields["kind"]["enum"] == list(SECTION_KINDS)
     assert set(story_review_schema()["properties"]) == {"assessments", "issues", "prior_withdrawal"}
 
 
@@ -733,7 +736,7 @@ async def test_withdrawal_requires_a_genuinely_bound_prior_brief(rig, mutation):
     ]
     result = await rig.run(mode="deep", prior=prior)
     assert "withdrawals" not in result
-    assert rig.calls[1]["prompt"]["prior_verified_brief_untrusted"] is None
+    assert len(rig.calls) == 1
 
 
 async def test_ordinary_deep_hold_never_implicitly_withdraws_verified_brief(rig):
@@ -848,3 +851,221 @@ async def test_only_deep_initial_review_receives_withdrawal_evidence_lookup(rig)
         "packet/publication": SECOND_URL,
     }
     assert rig.calls[3]["approval_sources"].evidence == {}
+
+
+def test_schema_binds_current_story_id_exact_citations_and_excludes_metadata(rig):
+    rig.packet["content"]["sources"][1]["access_scope"] = "metadata"
+    schema = story_writer_schema("brief", story_id="story-a", packets=[rig.packet])
+    props = schema["properties"]["content"]["anyOf"][0]["properties"]
+    assert props["story_id"]["enum"] == ["story-a"]
+    pattern = props["paragraphs"]["items"]["properties"]["citations"]["items"]["pattern"]
+    for ref in ("packet/source", "supplement-1/primary", "supplement-6/source-2"):
+        assert re.fullmatch(pattern, ref)
+    for ref in ("packet/publication", "packet/missing", "wrong/source", "supplement-7/source", URL):
+        assert not re.fullmatch(pattern, ref)
+    signal = schema["properties"]["signal"]["anyOf"][0]["properties"]
+    assert signal["story_id"]["enum"] == ["story-a"]
+    assert signal["paragraphs"]["items"]["properties"]["citations"]["items"]["pattern"] == pattern
+
+
+def test_schema_text_and_chart_bounds_match_runtime_contract(rig):
+    props = story_writer_schema("brief", packets=[rig.packet])["properties"]["content"]["anyOf"][0][
+        "properties"
+    ]
+    assert props["title"]["maxLength"] == 300 and props["limitations"]["maxLength"] == 4000
+    paragraph = props["paragraphs"]["items"]["properties"]
+    assert paragraph["text"]["maxLength"] == 8000
+    assert paragraph["citations"]["minItems"] == 1 and paragraph["citations"]["uniqueItems"]
+    reading = props["recommended_reading"]["anyOf"][0]["properties"]
+    assert reading["reason"]["maxLength"] == 1000
+    assert (
+        reading["supporting_citations"]["maxItems"] == 31
+        and reading["supporting_citations"]["uniqueItems"]
+    )
+    chart = props["chart"]["anyOf"][0]["properties"]
+    assert chart["points"]["maxItems"] == 32
+    assert all(
+        chart[key]["maxLength"] == 1000
+        for key in ("question", "metric", "unit", "period", "caption", "alt_text")
+    )
+    point = next(
+        item["properties"]
+        for item in chart["points"]["items"]["anyOf"]
+        if "decimal_value" in item["properties"]
+    )
+    assert point["citations"]["minItems"] == 1
+    for value in ("-2.3", "0", "5.9", "1e-3"):
+        assert re.fullmatch(point["decimal_value"]["pattern"], value)
+    for value in ("23%", "1,000", "NaN", "Infinity", "2万人"):
+        assert not re.fullmatch(point["decimal_value"]["pattern"], value)
+
+
+def test_supplement_source_and_body_schema_are_bounded_like_contract():
+    props = story_writer_schema()["properties"]["supplemental_packets"]["items"]["properties"][
+        "content"
+    ]["properties"]
+    assert props["body"]["maxLength"] == 65536
+    assert props["sources"]["minItems"] == 1 and props["sources"]["maxItems"] == 32
+    source = props["sources"]["items"]["properties"]
+    assert source["url"]["maxLength"] == 2048 and source["excerpt"]["maxLength"] == 20000
+
+
+async def test_exact_duplicate_references_are_removed_without_changing_any_prose(rig):
+    content = story(reading=True, chart=True)
+    original = deepcopy(content)
+    content["paragraphs"][0]["citations"] = ["packet/source", "packet/source"]
+    content["recommended_reading"]["supporting_citations"] = [
+        "packet/source",
+        "packet/publication",
+        "packet/publication",
+    ]
+    content["chart"]["points"][0]["citations"] *= 2
+    rig.replies = [reply(writer(content)), reply(review(reading="approved", chart="approved"))]
+    result = await rig.run()
+    assert result["content"] == original and len(rig.calls) == 2
+    validate_result(result)
+
+
+@pytest.mark.parametrize(
+    "kind", ["world", "feature", "context", "ai_ml", "science", "economy", "technology", "health"]
+)
+async def test_semantic_story_kind_survives_writer_validation_and_review(rig, kind):
+    content = story()
+    content["kind"] = kind
+    rig.replies = [reply(writer(content)), reply(review())]
+    result = await rig.run()
+    assert result["content"]["kind"] == kind
+    validate_result(result)
+
+
+async def test_writer_receives_current_task_schema_and_metadata_is_not_an_available_citation(rig):
+    rig.packet["content"]["sources"][1]["access_scope"] = "metadata"
+    rig.replies = [reply(writer(story())), reply(review())]
+    result = await rig.run()
+    assert result["content"] is not None
+    assert rig.calls[0]["schema"]["properties"]["content"]["anyOf"][0]["properties"]["story_id"][
+        "enum"
+    ] == ["story-a"]
+    assert rig.calls[0]["prompt"]["available_citations"] == ["packet/source"]
+
+
+@pytest.mark.parametrize(
+    "mutation,expected",
+    [
+        ("id", "story_id_mismatch"),
+        ("long_title", "title exceeds its length limit"),
+        ("paragraphs", "paragraph_count_outside_mode_limit"),
+        ("no_citation", "paragraph_missing_citation"),
+        ("unknown_citation", "INVALID_CITATION"),
+    ],
+)
+async def test_invalid_body_gets_precise_safe_diagnostics_and_one_repair_before_independent_review(
+    rig, mutation, expected
+):
+    content = story()
+    if mutation == "id":
+        content["story_id"] = "wrong-id"
+    elif mutation == "long_title":
+        content["title"] = "private-like-invalid-payload-" * 20
+    elif mutation == "paragraphs":
+        content["paragraphs"] *= 3
+    elif mutation == "no_citation":
+        content["paragraphs"][0]["citations"] = []
+    else:
+        content["paragraphs"][0]["citations"] = ["packet/missing"]
+    rig.replies = [
+        reply(writer(content)),
+        reply(writer(story("经过修复并等待独审的正文。"))),
+        reply(review()),
+    ]
+    result = await rig.run()
+    assert result["reason"] == "repaired" and result["content"] is not None
+    assert len(rig.calls) == 3 and len(rig.checkpoints) == 1
+    assert expected in result["issues"][0]["reason"]
+    assert expected in rig.calls[1]["prompt"]["repair_untrusted"]["issues"][0]["reason"]
+    assert "private-like-invalid-payload" not in json.dumps(result)
+    assert all(receipt["round"] == "repair" for receipt in result["assessments"])
+    validate_result(result)
+
+
+async def test_malformed_signal_without_body_can_be_rewritten_as_a_new_independently_reviewed_brief(
+    rig,
+):
+    malformed = story("仅用于测试的最小事件。")
+    malformed["story_id"] = "wrong-id"
+    rig.replies = [
+        reply(writer(None, malformed)),
+        reply(writer(story("格式修正后的简版事实。"))),
+        reply(review()),
+    ]
+    result = await rig.run()
+    assert result["reason"] == "repaired" and result["signal"] is None
+    assert rig.calls[1]["prompt"]["repair_untrusted"]["source_component"] == "signal"
+    assert len(rig.calls) == 3 and all(r["round"] == "repair" for r in result["assessments"])
+    validate_result(result)
+
+
+async def test_second_malformed_signal_repair_never_gets_a_fake_approval_or_third_writer(rig):
+    malformed = story()
+    malformed["paragraphs"][0]["citations"] = ["unknown/source"]
+    rig.replies = [reply(writer(None, malformed)), reply(writer(malformed))]
+    result = await rig.run()
+    assert result["content"] is None and result["signal"] is None
+    assert len(rig.calls) == 2 and not result["assessments"] and not rig.checkpoints
+    assert sum("component_contract_invalid" in issue["reason"] for issue in result["issues"]) == 2
+
+
+async def test_valid_signal_is_checkpointed_before_malformed_body_repair_and_independent_review(
+    rig,
+):
+    malformed = story()
+    malformed["story_id"] = "wrong-id"
+    signal = story("可独立核实的最小事件。")
+    rig.replies = [
+        reply(writer(malformed, signal)),
+        reply(review(body="not_present", signal="approved")),
+        reply(writer(story())),
+        reply(review()),
+    ]
+    result = await rig.run()
+    assert len(rig.calls) == 4 and result["content"] is not None
+    assert rig.checkpoints[0]["content"] is None and rig.checkpoints[0]["signal"] == signal
+    assert rig.checkpoints[-1]["content"] == story()
+
+
+@pytest.mark.parametrize("mode", ["brief", "deep"])
+async def test_empty_writer_without_verifiable_prior_does_not_spend_a_review_call(rig, mode):
+    rig.replies = [reply(writer())]
+    result = await rig.run(mode=mode)
+    assert len(rig.calls) == 1 and result["reason"] == "withheld"
+    assert (
+        result["assessments"] == []
+        and result["issues"][0]["reason"] == "empty_component_review_skipped"
+    )
+    assert not rig.checkpoints
+
+
+async def test_invalid_writer_output_is_not_mislabeled_as_provider_outage(rig):
+    rig.replies = [reply({"content": None})]
+    result = await rig.run(mode="deep")
+    assert result["reason"] == "invalid_output"
+    assert result["issues"][0]["reason"] == "writer:writer_envelope_invalid"
+
+
+async def test_invalid_review_output_records_review_phase_without_publishing_prose(rig):
+    rig.replies = [reply(writer(story())), reply({"prose": "I approve everything"})]
+    result = await rig.run()
+    assert result["reason"] == "invalid_output" and result["content"] is None
+    assert result["issues"][0]["reason"].startswith("review:")
+
+
+async def test_meaningful_same_source_chart_can_be_prepared_and_approved_in_brief(rig):
+    content = story(chart=True)
+    content["chart"]["points"][1]["decimal_value"] = "-2"
+    rig.replies = [reply(writer(content)), reply(review(chart="approved"))]
+    result = await rig.run(mode="brief")
+    assert result["content"]["chart"] == content["chart"] and len(rig.calls) == 2
+    rules = rig.calls[0]["prompt"]["output_rules"]
+    assert "brief和deep都要检查" in rules and "2–6个同口径数据点" in rules
+    assert "不能把同比与环比" in rules and "没有合适数据就null" in rules
+    validate_result(result)

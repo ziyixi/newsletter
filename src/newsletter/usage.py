@@ -281,7 +281,13 @@ def usage_footer(summary: UsageSummary | None, *, is_fixture: bool = False) -> s
     usage = summary["usage"]
     if usage is None:
         return "模型用量未取得 · Todofy/Gemini 用量未计入。"
-    detail = f"含缓存输入 {usage['cached_input_tokens']:,}，不重复相加"
-    if summary["partial"]:
+    consistent = _consistent(usage)
+    detail = (
+        f"非缓存输入 {usage['input_tokens'] - usage['cached_input_tokens']:,} · "
+        f"缓存输入 {usage['cached_input_tokens']:,} · 输出 {usage['output_tokens']:,}"
+        if consistent
+        else "用量分类不一致，输入/输出拆分不可确定"
+    )
+    if summary["partial"] or not consistent:
         detail += "；部分用量，未含未返回用量的调用"
     return f"Codex 已记录 {usage['total_tokens']:,} tokens（{detail}） · Todofy/Gemini 用量未计入。"
