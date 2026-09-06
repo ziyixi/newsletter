@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <entry>
-    <id>http://arxiv.org/abs/1234.5678v1</id>
-    <title>Test Paper Title for Integration</title>
-    <summary>This is a test abstract for the fake arXiv API.</summary>
-    <author><name>Test Author</name></author>
-  </entry>
-</feed>

@@ -1,31 +1,28 @@
-# Dependencies (rebuilt in Docker)
-node_modules/
-packages/*/node_modules/
-
-# Caches
-.cache/
-packages/backend/.cache/
-packages/.cache/
-
-# Environment (secrets passed via -e flags)
-.env
-.env.local
-packages/*/.env
-packages/*/.env.local
-
-# IDE / OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-
-# Git
-.git/
-.gitignore
-
-# React Email dev
-.react-email/
-
-# Build artifacts
-*.tsbuildinfo
-dist/
+# Allowlist: no local keys, auth, database, old build artifacts, or research in images.
+**
+!pyproject.toml
+!uv.lock
+!.python-version
+!MANIFEST.in
+!src/
+!src/newsletter/
+!src/newsletter/**
+**/__pycache__/
+**/*.pyc
+# Reapply exclusions after the source allowlist, even if a secret is misplaced there.
+**/.env*
+**/.codex-auth/
+**/codex-auth/
+**/auth.json*
+**/credentials*.json
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa
+**/id_ed25519
+**/*.sqlite*
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.eml

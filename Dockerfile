@@ -1,69 +1,33 @@
-# ─────────────────────────────────────────────
-# Newsletter — Docker image: Go backend + Node SEA (email-service)
-# Final image: debian:bookworm-slim only (no Node.js; SEA has runtime baked in).
-# Node is used only in build stages; image scanners see the final stage.
-#
-# Build:  docker build -t newsletter .
-# Run:    docker run -e RESEND_API_KEY=... newsletter send
-# E2E:    docker run newsletter e2e
-# ─────────────────────────────────────────────
+FROM ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 AS uv
+FROM python:3.12.14-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS base
 
-# ── Stage 1: Node.js dependency install ──────
-FROM node:20-slim AS node-deps
-WORKDIR /app
-COPY package.json yarn.lock ./
-COPY packages/email-service/package.json packages/email-service/
-RUN yarn install --frozen-lockfile --production=false
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
-# ── Stage 2: Node.js single executable (SEA) ─
-FROM node-deps AS node-sea
-# Root tsconfig so packages/email-service/tsconfig.json "extends": "../../tsconfig.json" resolves.
-COPY tsconfig.json ./
-COPY packages/email-service packages/email-service/
-RUN yarn workspace email-service build:bundle
-WORKDIR /app/packages/email-service
-RUN node --experimental-sea-config sea-config.json
-RUN cp "$(command -v node)" email-service \
-  && npx postject email-service NODE_SEA_BLOB sea-prep.blob \
-    --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+FROM base AS builder
+COPY --from=uv /uv /usr/local/bin/uv
+ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
+WORKDIR /opt/newsletter
+COPY pyproject.toml uv.lock .python-version MANIFEST.in ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --extra codex --no-install-project
+COPY src ./src
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --extra codex --no-editable
 
-# ── Stage 3: Go backend build ────────────────
-FROM golang:1.24-bookworm AS go-build
-WORKDIR /build
-RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
-RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-ENV PATH=$PATH:/go/bin
-COPY packages/backend/go.mod packages/backend/go.sum ./
-RUN go mod download
-COPY packages/backend/ .
-RUN make proto
-RUN CGO_ENABLED=0 go build -o /newsletter ./cmd/newsletter/
-
-# ── Stage 4: Final image (minimal glibc base; no Node.js runtime) ─
-# Node SEA is linked against glibc; Debian slim provides it + shell for entrypoint.
-FROM debian:bookworm-slim
-
-# CA certificates so Go/Node can verify TLS (e.g. in GitHub Actions).
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# Root config (backend looks for ../../newsletter.config.yaml when cwd is packages/backend).
-COPY newsletter.config.yaml /app/newsletter.config.yaml
-
-# Go binary (static, CGO_ENABLED=0).
-COPY --from=go-build /newsletter /usr/local/bin/newsletter
-
-# Node.js single executable (SEA — runtime baked in; needs glibc only).
-COPY --from=node-sea /app/packages/email-service/email-service /usr/local/bin/email-service
-RUN chmod +x /usr/local/bin/email-service
-
-# Backend config/cache dir and entrypoint script.
-COPY packages/backend packages/backend
-COPY scripts scripts
-COPY scripts/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["send"]
+FROM base AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates fonts-noto-cjk tzdata \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 newsletter
+WORKDIR /opt/newsletter
+COPY --from=builder /opt/newsletter/.venv /opt/newsletter/.venv
+RUN mkdir -p /var/lib/newsletter /var/lib/newsletter-auth \
+    && chown newsletter:newsletter /var/lib/newsletter /var/lib/newsletter-auth
+USER newsletter
+ENV PATH="/opt/newsletter/.venv/bin:$PATH" \
+    NEWSLETTER_DATA_DIR=/var/lib/newsletter \
+    NEWSLETTER_CHART_FONT=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+EXPOSE 8080
+# Long startup probes are intentional; liveness is exposed only after preflight.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"
+ENTRYPOINT ["newsletter"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]

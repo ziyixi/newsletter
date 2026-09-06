@@ -1,4 +1,0 @@
-{
-  "main": "dist/email-service.cjs",
-  "output": "sea-prep.blob"
-}

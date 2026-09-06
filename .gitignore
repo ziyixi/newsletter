@@ -1,16 +1,38 @@
-# Dependencies
-node_modules/
+# Python and local artifacts
+.artifacts/
+.venv*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+.data*/
+.demo*/
+.codex-auth/
+codex-auth/
+*.sqlite3*
+*.sqlite*
+*.db
+*.db-shm
+*.db-wal
+*.eml
 dist/
-.yarn/cache/
-.yarn/unplugged/
-.yarn/install-state.gz
 
-# Environment
-.env
-.env.local
-
-# React Email
-.react-email/
+# Credentials stay outside the repository; blank documentation templates are safe.
+.env*
+!.env.example
+!.env.*.example
+auth.json
+auth.json.*
+credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
 
 # IDE
 .idea/
@@ -22,18 +44,5 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Build
-*.tsbuildinfo
-
-# Go backend: generated proto and binary (make build / preview)
-packages/backend/pb/
-packages/backend/newsletter
-
-# Fake server binary (go build in tests/fake-server)
-tests/fake-server/newsletter-fake-server
-tests/fake-server/fake-server
-
-# Preview cache
+# Any local cache directory
 .cache/
-packages/backend/.cache/
-packages/.cache/
