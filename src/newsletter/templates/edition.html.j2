@@ -149,6 +149,9 @@
   <tr><td class="inset" style="padding:22px 40px 27px;border-top:1px solid #dce2d9;">
    <p class="ink" style="font-family:{{ serif }};font-size:17px;line-height:1.6;color:#334739;margin:0 0 5px;">少一点信息，多一点理解。</p>
    <p class="muted" style="font-family:{{ sans }};font-size:11px;line-height:1.8;letter-spacing:1px;color:#697669;margin:0;">视野 · THE DAILY BRIEF{% if is_fixture %} · MOCK 试刊{% endif %}</p>
+{% if usage_footer %}
+   <p class="muted" style="font-family:{{ sans }};font-size:10px;line-height:1.7;color:#697669;text-align:right;margin:12px 0 0;word-wrap:break-word;overflow-wrap:anywhere;">{{ usage_footer }}</p>
+{% endif %}
   </td></tr>
  </table>
  <!--[if mso]></td></tr></table><![endif]-->

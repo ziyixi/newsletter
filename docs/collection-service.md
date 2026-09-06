@@ -42,3 +42,10 @@ live部署需单独配置本地持久data目录与专用可写Codex auth目录�
 ## 外部触发器迁移
 
 源码中的daily workflow改为手动或repository_dispatch，仅运行trigger_run.py，且不持有发送权限；无schedule。GitHub线上旧工作流只有在这次修改经用户同意推送后才变化，本地修改不会自动关闭旧schedule。切换前确认旧sender已停，避免新旧重复；当前任务没有推送或替用户改线上配置。
+# Current live workflow
+
+Live deployments now default to the versioned DAG described in [workflow.md](workflow.md).
+The per-direction serial flow below remains the explicit legacy/mock path. DAG
+collection has a 5400-second total budget, a 7200-second external trigger wait,
+and adopted-material Notion gating; it no longer waits for every unused packet
+before drafting. Consult the DAG guide for candidate preparation and token usage.

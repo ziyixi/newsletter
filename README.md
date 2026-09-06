@@ -6,29 +6,30 @@
 外部 scheduler / HTTP caller
           │ POST /v1/runs（日期 + 幂等键）
           ▼
-指令目录快照 → Codex逐方向调查 → SQLite材料 + Notion持久投影
-                                              │ 确认写入后
-                                              ▼
-                               Codex总编：补查、取舍、写稿、自审
-                                              │
-                          Todofy私有事件筛选 → 冻结JSON / HTML / PNG
-                                              │
-                              独立 send token + 冻结 hash 才能发信
+冻结 YAML/指令/日期 → 六方向发现 + API/RSS + 历史观察
+          │
+去重候选池 → 全局选题 → 动态深读 → 拟稿 → 一轮补查 → 定稿 → 独立会话审校
+          │                                                    │
+SQLite + Notion材料库                 Todofy私有事件筛选 → 冻结JSON / HTML / PNG
+                                                               │
+                              采用材料Notion确认 + 独立send token + 冻结hash
 ```
 
 默认 mock 模式只做离线演示；live 没有假稿或 API key 自动兜底。技术 ready 不等于事实或发布审批已通过。真实投递必须另外验收。
 
 ## 修改你希望收集什么
 
-直接维护 [src/newsletter/instructions/](src/newsletter/instructions/)：
+Live 默认使用 [可编辑 DAG](src/newsletter/workflows/daily.yaml) 和
+[六个发现方向](src/newsletter/instructions/discovery/)。流程、预算和依赖写 YAML；
+题材要求写 Markdown；数据契约仍在公共 proto。详细说明见 [DAG 与用量](docs/workflow.md)。
 
-- [01-ai-ml.md](src/newsletter/instructions/01-ai-ml.md)：AI/ML论文、顶会、优秀研究组及公司的实质技术报告；允许 arXiv，但检查证据、对照和评议状态。
-- [02-science.md](src/newsletter/instructions/02-science.md)：跨学科研究，与 AI/ML **可以同时展示**，不再二选一。
-- [03-world.md](src/newsletter/instructions/03-world.md)：兴趣之外的重要世界变化、来源交叉核对和可追溯图表数据。
+默认最多30条候选，选最多8个问题深入研究（可配置到12），另最多3个补查问题；
+不是必须填满的配额。Crossref/Nature RSS 只提供元数据线索，不冒充已读论文。
+AI/ML与其他学科可同时入选，历史候选帮助去重；总编仍需调查、解释和核对反证。
 
-服务在**每次新触发**扫描所有顶层 Markdown，按文件名排序并保存不可变快照/hash。README.md、_开头的说明不执行；符号链接、空文件、过大内容或非法名称会失败。文件是题材指令，不是可执行 skill，不提供 shell/API/文件权限。可用 NEWSLETTER_INSTRUCTIONS_DIR 指定服务器上的独立只读目录；镜像已携带默认指令，无须重新安装 Codex。
+服务在每次新触发冻结 DAG、方向指令、编辑政策、历史和模型配置。README.md、_开头的说明不执行；符号链接、空文件、过大内容或非法名称会失败。配置只能调用注册节点，不能执行 shell、展开密钥或获得发信权限。镜像包含默认资源，也可只读挂载 NEWSLETTER_WORKFLOW_FILE / NEWSLETTER_DISCOVERY_DIR。
 
-最多8个方向、每方向2份材料。找不到合格材料应报告缺口，不能凑新闻。总编仍会自己补查，并按 [编辑准则](src/newsletter/policy/editorial.md) 和 [读者偏好](src/newsletter/policy/reader-profile.md) 写作；不依赖聊天 memory。“研究介绍”在邮件内直接讲清问题、方法、结果和限制，链接只是可选延伸。
+旧顶层 [instructions/](src/newsletter/instructions/) 和串行采集器仅用于显式 NEWSLETTER_WORKFLOW=legacy、旧运行恢复与离线 mock；不是 live 失败的回退。总编遵循 [编辑准则](src/newsletter/policy/editorial.md) 和 [读者偏好](src/newsletter/policy/reader-profile.md)，不依赖聊天 memory。“研究介绍”不点链接也应自足。
 
 ## 开发
 
@@ -47,6 +48,8 @@ uv.lock 是唯一依赖锁；安装用 --locked，构建不重新生成 protobuf
 | --- | --- |
 | src/newsletter/app.py、lifecycle.py | HTTP鉴权/路由；独立的资源创建、预检和关闭 |
 | src/newsletter/collection/ | 指令快照、采集、持久运行记录和整期编排 |
+| src/newsletter/workflow/、workflows/ | 受限DAG定义、逐节点持久化、候选/研究/审校、运行账本 |
+| src/newsletter/usage.py | 供应商用量累计快照、缺失标记和低调页脚 |
 | src/newsletter/editor.py | 总编、模型结果/引用验证 |
 | src/newsletter/preflight.py | 启动依赖与账号检查，失败即拒绝启动 |
 | src/newsletter/codex_runtime.py、model_schema.py | 隔离 SDK 启动与 proto 派生的结构化输出约束 |
@@ -73,7 +76,7 @@ Content-Type: application/json
 
 立即返回202和运行ID。GET /v1/runs/{id} 查询进度，完成后取得 edition_id，再查询刊期和预览。相同键和日期重试返回原运行，不重复搜索或写 Notion；修改指令后想重新采集需用新键。请求结果不明时只重试同一键。整期流程**不调用发送接口**。
 
-运行状态为 queued → collecting → projecting → editing → ready / blocked / failed。每方向默认最多600秒，总编900秒；不是整期600秒。当前单进程串行工作，适合私人简报，不承诺并发采编SLA。中断模型任务标记失败，不自动重跑；Notion结果不明必须人工核对，不盲目重建页面。部分成功材料仍可查到。
+外层运行状态保留 queued / collecting / editing / ready / blocked / failed；workflow 字段展示各节点状态、候选/研究数量及定义hash。默认DAG总预算5400秒，节点另有上限；外部触发器应等候7200秒，不能仍沿用一小时客户端超时。当前单进程保守串行执行模型，动态任务数不等于物理并发。完成节点不会重跑；中断中的模型任务标unknown并阻止自动重试。Notion结果不明必须核对，不盲目重建页面。
 
 新材料的引用必须对应工具实际打开的地址。地址不匹配时，在同一模型上下文和原超时预算内最多纠正一次：真正打开来源或删去未支持内容；再次不合格就失败。不会把摘要链接自动当成已读PDF，也不会自动重试供应商写入。
 
@@ -109,7 +112,9 @@ Docker为锁定多阶段构建，最终镜像不带uv/dev工具、旧Node/Go依�
 
 GitHub Actions 在原生 Linux/amd64 runner 上先跑回归，再构建、验证最终镜像，成功后才发布 `ghcr.io/ziyixi/newsletter:service-<commit>` 与 `:service`。生产 Compose 固定通过验收的 digest，不依赖可变标签；CI 不加载任何真实账号密钥。发布前检查待提交内容及 Docker 构建上下文，`.env` 变体、登录文件和真实数据不得进入公开仓库或镜像。
 
-一次只允许一个进程占有SQLite目录；不要放同步盘或启动多个uvicorn worker。Notion是材料的单向持久投影，不反向同步手工修改。新整期live入口要求Notion配置且确认投影后才编稿。发送按冻结render hash单独审批，每刊期最多一次尝试；结果不明不自动重投。
+一次只允许一个进程占有SQLite目录；不要放同步盘或启动多个uvicorn worker。Notion是材料的单向持久投影，不反向同步手工修改。DAG先本地持久化；候选索引是辅助浏览，只有正文/图表/研究介绍采用的材料必须确认投影才能发送。发送按冻结render hash单独审批，每刊期最多一次尝试；结果不明不自动重投。
+
+邮件最底角显示本期已记录的 Codex tokens，覆盖发现、选题、深读、拟稿、补查、定稿与审校，包括有用量事件的失败尝试。缓存输入是子集，不重复加总；无用量事件不是零。Todofy接口没有返回Gemini usage，因此明确未计入，不把上下文日志当用量或费用。统计也包含在冻结render hash里。
 
 ## 契约与验收
 

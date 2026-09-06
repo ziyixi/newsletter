@@ -51,6 +51,12 @@ class Settings:
     todofy_top: int = 5
     instructions_dir: Path = Path(__file__).parent / "instructions"
     collection_timeout_seconds: float = 600
+    # Programmatic legacy adapters remain available for existing callers/tests.
+    # CLI/environment deployments default to the versioned DAG.
+    workflow_backend: str = "legacy"
+    workflow_file: Path = Path(__file__).parent / "workflows" / "daily.yaml"
+    discovery_dir: Path = Path(__file__).parent / "instructions" / "discovery"
+    workflow_timeout_seconds: float = 5400
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -87,9 +93,26 @@ class Settings:
             collection_timeout_seconds=_number_env(
                 "NEWSLETTER_COLLECTION_TIMEOUT_SECONDS", "600", float
             ),
+            workflow_backend=os.getenv("NEWSLETTER_WORKFLOW", "dag"),
+            workflow_file=Path(os.environ["NEWSLETTER_WORKFLOW_FILE"])
+            if os.getenv("NEWSLETTER_WORKFLOW_FILE")
+            else Path(__file__).parent / "workflows" / "daily.yaml",
+            discovery_dir=Path(os.environ["NEWSLETTER_DISCOVERY_DIR"])
+            if os.getenv("NEWSLETTER_DISCOVERY_DIR")
+            else Path(__file__).parent / "instructions" / "discovery",
+            workflow_timeout_seconds=_number_env(
+                "NEWSLETTER_WORKFLOW_TIMEOUT_SECONDS", "5400", float
+            ),
         )
 
     def validate(self) -> None:
+        if self.workflow_backend not in {"dag", "legacy"}:
+            raise ValueError("NEWSLETTER_WORKFLOW must be dag or legacy")
+        if (
+            not math.isfinite(self.workflow_timeout_seconds)
+            or not 60 <= self.workflow_timeout_seconds <= 14400
+        ):
+            raise ValueError("Workflow timeout must be within 60..14400 seconds")
         if (
             not math.isfinite(self.collection_timeout_seconds)
             or not 0 < self.collection_timeout_seconds <= 1800

@@ -28,6 +28,8 @@ from newsletter.store import Store, StoreError
 from newsletter.todofy import TodofyAdapter
 from newsletter.types import Payload, Role
 from newsletter.worker import Worker
+from newsletter.workflow.definition import DefinitionError
+from newsletter.workflow.pipeline import DagPipeline, freeze_workflow
 
 
 def create_app(
@@ -136,21 +138,36 @@ def create_app(
         value = await body(request, pb.StartRunRequest)
         runs: RunRepository = app.state.runs
         if previous := runs.existing(value):
+            pipeline = _worker(app).pipeline
+            if isinstance(pipeline, DagPipeline):
+                previous = pipeline.receipt(previous["id"])
             return response(previous, pb.CollectionRun, 202)
         if settings.mode == "live" and settings.notion_backend != "notion":
             raise HTTPException(409, "Full live collection requires Notion persistence")
         try:
-            instructions = load_instructions(settings.instructions_dir)
-        except InstructionError:
+            workflow_snapshot = None
+            if isinstance(_worker(app).pipeline, DagPipeline):
+                instructions, workflow_snapshot = freeze_workflow(
+                    settings, app.state.workflow_state, value["issue_date"]
+                )
+            else:
+                instructions = load_instructions(settings.instructions_dir)
+        except (InstructionError, DefinitionError, OSError, ValueError):
             raise HTTPException(503, "Collection instructions are invalid") from None
-        run = runs.start(value, instructions)
+        run = runs.start(value, instructions, workflow_snapshot=workflow_snapshot)
         _worker(app).wake.set()
         return response(run, pb.CollectionRun, 202)
 
     @app.get("/v1/runs/{run_id}", dependencies=[Depends(auth("editor"))])
     async def get_run(run_id: str) -> JSONResponse:
         validate_request(parse_message({"id": run_id}, pb.GetRunRequest))
-        return response(app.state.runs.get(run_id), pb.CollectionRun)
+        pipeline = _worker(app).pipeline
+        value = (
+            pipeline.receipt(run_id)
+            if isinstance(pipeline, DagPipeline)
+            else app.state.runs.get(run_id)
+        )
+        return response(value, pb.CollectionRun)
 
     @app.post("/v1/inbox/query", dependencies=[Depends(auth("editor"))])
     async def read_inbox(request: Request) -> JSONResponse:

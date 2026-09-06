@@ -81,6 +81,8 @@ class CollectionPipeline:
         """Proceed only once material projection is confirmed; never retry unknown writes."""
         changed = False
         for run in self.runs.active():
+            if self.runs.workflow_snapshot(run["id"]) is not None:
+                continue  # The DAG tail gates adopted, not every discovered, material.
             packet_ids = [
                 packet_id
                 for direction in run["directions"]

@@ -23,6 +23,7 @@ from .contracts import (
     validate_public_url,
 )
 from .types import Payload, RenderResult
+from .usage import UsageSummary, normalize_usage_summary, usage_footer
 
 RENDERER_VERSION = "python-editorial/3"
 CHART_CID = "cid:newsletter-chart"
@@ -83,6 +84,7 @@ def render_edition(
     issue_date: str,
     is_fixture: bool = False,
     personal_digest: Payload | None = None,
+    usage: UsageSummary | Payload | None = None,
 ) -> RenderResult:
     """Return frozen HTML/plain text/base64 PNG and a hash of those exact bytes.
 
@@ -186,6 +188,9 @@ def render_edition(
             "reason": recommendation["reason"],
             "paragraphs": _reading_paragraphs(recommendation["reason"]),
         }
+    footer = usage_footer(
+        normalize_usage_summary(usage) if usage is not None else None, is_fixture=fixture
+    )
     context = {
         "draft": {
             **draft,
@@ -202,6 +207,7 @@ def render_edition(
         "weekday_label": "星期" + "一二三四五六日"[date.fromisoformat(issue_date).weekday()],
         "is_fixture": fixture,
         "personal": personal,
+        "usage_footer": footer,
     }
     html = load_template().render(**context)
     text_lines = []
@@ -258,6 +264,8 @@ def render_edition(
         for item in personal["items"]:
             text_lines.extend([f"{item['rank']}. {item['title']}", item["detail"], ""])
         text_lines.extend([personal["provenance"], personal["limitations"], ""])
+    if footer:
+        text_lines.extend([footer, ""])
     text = "\n".join(text_lines).rstrip() + "\n"
     result = {
         "html": html,

@@ -32,6 +32,8 @@ from newsletter.settings import Settings
 from newsletter.store import Store
 from newsletter.todofy import DisabledTodofy, FakeTodofy, Todofy, TodofyAdapter
 from newsletter.worker import Worker
+from newsletter.workflow.pipeline import DagPipeline, freeze_workflow
+from newsletter.workflow.state import WorkflowState
 
 
 @asynccontextmanager
@@ -70,6 +72,11 @@ async def service_lifespan(
             load_instructions(settings.instructions_dir)
             runs = RunRepository(store)
             runs.recover()
+            workflow_state = WorkflowState(store)
+            dag_enabled = settings.workflow_backend == "dag" and settings.mode == "live"
+            if dag_enabled:
+                # Fail startup on malformed graphs or missing instruction resources.
+                freeze_workflow(settings, workflow_state, "2000-01-01")
             chosen_editor: Editor = editor or (
                 MockEditor()
                 if settings.editor_backend == "mock"
@@ -98,6 +105,34 @@ async def service_lifespan(
                     time_zone=settings.time_zone,
                 ),
             }
+            research_editor = (
+                CodexEditor(
+                    cast(Path, settings.codex_home),
+                    model=settings.model,
+                    timeout_seconds=settings.collection_timeout_seconds,
+                )
+                if settings.mode == "live"
+                else None
+            )
+            chosen_collector = collector or (
+                MockCollector()
+                if settings.mode == "mock"
+                else CodexCollector(cast(CodexEditor, research_editor))
+            )
+            pipeline_args = (
+                runs,
+                chosen_collector,
+                settings.data_dir / "collection-jobs",
+                settings.collection_timeout_seconds,
+                settings.max_packets,
+            )
+            pipeline: CollectionPipeline = (
+                DagPipeline(*pipeline_args, editor=cast(CodexEditor, research_editor))
+                if dag_enabled
+                else CollectionPipeline(*pipeline_args)
+            )
+            if isinstance(pipeline, DagPipeline):
+                pipeline.recover()
             worker = Worker(
                 store,
                 chosen_editor,
@@ -105,27 +140,11 @@ async def service_lifespan(
                 settings.data_dir / "editor-jobs",
                 settings.job_timeout_seconds,
                 todofy=todofy or todofy_factories[settings.todofy_backend](),
-                pipeline=CollectionPipeline(
-                    runs,
-                    collector
-                    or (
-                        MockCollector()
-                        if settings.mode == "mock"
-                        else CodexCollector(
-                            CodexEditor(
-                                cast(Path, settings.codex_home),
-                                model=settings.model,
-                                timeout_seconds=settings.collection_timeout_seconds,
-                            )
-                        )
-                    ),
-                    settings.data_dir / "collection-jobs",
-                    settings.collection_timeout_seconds,
-                    settings.max_packets,
-                ),
+                pipeline=pipeline,
             )
             app.state.store, app.state.worker = store, worker
             app.state.runs = runs
+            app.state.workflow_state = workflow_state
             task = asyncio.create_task(worker.run()) if start_worker else None
             app.state.worker_task = task
             try:

@@ -23,6 +23,7 @@ from newsletter.errors import EditorError as EditorError
 from newsletter.model_io import MAX_JSON_BYTES, load_json, prepare_workspace
 from newsletter.model_schema import editor_schema
 from newsletter.types import Payload, ReviewResult
+from newsletter.usage import CodexUsage, codex_usage, observe_codex_usage
 
 if TYPE_CHECKING:
     from openai_codex import AsyncCodex, AsyncTurnHandle
@@ -213,6 +214,7 @@ async def _collect(turn: AsyncTurnHandle) -> tuple[str, set[str], bool]:
     async with aclosing(cast("AsyncGenerator[Notification, None]", turn.stream())) as events:
         async for event in events:
             payload = _plain(event.payload)
+            observe_codex_usage(event.method, payload)
             if event.method == "item/completed":
                 item = payload["item"]
                 if item.get("type") == "agentMessage" and item.get("phase") in (
@@ -359,6 +361,12 @@ class CodexEditor:
         self, prompt: str, schema: Payload, instructions: str, workspace: Path
     ) -> tuple[str, set[str], bool]:
         """Isolated research with at most one provenance correction; no provider writes."""
+        with codex_usage(self.model) as usage:
+            return await self._execute(prompt, schema, instructions, workspace, usage)
+
+    async def _execute(
+        self, prompt: str, schema: Payload, instructions: str, workspace: Path, usage: CodexUsage
+    ) -> tuple[str, set[str], bool]:
         client: AsyncCodex | None = None
         turn: AsyncTurnHandle | None = None
         try:
@@ -392,7 +400,9 @@ class CodexEditor:
                     ephemeral=True,
                     developer_instructions=instructions,
                 )
+                usage.start_turn()
                 turn = await thread.turn(prompt, output_schema=schema)
+                usage.bind_turn(getattr(turn, "thread_id", None), getattr(turn, "id", None))
                 text, opened, searched = await _collect(turn)
                 if missing := _unopened_sources(text, opened):
                     # SDK reports open inputs, not redirect/canonical equivalence. Keep
@@ -413,7 +423,9 @@ class CodexEditor:
                             "observed_open_inputs": sorted(opened),
                         }
                     )
+                    usage.start_turn()
                     turn = await thread.turn(correction, output_schema=schema)
+                    usage.bind_turn(getattr(turn, "thread_id", None), getattr(turn, "id", None))
                     text, more_opened, more_searched = await _collect(turn)
                     opened |= more_opened
                     searched |= more_searched

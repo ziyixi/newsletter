@@ -48,6 +48,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS sends (
                 issue_date TEXT PRIMARY KEY, edition_id TEXT UNIQUE NOT NULL,
                 request_key TEXT UNIQUE NOT NULL, render_hash TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS workflow_editions (
+                edition_id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL,
+                editor_result TEXT NOT NULL, required_packets TEXT NOT NULL);
         """)
         with self.transaction():
             row = self.db.execute("SELECT value FROM metadata WHERE key='mode'").fetchone()
@@ -115,6 +118,29 @@ class Store:
         with self.transaction():
             return self._put_packet(request, principal)
 
+    def save_workflow_supplements(self, run_id: str, packets: list[Payload]) -> None:
+        """Preserve validated editor citation IDs before the DAG artifact is finalized."""
+        with self.transaction():
+            for packet in packets:
+                previous = self.db.execute(
+                    "SELECT body FROM packets WHERE id=?", (packet["id"],)
+                ).fetchone()
+                body = canonical_json(packet)
+                if previous is not None:
+                    if previous[0] != body:
+                        raise StoreError("conflict", "Research packet identity cannot change")
+                    continue
+                self.db.execute(
+                    "INSERT INTO packets(id,principal,request_key,digest,body) VALUES(?,?,?,?,?)",
+                    (
+                        packet["id"],
+                        "workflow-editor",
+                        run_id + ":" + packet["id"],
+                        content_hash(packet["content"]),
+                        body,
+                    ),
+                )
+
     def _put_packet(self, request: Payload, principal: str) -> Payload:
         """Insert within the caller's transaction; used for atomic collection batches."""
         digest = content_hash(request)
@@ -167,7 +193,9 @@ class Store:
                 "next_cursor": next_cursor,
             }
 
-    def prepare(self, request: Payload) -> EditionRecord:
+    def prepare(
+        self, request: Payload, *, workflow_binding: Payload | None = None
+    ) -> EditionRecord:
         digest = content_hash(request)
         with self.transaction():
             row = self.db.execute(
@@ -176,7 +204,20 @@ class Store:
             if row:
                 if row["digest"] != digest:
                     raise StoreError("conflict", "request_key was used for another edition")
-                return cast(EditionRecord, json.loads(row["body"]))
+                existing = cast(EditionRecord, json.loads(row["body"]))
+                if workflow_binding is not None:
+                    binding = self.db.execute(
+                        "SELECT run_id,editor_result,required_packets FROM workflow_editions WHERE edition_id=?",
+                        (existing["id"],),
+                    ).fetchone()
+                    expected = (
+                        workflow_binding["run_id"],
+                        canonical_json(workflow_binding["result"]),
+                        canonical_json(sorted(set(workflow_binding["required_packets"]))),
+                    )
+                    if binding is None or tuple(binding) != expected:
+                        raise StoreError("conflict", "Frozen workflow edition cannot change")
+                return existing
             if (
                 self.db.execute(
                     "SELECT COUNT(*) FROM editions WHERE state IN ('queued','running')"
@@ -214,6 +255,16 @@ class Store:
                     canonical_json(packets),
                 ),
             )
+            if workflow_binding is not None:
+                self.db.execute(
+                    "INSERT INTO workflow_editions VALUES(?,?,?,?)",
+                    (
+                        edition["id"],
+                        workflow_binding["run_id"],
+                        canonical_json(workflow_binding["result"]),
+                        canonical_json(sorted(set(workflow_binding["required_packets"]))),
+                    ),
+                )
             return edition
 
     def get(self, edition_id: str) -> EditionRecord:
@@ -292,6 +343,22 @@ class Store:
                 if row["edition_id"] != edition["id"]:
                     raise StoreError("conflict", "This issue already has a delivery attempt")
                 return edition, False
+            binding = self.db.execute(
+                "SELECT required_packets FROM workflow_editions WHERE edition_id=?",
+                (edition["id"],),
+            ).fetchone()
+            if binding is not None:
+                required = json.loads(binding[0])
+                states = [
+                    self.db.execute(
+                        "SELECT projection FROM packets WHERE id=?", (packet_id,)
+                    ).fetchone()
+                    for packet_id in required
+                ]
+                if not required or any(state is None or state[0] != "done" for state in states):
+                    raise StoreError(
+                        "conflict", "Adopted research must be confirmed in Notion before sending"
+                    )
             self.db.execute(
                 "INSERT INTO sends VALUES(?,?,?,?)",
                 (

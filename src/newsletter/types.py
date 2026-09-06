@@ -8,6 +8,8 @@ and results our own code constructs; they perform no additional serialization.
 
 from typing import Any, Literal, NotRequired, TypedDict
 
+from .usage import UsageSummary
+
 Payload = dict[str, Any]
 EditionState = Literal["queued", "running", "ready", "blocked", "failed"]
 DeliveryState = Literal[
@@ -50,6 +52,7 @@ class EditionPatch(TypedDict, total=False):
     personal_digest: Payload
     error_code: str
     provider_message_id: str
+    usage: UsageSummary
 
 
 class EditionRecord(TypedDict):
@@ -67,3 +70,4 @@ class EditionRecord(TypedDict):
     personal_digest: NotRequired[Payload]
     error_code: NotRequired[str]
     provider_message_id: NotRequired[str]
+    usage: NotRequired[UsageSummary]

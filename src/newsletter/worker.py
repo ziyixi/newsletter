@@ -16,11 +16,13 @@ from newsletter.contracts import (
     validate_packet_body,
     validate_personal_digest,
 )
-from newsletter.editor import Editor, EditorError
+from newsletter.editor import Editor, EditorError, EditorResult
 from newsletter.rendering import render_edition
 from newsletter.store import Store, now
 from newsletter.todofy import DisabledTodofy, TodofyAdapter, unavailable_digest
 from newsletter.types import EditionRecord, Payload, RenderResult, ReviewResult
+from newsletter.usage import usage_scope
+from newsletter.workflow.state import WorkflowState
 
 
 class Worker:
@@ -40,6 +42,7 @@ class Worker:
         self.wake = asyncio.Event()
         self.todofy: TodofyAdapter = todofy or DisabledTodofy()
         self.pipeline = pipeline
+        self.workflow_state = WorkflowState(store)
 
     async def personal_digest(self, edition: EditionRecord) -> Payload:
         try:
@@ -96,7 +99,16 @@ class Worker:
                 canonical_json(history), encoding="utf-8"
             )
             async with asyncio.timeout(self.timeout):
-                result = await self.editor.prepare(packets, edition["issue_date"], workspace)
+                binding = self.workflow_state.edition(edition["id"])
+                scope_id = binding["run_id"] if binding else edition["id"]
+                if binding:
+                    frozen = binding["result"]
+                    result = EditorResult(frozen["draft"], frozen["review"])
+                else:
+                    with usage_scope(self.workflow_state.usage_sink(scope_id), "editor"):
+                        result = await self.editor.prepare(
+                            packets, edition["issue_date"], workspace
+                        )
                 supplements = []
                 for supplied in result.supplemental_packets:
                     packet = to_dict(parse_message(supplied, pb.Packet))
@@ -130,7 +142,8 @@ class Worker:
             # the editor's remaining deadline and fail the whole newsletter.
             # Private events never enter prompts, packets, Notion or public search.
             personal = await self.personal_digest(edition)
-            self.store.finish(edition["id"], personal_digest=personal)
+            usage = self.workflow_state.usage(scope_id)
+            self.store.finish(edition["id"], personal_digest=personal, usage=usage)
             rendered = await asyncio.to_thread(
                 render_edition,
                 draft,
@@ -138,6 +151,7 @@ class Worker:
                 edition["issue_date"],
                 edition["is_fixture"],
                 personal_digest=personal,
+                usage=usage,
             )
             # Freeze precisely the serialized representation returned to the client.
             rendered = cast(RenderResult, to_dict(parse_message(rendered, pb.RenderedEdition)))

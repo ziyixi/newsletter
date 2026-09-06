@@ -51,7 +51,7 @@ def source_hashes(root: Path) -> dict[str, str]:
         if "__pycache__" in path.parts or path.suffix == ".pyc":
             continue
         if path.is_file():
-            if path.suffix not in {".py", ".pyi", ".json", ".j2", ".md"}:
+            if path.suffix not in {".py", ".pyi", ".json", ".j2", ".md", ".yaml"}:
                 raise ValueError("Unexpected package file; audit its build inclusion first")
             result[path.relative_to(package).as_posix()] = hashlib.sha256(
                 path.read_bytes()

@@ -317,6 +317,7 @@ def render_body(client, edition, packet):
         "issue_date": TODAY,
         "is_fixture": True,
         "personal_digest": edition["personal_digest"],
+        "usage": edition["usage"],
     }
 
 

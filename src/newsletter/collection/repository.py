@@ -17,6 +17,8 @@ class RunRepository:
                 id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL,
                 request_hash TEXT NOT NULL, state TEXT NOT NULL,
                 body TEXT NOT NULL, instructions TEXT NOT NULL)""")
+            store.db.execute("""CREATE TABLE IF NOT EXISTS collection_workflow_snapshots (
+                run_id TEXT PRIMARY KEY, body TEXT NOT NULL)""")
 
     def existing(self, request: Payload) -> Payload | None:
         with self.store.lock:
@@ -30,7 +32,13 @@ class RunRepository:
                 raise StoreError("conflict", "request_key was used for a different run")
             return json.loads(row["body"])
 
-    def start(self, request: Payload, instructions: list[Instruction]) -> Payload:
+    def start(
+        self,
+        request: Payload,
+        instructions: list[Instruction],
+        *,
+        workflow_snapshot: Payload | None = None,
+    ) -> Payload:
         with self.store.transaction():
             if previous := self.existing(request):
                 return previous
@@ -73,7 +81,19 @@ class RunRepository:
                     canonical_json(snapshot),
                 ),
             )
+            if workflow_snapshot is not None:
+                self.store.db.execute(
+                    "INSERT INTO collection_workflow_snapshots VALUES(?,?)",
+                    (run["id"], canonical_json(workflow_snapshot)),
+                )
             return run
+
+    def workflow_snapshot(self, run_id: str) -> Payload | None:
+        with self.store.lock:
+            row = self.store.db.execute(
+                "SELECT body FROM collection_workflow_snapshots WHERE run_id=?", (run_id,)
+            ).fetchone()
+        return json.loads(row[0]) if row else None
 
     def get(self, run_id: str) -> Payload:
         with self.store.lock:
@@ -105,10 +125,12 @@ class RunRepository:
             direction.update(fields)
             self._write(run)
 
-    def claim(self) -> tuple[Payload, list[Instruction]] | None:
+    def claim(self, *, resume: bool = False) -> tuple[Payload, list[Instruction]] | None:
         with self.store.transaction():
             row = self.store.db.execute(
-                "SELECT body,instructions FROM collection_runs WHERE state='queued' ORDER BY rowid LIMIT 1"
+                "SELECT body,instructions FROM collection_runs WHERE state IN ('queued','collecting') ORDER BY rowid LIMIT 1"
+                if resume
+                else "SELECT body,instructions FROM collection_runs WHERE state='queued' ORDER BY rowid LIMIT 1"
             ).fetchone()
             if row is None:
                 return None
@@ -149,6 +171,12 @@ class RunRepository:
             ).fetchall()
             for row in rows:
                 run = json.loads(row[0])
+                if self.workflow_snapshot(run["id"]):
+                    # DAG attempts decide whether work is safe to resume; already
+                    # completed stages are immutable, in-flight attempts become unknown.
+                    run.update(state="queued", error_code="")
+                    self._write(run)
+                    continue
                 run.update(state="failed", error_code="collection_interrupted")
                 for direction in run["directions"]:
                     if direction["state"] == "collecting":

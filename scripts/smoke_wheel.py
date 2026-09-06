@@ -37,7 +37,14 @@ def main() -> None:
         ):
             parser.error("Newsletter wheel must depend on, not vendor, the public proto package")
         for source in (root / "src" / "newsletter").rglob("*"):
-            if source.is_file() and source.suffix in {".py", ".pyi", ".json", ".j2", ".md"}:
+            if source.is_file() and source.suffix in {
+                ".py",
+                ".pyi",
+                ".json",
+                ".j2",
+                ".md",
+                ".yaml",
+            }:
                 member = source.relative_to(root / "src").as_posix()
                 if wheel.read(member) != source.read_bytes():
                     parser.error(f"Wheel is stale: {member}; rebuild first")
@@ -114,7 +121,12 @@ def main() -> None:
             "assert Path(newsletter.__file__).resolve().is_relative_to(Path(sys.prefix)); "
             "assert all(files('newsletter').joinpath(p).is_file() for p in "
             "('templates/edition.html.j2', 'policy/editorial.md', 'fixtures/packets.json', "
-            "'instructions/01-ai-ml.md')); "
+            "'instructions/01-ai-ml.md', 'workflows/daily.yaml')); "
+            "from newsletter.workflow.definition import load_definition; "
+            "from newsletter.workflow.nodes import validate_recipe; "
+            "validate_recipe(load_definition(Path(str(files('newsletter').joinpath('workflows/daily.yaml'))))); "
+            "from newsletter.collection.instructions import load_instructions; "
+            "assert len(load_instructions(Path(str(files('newsletter').joinpath('instructions/discovery'))))) == 6; "
             "from ziyixi_protos.newsletter import editorial_pb2 as pb; "
             "assert Path(pb.__file__).resolve().is_relative_to(Path(sys.prefix)); "
             "assert all(files('ziyixi_protos.newsletter').joinpath(p).is_file() for p in "
