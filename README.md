@@ -90,7 +90,7 @@ Content-Type: application/json
 
 | 操作 | HTTP | 权限 |
 | --- | --- | --- |
-| 用户明确要求的修订验证邮件（每日期额外至多一次，保留原投递记录） | POST /v1/editions/{id}/send-verification | send |
+| 用户明确要求的修订验证邮件（默认每日期额外至多一次，保留原投递记录） | POST /v1/editions/{id}/send-verification | send |
 | 启动/查询整期 | POST /v1/runs；GET /v1/runs/{id} | editor |
 | 可选外部材料补充 | POST /v1/packets | ingest |
 | 查材料 | POST /v1/inbox/query | editor |
@@ -100,6 +100,10 @@ Content-Type: application/json
 | 单独批准发送 | POST /v1/editions/{id}/send | send |
 
 所有消息是公共 protobuf 的 snake_case ProtoJSON。旧材料接口保留作为可选入口，不再需要外部 routine。collection: 前缀是内部幂等键空间，外部直接编稿不能占用。
+
+同一天已成功发过验证邮件后，只有用户再次明确要求，操作员才能对**新的 ready 刊期**调用 `send-verification`：请求体仍为 `id`、稳定的 `request_key` 和该刊期的 `expected_render_hash`，另加 `X-Newsletter-Verification-After: <上一封已确认接受的验证刊期 UUID>`。该 UUID 必须是同日期验证链的最新末端；每个末端只允许一个后继，旧 UUID、未确认/失败投递都不能授权新邮件。调用仍需要 send token，发送目标仍绑定原数据库；不自动启用此能力，不改 cron 或普通每日发送。重复请求只返回既有投递结果，结果未知时不会重投。
+
+升级时 SQLite 在单一事务内迁移验证台账，保留旧记录并改用唯一刊期、请求键和前序刊期约束；普通 `sends` 每日唯一约束不变。部署前备份数据库；一旦存在同日多条验证记录，**不要回退到旧的一日一行数据库结构**，它无法表示完整台账。回退代码也须保留新台账及幂等检查，不能删除投递记录来重试。已有新投递后也不能恢复投递前的数据库备份，否则会丢失幂等凭据、造成重复发送风险。
 
 ## 私人事件
 
@@ -122,6 +126,17 @@ GitHub Actions 在原生 Linux/amd64 runner 上先跑回归，再构建、验证
 邮件最底角显示本期已记录的 Codex tokens，覆盖发现、选题、深读、拟稿、补查、定稿与审校，包括有用量事件的失败尝试。缓存输入是子集，不重复加总；无用量事件不是零。Todofy接口没有返回Gemini usage，因此明确未计入，不把上下文日志当用量或费用。统计也包含在冻结render hash里。
 
 ## 契约与验收
+
+内容质量与结构验收分开：[prompt 评测标准与本地运行方法](evals/README.md)
+记录选题、解释深度、事实校准、阅读收益和成本。实验必须显式授权真实模型调用，
+结果保存在仓库与同步目录之外；不加载 `.env`，不连接 Notion、不触发邮件。
+`evals/prompts/` 是待比较版本，不会被生产 DAG 自动扫描或替换默认政策。
+
+2026-09-06 的上线选择：将 v3 选题与 v1 CS／金融发现要求显式复制到生产
+`workflow/content.py` 和 `instructions/discovery/`；选题同时接收本次任务冻结的
+`reader-profile.md`。v3 摘要在留出集上的提升不足，未替换正文写作政策。
+这是一轮有限材料上的改进，不代表事实准确率或跨日期质量已获得保证；
+独立审校、失败记录、原始来源核对和真实邮件验收仍须保留。
 
 公共源：[protos 仓库](https://github.com/ziyixi/protos) protobuf 分支的 `proto/newsletter/editorial.proto`。公共仓库生成并验证 Python 代码、类型 stub 和 provenance，作为 **GitHub Release wheel** 发布 `ziyixi-protos`，不发布到 PyPI。newsletter 不再维护生成副本，不需要 sibling checkout 或 protoc。
 

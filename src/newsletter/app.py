@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from functools import partial
 from typing import Any, cast
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -234,10 +235,27 @@ def create_app(
             raise StoreError("conflict", "Body ID must match the resource path")
         if settings.mail_backend == "resend" and _store(app).get(edition_id)["is_fixture"]:
             raise StoreError("conflict", "Fixtures cannot be published")
-        reserve = (
-            _store(app).reserve_verification_send if verification else _store(app).reserve_send
-        )
-        edition, first_attempt = reserve(value)
+        predecessors = request.headers.getlist("x-newsletter-verification-after")
+        predecessor = None
+        if predecessors:
+            if not verification or len(predecessors) != 1:
+                raise StoreError(
+                    "invalid_argument", "Use one predecessor header on verification only"
+                )
+            predecessor = predecessors[0]
+            try:
+                if str(UUID(predecessor)) != predecessor:
+                    raise ValueError
+            except ValueError:
+                raise StoreError(
+                    "invalid_argument", "Verification predecessor must be a canonical UUID"
+                ) from None
+        if verification:
+            edition, first_attempt = _store(app).reserve_verification_send(
+                value, previous_verification_id=predecessor
+            )
+        else:
+            edition, first_attempt = _store(app).reserve_send(value)
         if first_attempt:
             try:
                 async with asyncio.timeout(35):
@@ -265,7 +283,8 @@ def create_app(
     @app.post("/v1/editions/{edition_id}/send-verification", dependencies=[Depends(auth("send"))])
     async def send_verification(edition_id: str, request: Request) -> JSONResponse:
         # Same strict public SendEditionRequest, but a distinct explicit purpose.
-        # Normal trigger/cron never calls this once-per-date verification route.
+        # Normal trigger/cron never calls this explicit approval route. Without
+        # an exact predecessor header it remains one verification per date.
         return await dispatch(edition_id, request, verification=True)
 
     return app

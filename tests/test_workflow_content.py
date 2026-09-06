@@ -10,12 +10,19 @@ from ziyixi_protos.newsletter import editorial_pb2 as pb
 from newsletter.collection.instructions import Instruction, load_instructions
 from newsletter.contracts import ContractError, parse_message, to_dict
 from newsletter.errors import EditorError
+from newsletter.store import Store
 from newsletter.workflow.content import (
+    _DISCOVERY,
+    _SAFETY,
+    _SELECTION,
     ContentPreparation,
     parse_discovery,
     parse_plan,
     public_context,
 )
+from newsletter.workflow.definition import load_definition
+from newsletter.workflow.engine import NodeContext
+from newsletter.workflow.nodes import EditorialNodes
 from newsletter.workflow.schema import (
     CANDIDATE_FIELDS,
     TASK_FIELDS,
@@ -28,6 +35,7 @@ from newsletter.workflow.sources import (
     deduplicate_candidates,
     identity_keys,
 )
+from newsletter.workflow.story_nodes import StoryNodes
 
 DAY = "2026-09-06"
 URL = "https://arxiv.org/abs/2609.00001v2"
@@ -322,6 +330,110 @@ async def test_shortlist_accepts_12_cap_and_empty_candidates_do_not_invoke_model
     )
     assert selected.research_tasks[0]["id"] == "research-1"
     assert engine.calls[0][1]["properties"]["research_tasks"]["maxItems"] == 12
+    assert engine.calls[0][0]["reader_profile"] == ""
+
+
+def test_promoted_selection_keeps_evaluated_text_and_public_safety_boundary():
+    directory = Path(__file__).resolve().parents[1]
+    evaluated = (directory / "evals/prompts/v3-selection.md").read_text(encoding="utf-8")
+    assert evaluated.strip() in _SELECTION
+    assert _SELECTION.startswith(_SAFETY)
+    assert "不得读本地文件、密钥、个人事件、登录信息" in _SELECTION
+    assert "不search/open，不新增ID或URL" in _SELECTION
+    assert "question只提出一个核心问题和一两项决定性核查" in _SELECTION
+    assert "不承诺执行列表之外的研究" in _SELECTION
+    assert "reader_profile仅表达本次冻结的显式读者偏好" in _SELECTION
+
+
+@pytest.mark.parametrize(
+    "production,evaluated",
+    [
+        ("04-economy.md", "v1-discovery-economy.md"),
+        ("06-technology.md", "v1-discovery-technology.md"),
+    ],
+)
+def test_promoted_discovery_instructions_match_evaluated_variants(production, evaluated):
+    directory = Path(__file__).resolve().parents[1]
+    actual = directory / "src/newsletter/instructions/discovery" / production
+    expected = directory / "evals/prompts" / evaluated
+    assert actual.read_text(encoding="utf-8") == expected.read_text(encoding="utf-8")
+
+
+async def test_discovery_explicitly_requires_real_search_even_when_no_candidates(tmp_path):
+    engine = Engine((discovered(), set(), False), (discovered(), set(), True))
+    service = ContentPreparation(engine)
+    instruction = Instruction("04-economy", "Find public finance research", "a" * 64)
+    seed = candidate(provenance="crossref_metadata", access_scope="metadata")
+    with pytest.raises(EditorError) as error:
+        await service.discover(instruction, DAY, tmp_path.resolve() / "bad", seeds=[seed])
+    assert error.value.code == "invalid_output"
+    result = await service.discover(instruction, DAY, tmp_path.resolve() / "good", seeds=[seed])
+    assert result.candidates == []
+    assert engine.calls[0][2] == _DISCOVERY
+    assert _DISCOVERY.startswith(_SAFETY)
+    assert "必须实际调用hosted web search" in _DISCOVERY
+    assert "已有metadata线索或最后没有合格候选" in _DISCOVERY
+    assert "不能伪造搜索或打开记录" in _DISCOVERY
+
+
+@pytest.mark.parametrize(
+    "profile", [None, {}, ["preferences"], "x" * 100_001], ids=["null", "object", "list", "long"]
+)
+async def test_shortlist_rejects_invalid_reader_profile_before_model(tmp_path, profile):
+    engine = Engine()
+    with pytest.raises(EditorError) as error:
+        await ContentPreparation(engine).shortlist(
+            [candidate()], DAY, tmp_path.resolve() / "bad", reader_profile=profile
+        )
+    assert error.value.code == "invalid_input"
+    assert not engine.calls
+
+
+@pytest.mark.parametrize(
+    "node_class,recipe", [(EditorialNodes, "legacy-daily.yaml"), (StoryNodes, "daily.yaml")]
+)
+async def test_selection_uses_only_reader_profile_from_frozen_run_policy(
+    tmp_path, node_class, recipe
+):
+    directory = Path(__file__).resolve().parents[1]
+    definition = load_definition(directory / "src/newsletter/workflows" / recipe)
+    ids = {node.type: node.id for node in definition.nodes}
+    engine = Engine((planned(task()), set(), False))
+    store = Store(tmp_path / "selection.sqlite3", "mock")
+    profile = "Frozen explicit preference: understand AI/ML/CS and financial mechanisms.\n"
+    try:
+        nodes = node_class(store, definition, engine, tmp_path.resolve())
+        ctx = NodeContext(
+            run_id="synthetic-selection",
+            node_id=ids["selection"],
+            item_id="",
+            params={"max_tasks": 8},
+            inputs={
+                ids["deduplicate"]: {"candidates": [candidate()]},
+                ids["history"]: {"candidates": [], "watchlist": [], "editions": []},
+            },
+            run_inputs={
+                "issue_date": DAY,
+                "policy": {
+                    "reader-profile.md": profile,
+                    "editorial.md": "Unrelated editorial policy marker",
+                    "private_extra": "Secret configuration marker",
+                },
+                "personal_digest": "Private event marker",
+            },
+        )
+        selected = await nodes.execute("selection", ctx, tmp_path.resolve() / "select")
+        assert selected["research_tasks"][0]["id"] == "research-1"
+        assert len(engine.calls) == 1
+        prompt = engine.calls[0][0]
+        assert prompt["reader_profile"] == profile
+        assert "policy" not in prompt
+        assert "Unrelated editorial policy marker" not in json.dumps(prompt)
+        assert "Secret configuration marker" not in json.dumps(prompt)
+        assert "Private event marker" not in json.dumps(prompt)
+        assert engine.calls[0][2] == _SELECTION
+    finally:
+        store.close()
 
 
 async def test_research_uses_existing_fresh_search_open_provenance_even_for_old_candidate(tmp_path):

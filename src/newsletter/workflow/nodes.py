@@ -291,6 +291,7 @@ class EditorialNodes:
                 history=history["candidates"],
                 watchlist=history["watchlist"],
                 max_tasks=ctx.params.get("max_tasks", 8),
+                reader_profile=ctx.run_inputs.get("policy", {}).get("reader-profile.md", ""),
             )
             if not selected.research_tasks:
                 raise NodeFailure("no_findings")

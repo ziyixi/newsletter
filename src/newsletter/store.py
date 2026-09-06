@@ -49,15 +49,41 @@ class Store:
                 issue_date TEXT PRIMARY KEY, edition_id TEXT UNIQUE NOT NULL,
                 request_key TEXT UNIQUE NOT NULL, render_hash TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS verification_sends (
-                issue_date TEXT PRIMARY KEY, edition_id TEXT UNIQUE NOT NULL,
+                issue_date TEXT NOT NULL, edition_id TEXT PRIMARY KEY NOT NULL,
                 request_key TEXT UNIQUE NOT NULL, render_hash TEXT NOT NULL,
-                previous_edition_id TEXT NOT NULL, created_at TEXT NOT NULL);
+                previous_edition_id TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS workflow_editions (
                 edition_id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL,
                 editor_result TEXT NOT NULL, required_packets TEXT NOT NULL,
                 projection_required INTEGER NOT NULL DEFAULT 1);
         """)
         with self.transaction():
+            verification_columns = {
+                row["name"]: row for row in self.db.execute("PRAGMA table_info(verification_sends)")
+            }
+            if verification_columns["issue_date"]["pk"]:
+                # Preserve every receipt while allowing an explicitly approved
+                # successor. The unique predecessor forbids branching, even
+                # across concurrent app processes. DDL/copy are one transaction.
+                self.db.execute(
+                    "CREATE TABLE verification_sends_migrated ("
+                    "issue_date TEXT NOT NULL, edition_id TEXT PRIMARY KEY NOT NULL, "
+                    "request_key TEXT UNIQUE NOT NULL, render_hash TEXT NOT NULL, "
+                    "previous_edition_id TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL)"
+                )
+                self.db.execute(
+                    "INSERT INTO verification_sends_migrated "
+                    "(issue_date,edition_id,request_key,render_hash,previous_edition_id,created_at) "
+                    "SELECT issue_date,edition_id,request_key,render_hash,previous_edition_id,"
+                    "created_at FROM verification_sends"
+                )
+                self.db.execute("DROP TABLE verification_sends")
+                self.db.execute(
+                    "ALTER TABLE verification_sends_migrated RENAME TO verification_sends"
+                )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS verification_sends_date ON verification_sends(issue_date)"
+            )
             columns = {
                 row["name"] for row in self.db.execute("PRAGMA table_info(workflow_editions)")
             }
@@ -472,12 +498,15 @@ class Store:
             self._write(edition)
             return edition, True
 
-    def reserve_verification_send(self, request: Payload) -> tuple[EditionRecord, bool]:
-        """One explicit corrected-issue verification, separate from daily delivery.
+    def reserve_verification_send(
+        self, request: Payload, *, previous_verification_id: str | None = None
+    ) -> tuple[EditionRecord, bool]:
+        """Reserve an explicit verification, separate from daily delivery.
 
-        Never called by cron. The original accepted receipt remains untouched;
-        an ambiguous/failed original or verification cannot be bypassed with a
-        new key or edition. The same frozen approval is idempotent after restart.
+        Default: one extra attempt per date. A further manual approval must name
+        the last accepted verification; it can have only one successor. Never
+        called by cron. Unknown outcomes cannot be bypassed with a new approval,
+        and an existing frozen receipt is idempotent even after later children.
         """
         with self.transaction():
             edition = self.get(request["id"])
@@ -491,6 +520,17 @@ class Store:
             ).fetchone()
             if reused and tuple(reused) != (request["id"], request["expected_render_hash"]):
                 raise StoreError("conflict", "Verification key belongs to another approval")
+            existing = self.db.execute(
+                "SELECT render_hash,previous_edition_id FROM verification_sends WHERE edition_id=?",
+                (edition["id"],),
+            ).fetchone()
+            if existing:
+                if existing["render_hash"] != request["expected_render_hash"] or (
+                    previous_verification_id is not None
+                    and existing["previous_edition_id"] != previous_verification_id
+                ):
+                    raise StoreError("conflict", "Verification receipt belongs to another approval")
+                return edition, False
             previous = self.db.execute(
                 "SELECT edition_id FROM sends WHERE issue_date=?", (edition["issue_date"],)
             ).fetchone()
@@ -499,31 +539,69 @@ class Store:
             accepted = "simulated" if self.mode == "mock" else "provider_accepted"
             if self.get(previous[0])["delivery_state"] != accepted:
                 raise StoreError("conflict", "Original delivery must have confirmed acceptance")
-            row = self.db.execute(
-                "SELECT edition_id,render_hash FROM verification_sends WHERE issue_date=?",
+            rows = self.db.execute(
+                "SELECT edition_id,render_hash,previous_edition_id FROM verification_sends "
+                "WHERE issue_date=?",
                 (edition["issue_date"],),
-            ).fetchone()
-            if row:
-                if tuple(row) != (request["id"], request["expected_render_hash"]):
+            ).fetchall()
+            predecessor = previous[0]
+            if previous_verification_id is None:
+                if rows:
                     raise StoreError("conflict", "This date already has a verification attempt")
-                return edition, False
+            else:
+                predecessor = self._verification_extension(
+                    rows, previous[0], previous_verification_id, edition["issue_date"], accepted
+                )
             if edition["delivery_state"] != "not_requested":
                 raise StoreError("conflict", "Edition already has a delivery attempt")
             self.assert_workflow_research(edition["id"])
             self.db.execute(
-                "INSERT INTO verification_sends VALUES(?,?,?,?,?,?)",
+                "INSERT INTO verification_sends "
+                "(issue_date,edition_id,request_key,render_hash,previous_edition_id,created_at) "
+                "VALUES(?,?,?,?,?,?)",
                 (
                     edition["issue_date"],
                     edition["id"],
                     request["request_key"],
                     request["expected_render_hash"],
-                    previous[0],
+                    predecessor,
                     now(),
                 ),
             )
             edition["delivery_state"] = "submitting"
             self._write(edition)
             return edition, True
+
+    def _verification_extension(
+        self,
+        rows: list[sqlite3.Row],
+        original_id: str,
+        approved_predecessor: str,
+        issue_date: str,
+        accepted_state: str,
+    ) -> str:
+        """Require an intact, fully accepted chain ending at this exact approval."""
+        successors = {row["previous_edition_id"]: row for row in rows}
+        cursor = original_id
+        visited: set[str] = set()
+        while cursor in successors:
+            row = successors[cursor]
+            if row["edition_id"] in visited:
+                raise StoreError("conflict", "Verification receipt chain is inconsistent")
+            prior = self.get(row["edition_id"])
+            if (
+                prior["issue_date"] != issue_date
+                or prior["delivery_state"] != accepted_state
+                or prior["rendered"]["render_hash"] != row["render_hash"]
+            ):
+                raise StoreError(
+                    "conflict", "Prior verification must have confirmed frozen acceptance"
+                )
+            visited.add(row["edition_id"])
+            cursor = row["edition_id"]
+        if not rows or len(visited) != len(rows) or cursor != approved_predecessor:
+            raise StoreError("conflict", "Approval must name the latest same-date verification")
+        return cursor
 
     def assert_workflow_research(self, edition_id: str) -> None:
         """Enforce the frozen edition's policy, never the latest global setting.

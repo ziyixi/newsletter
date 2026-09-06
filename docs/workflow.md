@@ -201,11 +201,23 @@ An explicitly requested corrected-email test uses
 `POST /v1/editions/{id}/send-verification` with the same public
 `SendEditionRequest` body and send-role authentication. It requires a distinct
 ready edition, its exact frozen render hash and a confirmed original delivery
-for that date. The separate `verification_sends` receipt allows only one such
-attempt per date. A repeated request never calls the provider again, including
-after an unknown outcome. Original daily receipts remain unchanged. Cron and the
-standard trigger never use this endpoint; it is not an automatic retry or a way
-to bypass a failed/unknown daily send.
+for that date. Without any extra header, the separate `verification_sends`
+ledger still allows only one such attempt per date. If the user explicitly
+requests another new test edition, an operator must add
+`X-Newsletter-Verification-After: <latest accepted verification edition UUID>`
+alongside the new edition's exact render hash and stable request key. The entire
+same-date chain must have confirmed acceptance; a predecessor permits only one
+successor. Stale approvals and any failed/unknown ancestor block a new send.
+A repeated frozen approval never calls the provider again, including after an
+unknown outcome or a later successor. Original daily receipts remain unchanged.
+Cron and the standard trigger never use this endpoint; it is not an automatic
+retry or a way to bypass a failed/unknown daily send.
+
+The ledger migration copies existing receipts in one SQLite transaction. Do not
+downgrade to the old one-row-per-date schema after creating successors, or
+restore a pre-send backup after any new delivery: either would discard evidence
+needed to prevent duplicate sends. Code rollback must retain the current ledger
+and its idempotency checks.
 
 Run `make check`, `make smoke`, `make smoke-codex`, `make build` and the installed
 wheel smoke. Tests cover graph validation, stable maps, failure coverage,
