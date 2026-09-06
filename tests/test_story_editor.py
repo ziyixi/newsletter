@@ -1179,3 +1179,27 @@ async def test_reader_guidance_adds_no_length_or_background_gate_for_abstract_br
     assert result["content"] == content and result["issues"] == []
     assert len(rig.calls) == 2
     validate_result(result)
+
+
+@pytest.mark.parametrize("kind", ["ai_ml", "economy"])
+async def test_explainer_examples_reach_writer_without_formula_or_statistic_keyword_gate(rig, kind):
+    """Check targeted guidance, not real quality; model-approved text is not censored."""
+    content = {
+        **story("离线虚构统计记录：参数λ、78.64%、样本期；不是实际研究结论。"),
+        "kind": kind,
+    }
+    rig.replies = [reply(writer(content)), reply(review())]
+    result = await rig.run(policy=reader_policy())
+    guidance = rig.calls[0]["prompt"]["writing_guidance"]
+    assert "帮助读者想明白的解释者" in guidance
+    assert "定义术语只是起点" in guidance
+    assert "本篇相对原有认识的增量" in guidance
+    assert "把公式换成另一种数学写法也不等于解释了机制" in guidance
+    assert "AI例：" in guidance and "金融例：" in guidance
+    assert "只是表达对照，不是本题证据" in guidance
+    assert "不编造真实应用或实验" in guidance
+    assert "不以通俗为由抹去必要限制" in guidance
+    assert result["content"] == content and result["issues"] == []
+    assert len(rig.calls) == 2
+    assert "writing_guidance" not in rig.calls[1]["prompt"]
+    validate_result(result)
