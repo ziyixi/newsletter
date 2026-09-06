@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -14,6 +15,7 @@ from newsletter.editor import CodexEditor
 from newsletter.errors import EditorError
 from newsletter.workflow.publication import validate_result
 from newsletter.workflow.story_editor import (
+    _WRITING_GUIDANCE,
     COMPONENTS,
     StoryEditor,
     body_content,
@@ -119,6 +121,7 @@ def rig(tmp_path, monkeypatch):
             {
                 "prompt": json.loads(prompt),
                 "schema": schema,
+                "instructions": instructions,
                 "path": workspace,
                 "approval_sources": approval_sources,
             }
@@ -1066,5 +1069,113 @@ async def test_meaningful_same_source_chart_can_be_prepared_and_approved_in_brie
     assert result["content"]["chart"] == content["chart"] and len(rig.calls) == 2
     rules = rig.calls[0]["prompt"]["output_rules"]
     assert "brief和deep都要检查" in rules and "2–6个同口径数据点" in rules
+    assert "需要看清什么差异、用什么参照、理解后意味着什么" in rules
+    assert "只有数值图确实比文字更能解释这个问题" in rules
+    assert "作者自设门槛、运行次数不自动具有图表价值" in rules
+    assert "缺少解释价值就chart=null" in rules
+    assert "若有就在本轮给chart" not in rules
     assert "不能把同比与环比" in rules and "没有合适数据就null" in rules
+    validate_result(result)
+
+
+def reader_policy():
+    directory = Path(__file__).resolve().parents[1] / "src/newsletter/policy"
+    return {
+        "editorial.md": (directory / "story-editorial.md").read_text(encoding="utf-8"),
+        "reader-profile.md": (directory / "reader-profile.md").read_text(encoding="utf-8"),
+    }
+
+
+@pytest.mark.parametrize(
+    "mode,kind", [("brief", "ai_ml"), ("deep", "ai_ml"), ("brief", "economy"), ("deep", "world")]
+)
+async def test_reader_first_guidance_reaches_writer_without_new_review_gate(rig, mode, kind):
+    """Offline prompt plumbing, not evidence that an LLM writes better prose."""
+    content = {**story(), "kind": kind}
+    policy = reader_policy()
+    rig.replies = [reply(writer(content)), reply(review())]
+    result = await rig.run(mode=mode, policy=policy)
+    assert result["content"] == content and len(rig.calls) == 2
+    author, reviewer = rig.calls
+    assert author["prompt"]["writing_guidance"] == _WRITING_GUIDANCE
+    assert author["prompt"]["reader_profile"] == policy["reader-profile.md"]
+    assert all(call["instructions"] == policy["editorial.md"] for call in rig.calls)
+    assert "先交代背景、要解决的问题和原来怎么做" in _WRITING_GUIDANCE
+    assert "世界新闻和经济报道" in _WRITING_GUIDANCE
+    assert "术语或缩写首次出现" in _WRITING_GUIDANCE
+    assert "只保留能帮助理解变化的少量数字" in _WRITING_GUIDANCE
+    assert "而不是扩写摘要、增加数字、术语或段数" in _WRITING_GUIDANCE
+    assert "不要把搜索/open、JSON、审校/修订经过倒进报道" in _WRITING_GUIDANCE
+    assert "不是新增字数、术语或背景的审校阻断条件" in _WRITING_GUIDANCE
+    assert "writing_guidance" not in reviewer["prompt"]
+    assert "不因为文风或可有可无扩展研究阻断" in reviewer["prompt"]["rules"]
+    paragraphs = author["schema"]["properties"]["content"]["anyOf"][0]["properties"]["paragraphs"]
+    assert paragraphs["minItems"] == 1
+    assert paragraphs["maxItems"] == (2 if mode == "brief" else 16)
+    validate_result(result)
+
+
+@pytest.mark.parametrize("known", [True, False])
+async def test_source_identity_and_contribution_remain_untrusted_writer_context(rig, known):
+    """New candidate fields propagate without becoming citations or approval."""
+    details = {
+        "authors": "Fixture Author",
+        "affiliations": "Fixture Research Institute",
+        "venue": "Fixture Conference",
+        "publication_status": "Fixture preprint, not an acceptance claim",
+        "contribution": "A different way to examine a fictional bottleneck",
+        "source_basis": "Fixture discovery lead; not a quality judgement",
+    }
+    candidate = {
+        "id": "candidate-a",
+        **{name: value if known else "" for name, value in details.items()},
+        "evidence_urls": [URL] if known else [],
+    }
+    original = deepcopy(candidate)
+    rig.replies = [reply(writer(story())), reply(review())]
+    result = await rig.run(candidates=[candidate])
+    prompt = rig.calls[0]["prompt"]
+    assert prompt["candidates_untrusted"] == [original] and candidate == original
+    assert prompt["available_citations"] == ["packet/source", "packet/publication"]
+    assert "只是待核线索，不是发表引用或质量背书" in prompt["writing_guidance"]
+    assert "不得把网页发布方当作者单位" in prompt["writing_guidance"]
+    assert len(rig.calls) == 2
+    validate_result(result)
+
+
+async def test_local_repair_preserves_reader_guidance_and_independently_approved_signal(rig):
+    """The existing four-call repair path remains bounded and separately reviewed."""
+    original, fixed = story(), story("修正后的虚构事件，不是真实报道。")
+    signal = story("仅确认虚构事件存在。")
+    policy = reader_policy()
+    rig.replies = [
+        reply(writer(original, signal)),
+        reply(review(body="blocked", signal="approved")),
+        reply(writer(fixed)),
+        reply(review()),
+    ]
+    result = await rig.run(policy=policy)
+    assert result["content"] == fixed and result["signal"] == signal
+    assert len(rig.calls) == 4 and len(rig.checkpoints) == 2
+    assert rig.checkpoints[0]["content"] is None and rig.checkpoints[0]["signal"] == signal
+    for index in (0, 2):
+        prompt = rig.calls[index]["prompt"]
+        assert prompt["writing_guidance"] == _WRITING_GUIDANCE
+        assert prompt["reader_profile"] == policy["reader-profile.md"]
+    assert "repair只在原修订范围内改善解释" in _WRITING_GUIDANCE
+    assert "不得更改已批准的简讯" in rig.calls[2]["prompt"]["task"]
+    assert len({call["path"] for call in rig.calls}) == 4
+    for checkpoint in rig.checkpoints:
+        validate_result(checkpoint)
+
+
+async def test_reader_guidance_adds_no_length_or_background_gate_for_abstract_brief(rig):
+    """A simulated reviewer decision is not changed by a new stylistic validator."""
+    rig.packet["content"]["sources"][0]["access_scope"] = "abstract"
+    rig.packet["content_hash"] = content_hash(rig.packet["content"])
+    content = story("离线虚构事件。")
+    rig.replies = [reply(writer(content)), reply(review())]
+    result = await rig.run(policy=reader_policy())
+    assert result["content"] == content and result["issues"] == []
+    assert len(rig.calls) == 2
     validate_result(result)

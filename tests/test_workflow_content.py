@@ -8,7 +8,7 @@ import pytest
 from ziyixi_protos.newsletter import editorial_pb2 as pb
 
 from newsletter.collection.instructions import Instruction, load_instructions
-from newsletter.contracts import ContractError, parse_message, to_dict
+from newsletter.contracts import ContractError, content_hash, parse_message, to_dict
 from newsletter.errors import EditorError
 from newsletter.store import Store
 from newsletter.workflow.content import (
@@ -16,6 +16,7 @@ from newsletter.workflow.content import (
     _SAFETY,
     _SELECTION,
     ContentPreparation,
+    _candidate_view,
     parse_discovery,
     parse_plan,
     public_context,
@@ -25,6 +26,8 @@ from newsletter.workflow.engine import NodeContext
 from newsletter.workflow.nodes import EditorialNodes
 from newsletter.workflow.schema import (
     CANDIDATE_FIELDS,
+    CANDIDATE_LEGACY_FIELDS,
+    CANDIDATE_RESEARCH_FIELDS,
     TASK_FIELDS,
     discovery_schema,
     planning_schema,
@@ -64,7 +67,13 @@ def discovered(*items):
     return json.dumps(
         {
             "note": "Synthetic public discovery",
-            "candidates": [{key: item[key] for key in CANDIDATE_FIELDS} for item in items],
+            "candidates": [
+                {
+                    key: item.get(key, [] if key == "evidence_urls" else "")
+                    for key in CANDIDATE_FIELDS
+                }
+                for item in items
+            ],
         }
     )
 
@@ -175,8 +184,15 @@ def test_discovery_cap_empty_note_and_shape_fail_closed():
 def test_discovery_schema_exposes_parser_string_and_empty_value_boundaries():
     schema = discovery_schema()
     props = schema["properties"]["candidates"]["items"]["properties"]
-    optional = {"doi", "version", "event_key", "published_at"}
+    optional = {"doi", "version", "event_key", "published_at", *CANDIDATE_RESEARCH_FIELDS}
     for name, field in props.items():
+        if name == "evidence_urls":
+            assert field == {
+                "type": "array",
+                "maxItems": 4,
+                "items": {"type": "string", "minLength": 1, "maxLength": 1200},
+            }
+            continue
         assert field["minLength"] == (0 if name in optional else 1)
         assert field["maxLength"] == {"title": 500, "why_now": 1000, "published_at": 10}.get(
             name, 1200
@@ -196,6 +212,7 @@ def test_discovery_schema_exposes_parser_string_and_empty_value_boundaries():
         ("why_now", 1000),
         ("version", 1200),
         ("event_key", 1200),
+        *((name, 1200) for name in CANDIDATE_RESEARCH_FIELDS),
     ],
 )
 def test_discovery_schema_lengths_match_actual_parser(field, maximum):
@@ -517,6 +534,113 @@ def test_schema_agrees_with_shared_proto_and_directions_are_six_separate_files()
     ]
     assert all("最多5" in d.text for d in directions)
     assert len(load_instructions(directory.parent)) == 3
+
+
+def test_legacy_candidate_view_and_discovery_do_not_rewrite_old_hashes():
+    old = candidate()
+    old["id"] = candidate_id(old)
+    digest = content_hash(old)
+    assert not set(CANDIDATE_RESEARCH_FIELDS) & set(old)
+    assert _candidate_view(old) == old
+    assert content_hash(old) == digest
+    raw = json.dumps(
+        {
+            "candidates": [{key: old[key] for key in CANDIDATE_LEGACY_FIELDS}],
+            "note": "Legacy public discovery checkpoint",
+        }
+    )
+    parsed = parse_discovery(raw, {URL}, True, "01-ai-ml", DAY).candidates[0]
+    assert parsed == old and content_hash(parsed) == digest
+
+
+def test_research_provenance_fields_preserve_opened_evidence_and_unknowns():
+    evidence = "https://openreview.net/forum?id=synthetic"
+    value = candidate(
+        authors="Synthetic Researcher",
+        affiliations="",  # The abstract does not establish the author's affiliation.
+        venue="Synthetic workshop",
+        publication_status="Accepted workshop paper; source record only",
+        contribution="Tests an earlier error-bound assumption against a matched baseline.",
+        source_basis="A specific workshop entry records the author and decision.",
+        evidence_urls=[evidence, URL],
+    )
+    parsed = parse_discovery(discovered(value), {URL, evidence}, True, "01-ai-ml", DAY)
+    for key in (*CANDIDATE_RESEARCH_FIELDS, "evidence_urls"):
+        assert parsed.candidates[0][key] == value[key]
+    assert parsed.candidates[0]["id"] == candidate_id(candidate())
+    # A source-schema field is not a domain/author prestige allowlist.
+    unlisted = candidate(
+        authors="A new team",
+        affiliations="Independent researchers",
+        evidence_urls=["https://new-team.example.org/paper"],
+    )
+    assert parse_discovery(
+        discovered(unlisted), {URL, *unlisted["evidence_urls"]}, True, "01-ai-ml", DAY
+    ).candidates
+
+
+@pytest.mark.parametrize(
+    "urls,opened",
+    [
+        (["https://openreview.net/forum?id=synthetic"], {URL}),
+        ([URL, URL], {URL}),
+        ([URL] * 5, {URL}),
+        ("https://openreview.net/", {URL}),
+        ([None], {URL}),
+        (["http://127.0.0.1/source"], {URL, "http://127.0.0.1/source"}),
+        (["https://openreview.net/" + "a" * 1200], {URL}),
+    ],
+)
+def test_discovery_rejects_unopened_duplicate_unsafe_or_unbounded_source_evidence(urls, opened):
+    with pytest.raises((EditorError, ContractError)):
+        parse_discovery(discovered(candidate(evidence_urls=urls)), opened, True, "01-ai-ml", DAY)
+
+
+def test_unopened_metadata_seed_cannot_gain_model_written_reputation_or_proof_urls():
+    seed = candidate(
+        url="https://doi.org/10.1234/synthetic",
+        access_scope="metadata",
+        provenance="crossref_metadata",
+    )
+    seed["id"] = candidate_id(seed)
+    model = candidate(
+        **{
+            **seed,
+            "authors": "Invented famous author",
+            "affiliations": "Invented prestigious lab",
+            "venue": "Invented main conference",
+            "publication_status": "Invented acceptance",
+            "contribution": "Invented breakthrough",
+            "source_basis": "Invented endorsement",
+            "evidence_urls": ["https://example.org/unopened"],
+        }
+    )
+    found = parse_discovery(discovered(model), set(), True, "02-science", DAY, seeds=[seed])
+    assert found.candidates == [{**seed, "direction": "02-science"}]
+    assert "Invented" not in json.dumps(found.candidates)
+    assert "evidence_urls" not in found.candidates[0]
+
+
+async def test_shortlist_hands_off_source_and_contribution_fields_without_extra_search(tmp_path):
+    supplied = candidate(
+        authors="Synthetic author",
+        affiliations="Synthetic institution",
+        venue="Synthetic journal",
+        publication_status="Published according to the supplied entry",
+        contribution="A matched-budget comparison changes the earlier claimed advantage.",
+        source_basis="Original journal entry, not a ranking or reputation claim.",
+        evidence_urls=[URL],
+    )
+    engine = Engine((planned(task()), set(), False))
+    await ContentPreparation(engine).shortlist([supplied], DAY, tmp_path.resolve() / "sources")
+    assert len(engine.calls) == 1
+    assert engine.calls[0][0]["candidates_untrusted"] == [supplied]
+    assert "不search/open" in engine.calls[0][2]
+    assert "这个问题为什么重要" in engine.calls[0][2]
+    assert "这篇工作实际增加了什么" in engine.calls[0][2]
+    assert "声誉只是发现线索，不是硬白名单" in engine.calls[0][2]
+    assert "未知" in engine.calls[0][2]
+    # This verifies prompt routing and boundaries, not whether a model ranks well.
 
 
 def test_public_context_is_bounded_and_allowlisted():

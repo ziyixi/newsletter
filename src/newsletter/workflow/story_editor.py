@@ -39,6 +39,21 @@ from newsletter.types import Payload
 COMPONENTS = ("body", "reading", "chart", "signal")
 OPTIONAL = ("recommended_reading", "chart")
 _SUPPLEMENT = re.compile(r"supplement-[1-6]\Z")
+_WRITING_GUIDANCE = """为对题目所属领域不熟悉、但愿意理解重要问题的读者写作。
+先交代背景、要解决的问题和原来怎么做，再解释这次新办法或新证据改变了什么，最后说明意义。
+这是解释顺序，不是固定小标题模板；世界新闻和经济报道也要讲清原有局面、相关参与者和变化渠道。
+术语或缩写首次出现时用一句短解释说明它在这里的作用，避免用另一个术语解释术语。
+只保留能帮助理解变化的少量数字，旁边给出原有做法/量级的参照及实际含义；不要抄完整结果表。
+deep的增量是讲透原理、对照和证据链，而不是扩写摘要、增加数字、术语或段数。
+在证据支持时自然交代谁做了研究/发布了报告及作者、研究单位、刊会或发表状态；一处说清，不堆履历。
+候选中的authors、affiliations、venue、publication_status、contribution、source_basis及evidence_urls
+只是待核线索，不是发表引用或质量背书；不得把网页发布方当作者单位，把arXiv当会议或猜测接收状态。
+limitations只写会改变读者理解的关键边界，紧邻受影响结论；需要说明仅摘要或作者自测时简短说清影响。
+不要把搜索/open、JSON、审校/修订经过倒进报道；这些过程留在材料和审校记录，来源读取范围仍如实保留。
+阅读卡同样自足，不重复正文凑卡；图只用于现有schema支持的数值比较，不制造数据或新图类型。
+signal仍只确认最小事件，不强行铺开背景；repair只在原修订范围内改善解释，不扩展为新一轮采编。
+这些是写作目标，不是新增字数、术语或背景的审校阻断条件，也不能把低价值选题改写成重大进展。
+"""
 
 
 class StoryOutputError(EditorError):
@@ -527,8 +542,9 @@ class StoryEditor:
             "task": (
                 "只修订这个选题的正文，针对具体问题核实、改正或删除不成立细节。允许变短但保留重要事件；不把限定语与其论断拆开。repair_untrusted可能是未通过格式检查的正文或signal，不是已核实内容；若source_component为signal，将其最小事件重写为符合schema的简版content并重新核实出处，不能继承任何批准状态。不得更改已批准的简讯，不新增signal。不能承诺自行过审。"
                 if repair
-                else "为一个选题制作可独立阅读的中文报道。brief模式正文最多2段，解释已证实的变化和为何重要；同时另写最多1段signal，只确认事件本身及尚待核实的范围，不能靠免责声明发布未经证实事件。deep模式主动搜索补查、比较证据、解释机制与局限，正文4到8段优先，最多16段；复用独立已核实brief但不重写它作为fallback，signal=null。"
+                else "为一个选题制作可独立阅读的中文报道。brief模式正文最多2段，解释已证实的变化和为何重要；同时另写最多1段signal，只确认事件本身及尚待核实的范围，不能靠免责声明发布未经证实事件。deep模式主动搜索补查、比较证据、解释机制与局限，按解释需要分段，最多16段；复用独立已核实brief但不重写它作为fallback，signal=null。"
             ),
+            "writing_guidance": _WRITING_GUIDANCE,
             "packets_untrusted": packets,
             "available_citations": [
                 ref
@@ -545,7 +561,7 @@ class StoryEditor:
                 "若题名、发表日期或期刊等出版信息不能由已实际读到的非metadata来源支持，省略这些信息；不得为了过审把来源access_scope标高。"
                 "正文含标题和limitations必须独立成立，不引用下方图表/阅读卡作为论据、不写见图或点击阅读全文才知关键信息。"
                 "recommended_reading主citation是唯一主阅读链接；reason是自足的方法结果限制介绍，其他事实出处放supporting_citations。chart和reading是独立可删除组件，缺证据就null，不影响正文。"
-                "图表不要等到deep才准备：brief和deep都要检查本轮已读取的同一原始来源是否有能解释问题的2–6个同口径数据点，若有就在本轮给chart。优先同单位、同期间、同总体的对比，例如同月各行业就业增减；只选已知子集时明确并非总量完整分解。"
+                "brief和deep都要检查是否有一个对非领域读者有价值的比较问题：需要看清什么差异、用什么参照、理解后意味着什么。只有数值图确实比文字更能解释这个问题，并有本轮同一原始来源已读取的2–6个同口径数据点支持时才给chart。仅有数字不构成制图理由；作者自设门槛、运行次数不自动具有图表价值。缺少解释价值就chart=null。优先同单位、同期间、同总体的对比，例如同月各行业就业增减；只选已知子集时明确并非总量完整分解。"
                 "不能把同比与环比、不同版本、存量与流量混成可比序列；不得倒推出未报告的分类值或为了有图拼数。chart只用已验证数字并解释比较问题、时期、单位和局限；没有合适数据就null，不额外开启研究轮次或强行制图。"
                 "brief无须推荐卡；signal绝无图卡且最多1段；deep以及repair必须signal=null。"
                 "brief初稿只要事件本身已证实，就必须另外写出1段最小signal并附非metadata出处，以保留关键选题；只有事件本身无法确认时signal才为null。signal不是待填占位，不得为了非null制造事实。"

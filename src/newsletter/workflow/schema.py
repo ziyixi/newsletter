@@ -3,7 +3,7 @@
 from newsletter.contracts import IDENTIFIER_PATTERN, SOURCE_ACCESS_SCOPES
 from newsletter.types import Payload
 
-CANDIDATE_FIELDS = (
+CANDIDATE_LEGACY_FIELDS = (
     "title",
     "url",
     "doi",
@@ -14,6 +14,16 @@ CANDIDATE_FIELDS = (
     "why_now",
     "access_scope",
 )
+CANDIDATE_RESEARCH_FIELDS = (
+    "authors",
+    "affiliations",
+    "venue",
+    "publication_status",
+    "contribution",
+    "source_basis",
+)
+CANDIDATE_FIELDS = (*CANDIDATE_LEGACY_FIELDS, *CANDIDATE_RESEARCH_FIELDS, "evidence_urls")
+MAX_EVIDENCE_URLS = 4
 TASK_FIELDS = (
     "id",
     "candidate_ids",
@@ -35,7 +45,7 @@ def object_schema(properties: Payload) -> Payload:
 
 
 def discovery_schema(max_candidates: int = 5) -> Payload:
-    optional_text = {"doi", "version", "event_key", "published_at"}
+    optional_text = {"doi", "version", "event_key", "published_at", *CANDIDATE_RESEARCH_FIELDS}
     props: Payload = {
         key: {
             "type": "string",
@@ -43,6 +53,12 @@ def discovery_schema(max_candidates: int = 5) -> Payload:
             "maxLength": 1200,
         }
         for key in CANDIDATE_FIELDS
+        if key != "evidence_urls"
+    }
+    props["evidence_urls"] = {
+        "type": "array",
+        "maxItems": MAX_EVIDENCE_URLS,
+        "items": {"type": "string", "minLength": 1, "maxLength": 1200},
     }
     props["access_scope"]["enum"] = list(SOURCE_ACCESS_SCOPES)
     props["title"]["maxLength"] = 500

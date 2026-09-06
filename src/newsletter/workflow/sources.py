@@ -18,7 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from email.utils import parsedate_to_datetime
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -46,6 +46,15 @@ class Candidate(TypedDict):
     why_now: str
     access_scope: str
     provenance: str
+    # Additive public-proto fields. Omitted legacy fields mean unknown, not a
+    # reason to rewrite a frozen candidate or its evidence hash on read.
+    authors: NotRequired[str]
+    affiliations: NotRequired[str]
+    venue: NotRequired[str]
+    publication_status: NotRequired[str]
+    contribution: NotRequired[str]
+    source_basis: NotRequired[str]
+    evidence_urls: NotRequired[list[str]]
 
 
 def normalize_doi(value: str) -> str:

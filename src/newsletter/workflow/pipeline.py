@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from newsletter.collection.collector import Collector
-from newsletter.collection.instructions import Instruction, load_instructions
+from newsletter.collection.instructions import Instruction
 from newsletter.collection.pipeline import CollectionPipeline
 from newsletter.collection.repository import RunRepository
+from newsletter.collection.source_guides import load_discovery_instructions
 from newsletter.contracts import content_hash, validate_draft, validate_packet_body
 from newsletter.editor import POLICY_DIR, CodexEditor
 from newsletter.settings import Settings
@@ -33,7 +34,7 @@ def freeze_workflow(
 ) -> tuple[list[Instruction], Payload]:
     definition = load_definition(settings.workflow_file)
     validate_recipe(definition)
-    instructions = load_instructions(settings.discovery_dir)
+    instructions = load_discovery_instructions(settings.discovery_dir)
     policy = {}
     for name in ("editorial.md", "reader-profile.md"):
         filename = (

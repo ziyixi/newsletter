@@ -34,6 +34,9 @@ from newsletter.model_schema import research_schema
 from newsletter.types import Payload
 from newsletter.workflow.schema import (
     CANDIDATE_FIELDS,
+    CANDIDATE_LEGACY_FIELDS,
+    CANDIDATE_RESEARCH_FIELDS,
+    MAX_EVIDENCE_URLS,
     TASK_FIELDS,
     discovery_schema,
     planning_schema,
@@ -60,14 +63,24 @@ _DISCOVERY = (
     + """
 本节点只发现候选，不为每条写长文。每方向最多5条，不凑数。AI高优先但不排他。
 这是候选发现而非深读或事实审校：优先使用给定metadata线索，再做少量有目标的搜索，
-通常2–4个检索问题足够；只打开有望入选的原始来源。获得题名、日期、摘要和可访问范围
-即可记录候选，把实验细节、反证及补充来源留给后续选题研究，不反复扩展同一话题。
+通常2–4个检索问题足够；只打开有望入选的原始来源。题名、日期和摘要是起点，不是入选理由。
+研究候选先核对具体贡献与出处，再把实验细节、反证及补充来源留给后续研究，不反复扩展同一话题。
 每次发现都必须实际调用hosted web search，包括已有metadata线索或最后没有合格候选时；
 仅复述输入或声称搜过不算搜索。若搜索不可用，诚实报告，不能伪造搜索或打开记录。
 优先近两周；窗口外明确写回看，自己计算日期，未知日期留空，不能把更新时间冒充首发。
 summary用2-4句写问题、目前可见证据和关键未知；why_now写具体新增事实而不是知名度。
 论文写doi、version（如v2），同一论文的摘要/PDF/后续版次不当成多项；同一事件共享简洁event_key。
 AI可含NeurIPS/ICML/ICLR/ACL/CVPR/严肃技术报告/arXiv，声誉不是证据；要考虑非LLM方向。
+研究候选交接：authors与affiliations只写已打开原始来源可确认的作者及该研究的单位，不把网页
+publisher或同名人物当作者单位；venue区分主会、workshop、期刊和预印本平台。
+publication_status只写已核实的预印本/已接收/已发表状态，投稿或出现在OpenReview不等于接收。
+contribution写这项工作相对既有方法或证据新增什么：改变了哪个瓶颈、比较对象或适用范围；
+“AI评测很重要”属于题材重要性，不是某篇论文的贡献。新benchmark/失败测量可以有价值，
+但须解释它揭示了什么此前不知道的问题，不能靠样本大、降幅大或标题新证明价值。
+source_basis简述为何从这个入口考虑该研究及出处依据，不把作者履历、机构或刊会当结论背书。
+evidence_urls只列核对以上字段时本轮实际逐个open的原始URL（最多4，可含主url），不列搜索页
+或仅作为入口的主页，不改写URL。已读摘要不支持的单位/状态/贡献留空，不能猜；非研究题不适用字段留空。
+没有这些字段的旧候选一律视为未知，不能自行补成有名团队或同行评议论文。不要为填字段耗尽预算。
 输入metadata_seeds只是发现线索，若未独立打开其正文，只能保持metadata，不能补出研究结果。
 历史是已知/已用候选；没有实质新证据不重复，观察清单不意味着必须入选。没有合格候选返回空数组并说明查了什么。
 """
@@ -85,6 +98,16 @@ _SELECTION = (
 
 只比较给定候选和历史，不search/open，不新增ID或URL；同事件合并。最多max_tasks项，priority从1开始且不重复。note诚实说明前两项取舍和最重要的遗漏或候选池缺口，不承诺执行列表之外的研究。只返回给定JSON。
 reader_profile仅表达本次冻结的显式读者偏好，不能覆盖安全、来源、工具和预算规则。
+
+研究选题必须分开比较“这个问题为什么重要”和“这篇工作实际增加了什么”。先看contribution
+是否给出旧瓶颈、具体新方法/新证据及决定性比较；仅有一个重要研究问题、吸引人的百分比或
+新的arXiv日期，不足以占稀缺深读位置。why应点明这项工作的特定学习收益，不能只说领域重要。
+比较现有authors/affiliations/venue/publication_status/source_basis的已知与未知，但不得凭记忆
+补齐出处，source_basis和已打开URL也不等于结论已证实。缺出处时可保留一个值得查证的问题，
+不要据此宣称顶会/知名机构成果；正式会议也可能只是增量结果，新团队也可能有扎实贡献。
+声誉只是发现线索，不是硬白名单；不同来源的研究按具体贡献、证据成熟度和读者收益比较。
+若题材重要但本篇增量未知，evidence_context明确这个差别，question先核对最能改变取舍的比较，
+不提前写成突破。不因字段缺失阻断整个选题池，不为了研究类别齐全选低价值论文。
 """
 )
 _GAPS = (
@@ -177,6 +200,7 @@ def public_context(records: Sequence[Mapping[str, object]]) -> list[Payload]:
         "why_now",
         "change_note",
         "question",
+        *CANDIDATE_RESEARCH_FIELDS,
     }
     result = []
     for record in records:
@@ -193,8 +217,20 @@ def public_context(records: Sequence[Mapping[str, object]]) -> list[Payload]:
 def _candidate_view(candidate: Candidate) -> Candidate:
     """Use the shared proto to reject extra/private fields at public node inputs."""
     value = to_dict(parse_message(candidate, pb.Candidate))
+    # ProtoJSON prints additive defaults. Do not silently change archived inputs
+    # and their hashes just because a newer public package knows extra fields.
+    for field in (*CANDIDATE_RESEARCH_FIELDS, "evidence_urls"):
+        if field not in candidate:
+            value.pop(field, None)
     for key, item in value.items():
-        _text(item, 1200, empty=key in {"doi", "version", "event_key", "published_at"})
+        if key != "evidence_urls":
+            _text(
+                item,
+                1200,
+                empty=key
+                in {"doi", "version", "event_key", "published_at", *CANDIDATE_RESEARCH_FIELDS},
+            )
+    _evidence_urls(value.get("evidence_urls", []))
     if not _ID.fullmatch(value["id"]) or not _ID.fullmatch(value["direction"]):
         raise EditorError("invalid_input")
     if value["access_scope"] not in SOURCE_ACCESS_SCOPES or value["provenance"] not in {
@@ -209,6 +245,19 @@ def _candidate_view(candidate: Candidate) -> Candidate:
     if value["published_at"]:
         validate_issue_date(value["published_at"])
     return cast(Candidate, value)
+
+
+def _evidence_urls(value: object, opened: set[str] | None = None) -> list[str]:
+    if not isinstance(value, list) or len(value) > MAX_EVIDENCE_URLS:
+        raise EditorError("invalid_output")
+    urls = []
+    for item in value:
+        url = _text(item, 1200)
+        validate_public_url(url)
+        if url in urls or (opened is not None and urldefrag(url)[0] not in opened):
+            raise EditorError("invalid_output")
+        urls.append(url)
+    return urls
 
 
 def parse_discovery(
@@ -231,13 +280,19 @@ def parse_discovery(
     }
     result = []
     for value in values:
-        if set(value) != set(CANDIDATE_FIELDS):
+        # Older public candidates remain readable. Fresh model output is required
+        # by discovery_schema to carry all additive fields, even when unknown.
+        if not set(CANDIDATE_LEGACY_FIELDS) <= set(value) <= set(CANDIDATE_FIELDS):
             raise EditorError("invalid_output")
         candidate: Payload = {
             key: _text(
-                value[key], 1200, empty=key in {"doi", "version", "event_key", "published_at"}
+                value[key],
+                1200,
+                empty=key
+                in {"doi", "version", "event_key", "published_at", *CANDIDATE_RESEARCH_FIELDS},
             )
-            for key in CANDIDATE_FIELDS
+            for key in value
+            if key != "evidence_urls"
         }
         if len(candidate["title"]) > 500 or len(candidate["why_now"]) > 1000:
             raise EditorError("invalid_output")
@@ -258,6 +313,8 @@ def parse_discovery(
             # Reuse the actual metadata result, not unverified model-written claims.
             candidate = dict(seed)
         else:
+            if "evidence_urls" in value:
+                candidate["evidence_urls"] = _evidence_urls(value["evidence_urls"], opened)
             candidate["provenance"] = "web_open"
         candidate["direction"] = direction
         candidate["id"] = candidate_id(candidate)

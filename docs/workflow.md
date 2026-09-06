@@ -25,6 +25,39 @@ private Todofy → render + frozen hash → protected external send
 
 All brief attempts precede deep attempts. Selection compares the supplied pool
 without another research pass; discovery collects bounded leads, not full papers.
+
+## Source-first discovery and reader-first writing
+
+AI discovery starts with an editable guide at
+`instructions/discovery/_sources/ai-ml.md`: official proceedings, journals and
+research-group publication directories. It is navigation, not an author/domain
+allowlist. A promising new team can qualify through a specific contribution;
+an established team or important topic does not automatically earn a feature.
+The guide is appended to the AI direction and hashed when a run is accepted,
+never reread midway through a frozen run. It adds no worker or model pass.
+Custom discovery directories without the guide retain their exact old behavior.
+
+The public proto candidate carries optional author, affiliation, venue,
+publication status, contribution, source rationale and actually consulted public
+URLs. Unknown values stay empty; the old candidate shape and archived hashes
+remain valid. These fields are discovery context, not publication citations or
+proof of correctness. Selection compares the work's specific advance over its
+prior baseline, not only the importance of its topic. A quieter news day can
+justify a clearly dated look back rather than filling space with thin new papers.
+
+Writing assumes an interested reader outside the field: explain the background
+and previous approach, what changed, and why that matters. Define useful terms
+on first use and interpret the few quantities that help explain the change.
+Depth means a better explanation, not more statistics or a longer abstract.
+Keep process diagnostics out of reader copy; limitations explain the actual
+boundary, not the mechanics of search/review. Charts must answer a useful reader
+question rather than merely reproduce available numbers. These writing goals
+do not add a publication veto, model loop, or delay to the existing safe tail.
+See [source-first acceptance](../evals/source-first-acceptance.md) for the small
+real-content evaluation, distinct from offline contract and delivery tests.
+
+## Briefs and deeper explanations
+
 Up to four selected topics receive a
 deepening attempt; at most two complete deep pieces are displayed. Other topics
 use their separately researched and approved brief, not a truncated deep piece.

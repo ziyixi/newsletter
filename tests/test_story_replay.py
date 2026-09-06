@@ -128,6 +128,17 @@ async def test_fresh_child_reuses_only_upstream_inputs_without_provider_or_mail_
     rig = rig_factory(expired=True)
     await blocked_parent(rig, fatal=fatal)
     parent = parent_receipts(rig)
+    # This fixture intentionally predates the additive Candidate source fields.
+    # Upstream artifact bodies/hashes must survive a newer proto and local replay.
+    original_candidates = next(
+        item["value"]["candidates"]
+        for item in parent["artifacts"]
+        if item["node_id"] == "candidates"
+    )
+    assert all(
+        "authors" not in item and "evidence_urls" not in item for item in original_candidates
+    )
+    original_candidate_hash = content_hash(original_candidates)
     replay = StoryReplay(rig.store)
     child = replay.start(rig.run["id"], request())
     assert child["id"] != rig.run["id"]
@@ -154,6 +165,9 @@ async def test_fresh_child_reuses_only_upstream_inputs_without_provider_or_mail_
     async def prepare(self, **values):
         calls.append((values["task"]["id"], values["mode"]))
         assert values["candidates"]
+        assert all(
+            "authors" not in item and "evidence_urls" not in item for item in values["candidates"]
+        )
         return result(values["task"]["priority"], mode=values["mode"])
 
     monkeypatch.setattr(EditorialNodes, "execute", forbidden)
@@ -174,6 +188,7 @@ async def test_fresh_child_reuses_only_upstream_inputs_without_provider_or_mail_
     ]
     assert rig.publications.plan(child["id"]) == rig.tasks
     assert parent_receipts(rig) == parent
+    assert content_hash(original_candidates) == original_candidate_hash
     assert not rig.notion.calls
     assert rig.store.db.execute("SELECT COUNT(*) FROM sends").fetchone()[0] == 0
     assert rig.store.db.execute("SELECT COUNT(*) FROM verification_sends").fetchone()[0] == 0
