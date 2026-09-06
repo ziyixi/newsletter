@@ -2,9 +2,22 @@
 
 import math
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeVar
 from zoneinfo import ZoneInfo
+
+_Number = TypeVar("_Number", int, float)
+
+
+def _number_env(name: str, default: str, parse: Callable[[str], _Number]) -> _Number:
+    try:
+        return parse(os.getenv(name, default))
+    except ValueError:
+        # Built-in numeric errors echo the input, which may be a misplaced key.
+        # Suppress that exception's context even when startup prints a traceback.
+        raise ValueError(f"Set a valid numeric value for {name}") from None
 
 
 @dataclass(frozen=True)
@@ -49,7 +62,7 @@ class Settings:
             editor_token=os.getenv("NEWSLETTER_EDITOR_TOKEN", ""),
             send_token=os.getenv("NEWSLETTER_SEND_TOKEN", ""),
             time_zone=os.getenv("NEWSLETTER_TIME_ZONE", "America/Los_Angeles"),
-            job_timeout_seconds=float(os.getenv("NEWSLETTER_JOB_TIMEOUT_SECONDS", "900")),
+            job_timeout_seconds=_number_env("NEWSLETTER_JOB_TIMEOUT_SECONDS", "900", float),
             notion_backend=os.getenv("NEWSLETTER_NOTION", "disabled"),
             notion_token=os.getenv("NOTION_TOKEN", ""),
             notion_data_source_id=os.getenv("NOTION_DATA_SOURCE_ID", ""),
@@ -67,12 +80,12 @@ class Settings:
             todofy_user=os.getenv("TODO_API_USER", ""),
             todofy_password=os.getenv("TODO_API_PASSWORD", ""),
             todofy_mode=os.getenv("NEWSLETTER_TODOFY_MODE", "recommendation"),
-            todofy_top=int(os.getenv("NEWSLETTER_TODOFY_TOP", "5")),
+            todofy_top=_number_env("NEWSLETTER_TODOFY_TOP", "5", int),
             instructions_dir=Path(os.environ["NEWSLETTER_INSTRUCTIONS_DIR"])
             if os.getenv("NEWSLETTER_INSTRUCTIONS_DIR")
             else Path(__file__).parent / "instructions",
-            collection_timeout_seconds=float(
-                os.getenv("NEWSLETTER_COLLECTION_TIMEOUT_SECONDS", "600")
+            collection_timeout_seconds=_number_env(
+                "NEWSLETTER_COLLECTION_TIMEOUT_SECONDS", "600", float
             ),
         )
 
