@@ -274,8 +274,11 @@ def render_chart_png(chart: Payload, is_fixture: bool) -> bytes:
         y = _lines(draw, lines, (60, y), detail_font, _MUTED) + 12
     if is_fixture:
         label = "模拟数据 · 试刊样张"
+        # Default text coordinates include font-specific ascent/descender offsets.
+        # Anchor the visible glyph bounds, not a guessed offset from the canvas.
+        _, _, label_right, label_bottom = draw.textbbox((0, 0), label, font=axis_font)
         draw.text(
-            (width - draw.textlength(label, font=axis_font) - 50, height - 48),
+            (width - label_right - 50, height - label_bottom - 24),
             label,
             font=axis_font,
             fill=_RUST,

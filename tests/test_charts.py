@@ -126,6 +126,25 @@ def test_raw_and_rendering_normalized_limitations_remain_drawn(monkeypatch, limi
     assert "甲条限制。" in drawn and "乙条限制。" in drawn
 
 
+@pytest.mark.parametrize("kind", ["bar", "line"])
+def test_fixture_watermark_anchors_actual_glyph_bounds_above_canvas_bottom(monkeypatch, kind):
+    # Run with the platform's actual font (Noto CJK in Linux, Hiragino on macOS).
+    # In particular, Noto's 40px glyph bottom is below y + 48; fixed y offsets clip.
+    chart = make_chart(kind, ["-1", "0", "1"])
+    chart["limitations"] = "离线样张边界，水印不能覆盖这条说明。"
+    chart["source_note"] = "来源：离线模拟材料"
+    records = record_draw_text(monkeypatch)
+    image = Image.open(io.BytesIO(render_chart_png(chart, True)))
+    final = final_text(records, image)
+    markers = [record for record in final if record["text"] == "模拟数据 · 试刊样张"]
+    assert len(markers) == 1
+    left, top, right, bottom = markers[0]["bbox"]
+    assert image.height - bottom == 24
+    assert image.width - right == 50
+    assert left >= 0 and top >= 0
+    assert max(record["bbox"][3] for record in final if record is not markers[0]) < top
+
+
 @pytest.mark.parametrize(
     "metric,unit,expected",
     [
