@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Unpack, cast
 
-from newsletter.contracts import canonical_json, content_hash
+from newsletter.contracts import canonical_json, content_hash, validate_draft
 from newsletter.types import EditionPatch, EditionRecord, Payload, ProjectionState
 
 
@@ -50,9 +50,18 @@ class Store:
                 request_key TEXT UNIQUE NOT NULL, render_hash TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS workflow_editions (
                 edition_id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL,
-                editor_result TEXT NOT NULL, required_packets TEXT NOT NULL);
+                editor_result TEXT NOT NULL, required_packets TEXT NOT NULL,
+                projection_required INTEGER NOT NULL DEFAULT 1);
         """)
         with self.transaction():
+            columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(workflow_editions)")
+            }
+            if "projection_required" not in columns:
+                self.db.execute(
+                    "ALTER TABLE workflow_editions ADD COLUMN "
+                    "projection_required INTEGER NOT NULL DEFAULT 1"
+                )
             row = self.db.execute("SELECT value FROM metadata WHERE key='mode'").fetchone()
             if row and row[0] != mode:
                 raise ValueError("Do not reuse mock storage for live publication")
@@ -197,6 +206,11 @@ class Store:
         self, request: Payload, *, workflow_binding: Payload | None = None
     ) -> EditionRecord:
         digest = content_hash(request)
+        if (
+            workflow_binding is not None
+            and type(workflow_binding.get("projection_required", True)) is not bool
+        ):
+            raise StoreError("invalid_argument", "Projection policy must be an explicit boolean")
         with self.transaction():
             row = self.db.execute(
                 "SELECT digest,body FROM editions WHERE request_key=?", (request["request_key"],)
@@ -207,13 +221,15 @@ class Store:
                 existing = cast(EditionRecord, json.loads(row["body"]))
                 if workflow_binding is not None:
                     binding = self.db.execute(
-                        "SELECT run_id,editor_result,required_packets FROM workflow_editions WHERE edition_id=?",
+                        "SELECT run_id,editor_result,required_packets,projection_required "
+                        "FROM workflow_editions WHERE edition_id=?",
                         (existing["id"],),
                     ).fetchone()
                     expected = (
                         workflow_binding["run_id"],
                         canonical_json(workflow_binding["result"]),
                         canonical_json(sorted(set(workflow_binding["required_packets"]))),
+                        int(workflow_binding.get("projection_required", True)),
                     )
                     if binding is None or tuple(binding) != expected:
                         raise StoreError("conflict", "Frozen workflow edition cannot change")
@@ -257,12 +273,15 @@ class Store:
             )
             if workflow_binding is not None:
                 self.db.execute(
-                    "INSERT INTO workflow_editions VALUES(?,?,?,?)",
+                    "INSERT INTO workflow_editions "
+                    "(edition_id,run_id,editor_result,required_packets,projection_required) "
+                    "VALUES(?,?,?,?,?)",
                     (
                         edition["id"],
                         workflow_binding["run_id"],
                         canonical_json(workflow_binding["result"]),
                         canonical_json(sorted(set(workflow_binding["required_packets"]))),
+                        int(workflow_binding.get("projection_required", True)),
                     ),
                 )
             return edition
@@ -308,11 +327,14 @@ class Store:
     def recover(self) -> None:
         """Interrupted research is reported; ambiguous mail is never auto-resubmitted."""
         with self.transaction():
-            for row in self.db.execute("SELECT body FROM editions").fetchall():
-                edition = cast(EditionRecord, json.loads(row[0]))
+            for row in self.db.execute("SELECT body,snapshot FROM editions").fetchall():
+                edition = cast(EditionRecord, json.loads(row["body"]))
                 changed = False
                 if edition["state"] == "running":
-                    edition.update({"state": "failed", "error_code": "interrupted"})
+                    if self._recoverable_local_render(edition, row["snapshot"]):
+                        edition.update({"state": "queued", "error_code": ""})
+                    else:
+                        edition.update({"state": "failed", "error_code": "interrupted"})
                     changed = True
                 if edition["delivery_state"] == "submitting":
                     edition.update({"delivery_state": "unknown", "error_code": "delivery_unknown"})
@@ -320,6 +342,95 @@ class Store:
                 if changed:
                     self._write(edition)
             self.db.execute("UPDATE packets SET projection='unknown' WHERE projection='submitting'")
+
+    def interrupt_preparation(self, edition_id: str) -> None:
+        """Graceful cancellation uses the same narrow local-only recovery policy.
+
+        Never retry an editor call, an arbitrary failed edition, a frozen render
+        or a delivery attempt. Only assembling an already approved publication
+        may be requeued without another model decision.
+        """
+        with self.transaction():
+            row = self.db.execute(
+                "SELECT body,snapshot FROM editions WHERE id=?", (edition_id,)
+            ).fetchone()
+            if row is None:
+                return
+            edition = cast(EditionRecord, json.loads(row["body"]))
+            if edition["state"] != "running":
+                return
+            if self._recoverable_local_render(edition, row["snapshot"]):
+                edition.update({"state": "queued", "error_code": ""})
+            else:
+                edition.update({"state": "failed", "error_code": "interrupted"})
+            self._write(edition)
+
+    def _recoverable_local_render(self, edition: EditionRecord, snapshot_json: str) -> bool:
+        """Read-only checks inside the caller's transaction, fail closed on drift."""
+        if (
+            edition["delivery_state"] != "not_requested"
+            or "rendered" in edition
+            or self.db.execute(
+                "SELECT 1 FROM sends WHERE edition_id=? OR issue_date=?",
+                (edition["id"], edition["issue_date"]),
+            ).fetchone()
+        ):
+            return False
+        binding = self.db.execute(
+            "SELECT run_id,editor_result,required_packets FROM workflow_editions "
+            "WHERE edition_id=? AND projection_required=0",
+            (edition["id"],),
+        ).fetchone()
+        if (
+            binding is None
+            or self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='publication_snapshots'"
+            ).fetchone()
+            is None
+        ):
+            return False
+        publication = self.db.execute(
+            "SELECT issue_date,tasks,body,digest FROM publication_snapshots WHERE run_id=?",
+            (binding["run_id"],),
+        ).fetchone()
+        if publication is None or publication["issue_date"] != edition["issue_date"]:
+            return False
+        try:
+            frozen = json.loads(publication["body"])
+            packets = frozen["packets"]
+            expected = {"draft": frozen["draft"], "review": frozen["review"]}
+            if (
+                frozen["notion_required"] is not False
+                or frozen["review"]["passed"] is not True
+                or canonical_json(expected) != binding["editor_result"]
+                or canonical_json(packets) != canonical_json(json.loads(snapshot_json))
+                or [packet["id"] for packet in packets] != edition["packet_ids"]
+                or publication["digest"]
+                != content_hash(
+                    {
+                        "issue_date": edition["issue_date"],
+                        "tasks": json.loads(publication["tasks"]),
+                        "result": frozen,
+                    }
+                )
+            ):
+                return False
+            by_id = {packet["id"]: packet for packet in packets}
+            required = json.loads(binding["required_packets"])
+            if not required or any(key not in by_id for key in required):
+                return False
+            for key in required:
+                saved = self.db.execute("SELECT body FROM packets WHERE id=?", (key,)).fetchone()
+                if (
+                    saved is None
+                    or canonical_json(json.loads(saved["body"])) != canonical_json(by_id[key])
+                    or by_id[key]["content_hash"] != content_hash(by_id[key]["content"])
+                ):
+                    return False
+            validate_draft(frozen["draft"], [by_id[key] for key in required])
+            return True
+        except (KeyError, TypeError, ValueError):
+            return False
 
     def reserve_send(self, request: Payload) -> tuple[EditionRecord, bool]:
         with self.transaction():
@@ -343,22 +454,7 @@ class Store:
                 if row["edition_id"] != edition["id"]:
                     raise StoreError("conflict", "This issue already has a delivery attempt")
                 return edition, False
-            binding = self.db.execute(
-                "SELECT required_packets FROM workflow_editions WHERE edition_id=?",
-                (edition["id"],),
-            ).fetchone()
-            if binding is not None:
-                required = json.loads(binding[0])
-                states = [
-                    self.db.execute(
-                        "SELECT projection FROM packets WHERE id=?", (packet_id,)
-                    ).fetchone()
-                    for packet_id in required
-                ]
-                if not required or any(state is None or state[0] != "done" for state in states):
-                    raise StoreError(
-                        "conflict", "Adopted research must be confirmed in Notion before sending"
-                    )
+            self.assert_workflow_research(edition["id"])
             self.db.execute(
                 "INSERT INTO sends VALUES(?,?,?,?)",
                 (
@@ -371,6 +467,56 @@ class Store:
             edition["delivery_state"] = "submitting"
             self._write(edition)
             return edition, True
+
+    def assert_workflow_research(self, edition_id: str) -> None:
+        """Enforce the frozen edition's policy, never the latest global setting.
+
+        Legacy editions retain their original Notion gate. Story publications
+        need an intact local evidence snapshot instead; a delayed summary copy
+        in Notion cannot invalidate independently checked local research.
+        """
+        with self.lock:
+            binding = self.db.execute(
+                "SELECT required_packets,projection_required FROM workflow_editions "
+                "WHERE edition_id=?",
+                (edition_id,),
+            ).fetchone()
+            if binding is None:
+                return
+            required = json.loads(binding["required_packets"])
+            rows = {
+                packet_id: self.db.execute(
+                    "SELECT body,projection FROM packets WHERE id=?", (packet_id,)
+                ).fetchone()
+                for packet_id in required
+            }
+            if binding["projection_required"]:
+                if not required or any(
+                    row is None or row["projection"] != "done" for row in rows.values()
+                ):
+                    raise StoreError(
+                        "conflict", "Adopted research must be confirmed in Notion before sending"
+                    )
+                return
+            frozen = self.db.execute(
+                "SELECT snapshot FROM editions WHERE id=?", (edition_id,)
+            ).fetchone()
+            snapshot = json.loads(frozen["snapshot"]) if frozen else []
+            packets = {packet["id"]: packet for packet in snapshot}
+            if not required or any(
+                row is None
+                or packet_id not in packets
+                or canonical_json(json.loads(row["body"])) != canonical_json(packets[packet_id])
+                or packets[packet_id]["content_hash"] != content_hash(packets[packet_id]["content"])
+                for packet_id, row in rows.items()
+            ):
+                raise StoreError("conflict", "Publication requires intact frozen local research")
+            try:
+                validate_draft(self.get(edition_id)["draft"], [packets[key] for key in required])
+            except (KeyError, ValueError):
+                raise StoreError(
+                    "conflict", "Publication references do not match frozen research"
+                ) from None
 
     def claim_projection(self) -> Payload | None:
         with self.transaction():

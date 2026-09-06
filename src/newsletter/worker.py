@@ -66,6 +66,9 @@ class Worker:
             edition, packets = claimed
             await self.prepare(edition, packets)
             return True
+        if self.pipeline and self.pipeline.has_priority_work():
+            if await self.pipeline.collect_next():
+                return True
         packet = self.store.claim_projection()
         if packet:
             try:
@@ -141,7 +144,17 @@ class Worker:
             # Separate bounded budget: a slow optional Todofy must not consume
             # the editor's remaining deadline and fail the whole newsletter.
             # Private events never enter prompts, packets, Notion or public search.
-            personal = await self.personal_digest(edition)
+            if (
+                binding
+                and binding.get("projection_required") is False
+                and "personal_digest" in edition
+            ):
+                # A restarted local rendering tail need not regenerate an already
+                # completed private Todofy summary. This data never enters a model.
+                validate_personal_digest(edition["personal_digest"])
+                personal = to_dict(parse_message(edition["personal_digest"], pb.PersonalDigest))
+            else:
+                personal = await self.personal_digest(edition)
             usage = self.workflow_state.usage(scope_id)
             self.store.finish(edition["id"], personal_digest=personal, usage=usage)
             rendered = await asyncio.to_thread(
@@ -159,7 +172,7 @@ class Worker:
                 edition["id"], state="ready", draft=draft, review=review, rendered=rendered
             )
         except asyncio.CancelledError:
-            self.store.finish(edition["id"], state="failed", error_code="interrupted")
+            self.store.interrupt_preparation(edition["id"])
             raise
         except TimeoutError:
             self.store.finish(edition["id"], state="failed", error_code="editor_timeout")

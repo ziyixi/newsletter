@@ -32,9 +32,15 @@ NODE_TYPES = frozenset(
         "review",
         "revision",
         "final_review",
+        "story_plan",
+        "story_brief",
+        "story_deep",
+        "publish",
     }
 )
-CONTINUE_TYPES = frozenset({"discovery", "api_feed", "history", "research"})
+CONTINUE_TYPES = frozenset(
+    {"discovery", "api_feed", "history", "research", "story_brief", "story_deep"}
+)
 _ID = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 _FIELD = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}\Z")
 _FORBIDDEN_KEYS = frozenset(

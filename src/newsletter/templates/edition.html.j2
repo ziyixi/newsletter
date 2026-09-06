@@ -100,6 +100,9 @@
 {% for paragraph in reading.paragraphs %}
      <p class="body-copy ink" style="font-family:{{ sans }};font-size:15px;line-height:1.9;color:#334739;margin:0 0 12px;word-wrap:break-word;overflow-wrap:anywhere;">{{ lines(paragraph) }}</p>
 {% endfor %}
+{% if reading.supporting_references %}
+     <p class="muted" style="font-family:{{ sans }};font-size:12px;line-height:1.8;color:#76694e;margin:0 0 12px;">补充证据：{% for ref in reading.supporting_references %}[{{ ref.number }}]{% endfor %}（见文末来源）</p>
+{% endif %}
      <p class="muted" style="font-family:{{ sans }};font-size:12px;line-height:1.8;color:#76694e;border-top:1px solid #e1dccf;padding-top:12px;margin:4px 0 0;word-wrap:break-word;overflow-wrap:anywhere;"><a href="{{ reading.reference.url }}" rel="noopener noreferrer" style="font-family:{{ sans }};font-size:12px;line-height:1.8;color:#596858;text-decoration:underline;word-wrap:break-word;overflow-wrap:anywhere;">原文与方法 [{{ reading.reference.number }}]</a> · {{ reading.reference.access_scope }}{% if reading.reference.published_at %} · {{ reading.reference.published_at }}{% endif %}</p>
     </td></tr>
    </table>

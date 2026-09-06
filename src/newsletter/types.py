@@ -53,6 +53,7 @@ class EditionPatch(TypedDict, total=False):
     error_code: str
     provider_message_id: str
     usage: UsageSummary
+    publication: Payload
 
 
 class EditionRecord(TypedDict):
@@ -71,3 +72,4 @@ class EditionRecord(TypedDict):
     error_code: NotRequired[str]
     provider_message_id: NotRequired[str]
     usage: NotRequired[UsageSummary]
+    publication: NotRequired[Payload]

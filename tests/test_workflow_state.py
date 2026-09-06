@@ -156,6 +156,7 @@ def test_prepare_writes_edition_and_frozen_workflow_binding_atomically(store):
         "run_id": "run-one",
         "result": bound["result"],
         "required_packets": [source["id"]],
+        "projection_required": True,
     }
     assert (
         store.prepare(request("edition", [source]), workflow_binding=copy.deepcopy(bound)) == first

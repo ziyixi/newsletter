@@ -1,4 +1,4 @@
-"""Operator YAML may tune research, never skip the trusted editorial safety tail."""
+"""Frozen legacy YAML retains its original trusted editorial safety tail."""
 
 from importlib.resources import files
 
@@ -11,7 +11,7 @@ from newsletter.workflow.pipeline import adopted_packets
 
 def recipe():
     return load_definition(
-        files("newsletter").joinpath("workflows/daily.yaml").read_bytes()
+        files("newsletter").joinpath("workflows/legacy-daily.yaml").read_bytes()
     ).snapshot()
 
 
@@ -19,7 +19,7 @@ def by_type(value, kind):
     return next(node for node in value["nodes"] if node["type"] == kind)
 
 
-def test_packaged_default_recipe_passes_both_syntax_and_semantic_safety_checks():
+def test_packaged_legacy_recipe_passes_both_syntax_and_semantic_safety_checks():
     definition = parse_definition(recipe())
     validate_recipe(definition)
     assert [node.type for node in definition.nodes][-4:] == [

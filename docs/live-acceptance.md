@@ -63,7 +63,7 @@ ChatGPT 登录使用订阅访问，但仍受额度、模型和工作区权限限
 3. 打开数据库设置 → Manage data sources → 对应数据源的菜单 → Copy data source ID，保存为 `NOTION_DATA_SOURCE_ID`。它不是页面 ID、视图 ID，也不一定等于数据库 ID。
 4. 保留数据库默认的标题属性即可，不必创建一堆自定义列。当前实现只写材料摘要、来源和 workflow 元数据，不读取你在 Notion 的修改，也不写 Todofy 私人事件。
 
-参考：[创建 internal connection](https://developers.notion.com/guides/get-started/internal-connections)、[权限范围](https://developers.notion.com/reference/capabilities)、[查找 data source ID](https://developers.notion.com/reference/retrieve-a-data-source)。新的整期入口 `POST /v1/runs` 在 live 模式必须启用 Notion，并在确认材料投影后才编稿。可选的已有材料编稿入口仍可单独测试，但不能冒充整条指令采集链路通过。
+参考：[创建 internal connection](https://developers.notion.com/guides/get-started/internal-connections)、[权限范围](https://developers.notion.com/reference/capabilities)、[查找 data source ID](https://developers.notion.com/reference/retrieve-a-data-source)。整期入口 `POST /v1/runs` 在 live 配置要求启用 Notion；新选题DAG先将证据与已审版本持久化到SQLite，Notion作为后台镜像单独验收，不再是发信前置条件。旧冻结图保留原门槛。可选的已有材料编稿入口不能冒充整条指令采集链路通过。
 
 ## Resend：最后才启用
 

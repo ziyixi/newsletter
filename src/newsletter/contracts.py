@@ -339,7 +339,13 @@ def validate_draft(
         if not has_value:
             _fail("INVALID_NUMBER", "A chart must contain a non-missing value")
     if article.HasField("recommended_reading"):
-        _citations([article.recommended_reading.citation], known)
+        _citations(
+            [
+                article.recommended_reading.citation,
+                *article.recommended_reading.supporting_citations,
+            ],
+            known,
+        )
         _text(article.recommended_reading.reason, "recommended_reading.reason", 1000)
     if article.ByteSize() > MAX_PACKET_BYTES:
         _fail("TOO_LARGE", "Draft exceeds the byte limit")

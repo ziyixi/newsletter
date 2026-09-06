@@ -169,6 +169,31 @@ def test_render_does_not_mutate_inputs_and_is_byte_deterministic():
     assert "timestamp" not in image.info
 
 
+def test_reading_support_is_numbered_without_adding_primary_reading_links():
+    draft, packets = copy.deepcopy(SAMPLE_DRAFT), copy.deepcopy(SAMPLE_PACKETS)
+    packets[0]["content"]["sources"].append(
+        {
+            "id": "journal",
+            "title": "模拟期刊收录记录",
+            "url": "https://example.org/journal",
+            "excerpt": "模拟收录信息，非真实新闻。",
+            "access_scope": "metadata",
+        }
+    )
+    original = render_edition(draft, packets, "2026-09-05")
+    draft["recommended_reading"]["supporting_citations"] = ["sample-packet/journal"]
+    rendered = render_edition(draft, packets, "2026-09-05")
+    assert rendered["render_hash"] != original["render_hash"]
+    assert "补充证据：[3]" in rendered["html"]
+    assert "补充证据：[3]" in rendered["text"]
+    assert "[3] 模拟期刊收录记录" in rendered["text"]
+    assert rendered["html"].count('href="https://example.org/journal"') == 1
+    reading_card = rendered["html"].split("研究介绍", 1)[1].split("来源与核对", 1)[0]
+    assert reading_card.count("href=") == 1
+    assert "原文与方法 [2]" in reading_card
+    assert render_edition(draft, packets, "2026-09-05") == rendered
+
+
 def test_html_injection_is_text_not_markup():
     draft = sample_without_chart()
     attack = '<img src="x" onerror="alert(1)"> & <script>alert(2)</script>'

@@ -96,6 +96,35 @@ def test_descriptor_exposes_one_service_with_external_trigger_and_editor_methods
     assert pb.DESCRIPTOR.package == "newsletter.v1"
 
 
+def test_reading_has_one_primary_link_and_validated_supporting_citations(draft, packets):
+    packets[0]["content"]["sources"].append(
+        {**packets[0]["content"]["sources"][0], "id": "journal"}
+    )
+    draft["recommended_reading"]["supporting_citations"] = ["packet-1/journal"]
+    validate_draft(draft, packets)
+    normalized = to_dict(parse_message(draft, pb.Draft))
+    assert normalized["recommended_reading"]["citation"] == "packet-1/official"
+    assert normalized["recommended_reading"]["supporting_citations"] == ["packet-1/journal"]
+
+
+@pytest.mark.parametrize(
+    "citations",
+    [
+        ["packet-1/missing"],
+        ["packet-1/official"],
+        ["packet-1/journal", "packet-1/journal"],
+        ["packet-1/journal"] * 33,
+    ],
+)
+def test_reading_rejects_unknown_duplicate_or_unbounded_support(draft, packets, citations):
+    packets[0]["content"]["sources"].append(
+        {**packets[0]["content"]["sources"][0], "id": "journal"}
+    )
+    draft["recommended_reading"]["supporting_citations"] = citations
+    with pytest.raises(ContractError):
+        validate_draft(draft, packets)
+
+
 def test_snake_case_round_trip_and_default_values(packet_body):
     request = parse_message(
         {"request_key": "k", "workflow_id": "research", "content": packet_body}, pb.PutPacketRequest

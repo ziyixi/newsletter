@@ -1,4 +1,4 @@
-"""Full default DAG + durable service tail, with deliberately synthetic node outputs.
+"""Frozen legacy DAG + durable service tail, with deliberately synthetic node outputs.
 
 No lifecycle/live preflight, SDK execution, provider HTTP, or mail adapter is used.
 Only the content handlers are replaced; scheduling, artifacts, packets, projection
@@ -10,6 +10,8 @@ import json
 from collections import Counter
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from importlib.resources import files
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +32,7 @@ from newsletter.workflow.pipeline import DagPipeline, freeze_workflow
 from newsletter.workflow.state import WorkflowState
 
 ISSUE_DATE = "2026-09-06"
+LEGACY_RECIPE = Path(str(files("newsletter").joinpath("workflows/legacy-daily.yaml")))
 MODEL_KINDS = {
     "discovery",
     "selection",
@@ -142,6 +145,7 @@ def attach(rig):
         10,
         32,
         editor=CodexEditor(rig.path / "nonexistent-auth-home"),
+        recipe_path=LEGACY_RECIPE,
     )
     rig.worker = Worker(
         rig.store,
@@ -285,7 +289,7 @@ def rig(tmp_path, monkeypatch, request):
     monkeypatch.setattr(EditorialNodes, "execute", execute)
     attach(rig)
     instructions, snapshot = freeze_workflow(
-        Settings(data_dir=tmp_path), rig.pipeline.state, ISSUE_DATE
+        Settings(data_dir=tmp_path, workflow_file=LEGACY_RECIPE), rig.pipeline.state, ISSUE_DATE
     )
     assert len(instructions) == 6
     rig.current_recipe = rig.pipeline.recipe_path

@@ -4,15 +4,15 @@
 
 运行时只接受日期和幂等键，不接受远程指令文本、路径、URL模板、模型名或发送标志。operator 在服务器修改 Markdown 目录；每个新run保存排序后的原文与hash。相同请求重复提交复用旧快照。HTTP POST /v1/runs 使用editor角色，独立send角色不会隐式出现在pipeline中。
 
-SQLite是业务状态的权威来源；Notion是材料持久投影。每个方向先校验全部材料，再在同一事务保存材料与run关联；写Notion前保存submitting，未知结果不自动重试。新整期链路等待所有原始材料投影done，再准备刊期；编辑补查同样写入Notion，确认后run才ready。没有找到材料会blocked，不冒充成功。直接使用已有材料的旧编稿接口仍可用于独立调试。
+SQLite是业务状态的权威来源；Notion是单向后台投影。新选题DAG先保存逐题证据与独立审核版本，Notion暂时失败不阻止编排和发送；旧冻结刊期保留原投影确认门槛。写Notion前保存submitting，未知结果不自动重试。未找到任何已核实内容仍blocked，不冒充成功。详见 [选题级DAG](workflow.md)。
 
 run与edition分别有幂等记录，防止在创建edition后、回写run关联前崩溃而重复生成。收集时中断标记failed，不重发模型请求；Notion提交中断变unknown；发送中断同样unknown。需要人工核对供应商状态后决定新的操作，不提供无条件重试按钮。
 
 ## 调度与资源
 
-服务没有cron，不根据时间自动创建run，也不依赖Codex app routine。worker的Event只等待外部请求唤醒。默认单进程串行，最多8个pending collection run、8个直接编稿任务；最多8个方向、每方向2份材料，默认总材料上限20。collection timeout默认600秒是每方向预算，编辑独立900秒；总耗时可能叠加，不能把202接受当成完成。
+服务没有cron，不根据时间自动创建run，也不依赖Codex app routine。worker的Event只等待外部请求唤醒。默认单进程串行，最多8个pending collection run、8个直接编稿任务。新DAG总研究预算5400秒，节点另有限额；逐题先保存简版再深读，截止/中断时本地拼版可恢复。旧legacy/mock仍使用每方向独立预算。不能把202接受当成完成。
 
-直接编稿和待投影队列优先于新collection，在持续外部高负载下不提供公平性/SLA保证。本版是低频私人采编，若要多用户或高并发，应另设计租户权限、调度、公平预算和独立worker，不通过增加uvicorn进程绕过目录锁。
+已排队刊期优先；新选题研究优先于Notion后台投影，防止镜像故障耗尽研究期限。低频私人服务不提供多租户公平性/SLA；不要通过增加uvicorn进程绕过目录锁。
 
 ## 启动检查
 
@@ -27,7 +27,7 @@ lifespan在启动worker、提供health之前执行preflight；没有环境开关
 | Todofy | origin/凭据语法及无副作用public /health | 不证明BasicAuth有效、Gemini可用或推荐质量 |
 | Resend | 发送配置合法性 | sending-only key无通用读接口；未发送测试邮件、未证明域名/投递 |
 
-只检查已启用的供应商；启用后明确失败会拒绝启动。网络检查有限时、不跟随重定向、不使用继承代理，错误只给稳定代码、不泄露供应商响应。正式任务仍须处理过期登录、网络中断和配额错误。对于目前没有无副作用鉴权探针的上游，不能用付费生成或发邮件来伪装安全的启动检查。
+只检查已启用的供应商；核心条件、授权与schema错误拒绝启动。Notion/Todofy的临时网络、限流或服务端故障允许degraded启动并记录稳定安全warning；不把该降级用于Codex运行时或本地证据。网络检查有限时、不跟随重定向、不使用继承代理，错误不泄露供应商响应。正式任务仍须处理过期登录、网络中断和配额错误。不能用付费生成或发邮件来伪装安全的启动检查。
 
 Codex uses isolated ChatGPT auth and the pinned Python SDK/runtime; account/read can refresh managed tokens and model/list lists available models. These checks do not initiate a thread or model turn. [Official app-server documentation](https://learn.chatgpt.com/docs/app-server)
 
@@ -42,10 +42,11 @@ live部署需单独配置本地持久data目录与专用可写Codex auth目录�
 ## 外部触发器迁移
 
 源码中的daily workflow改为手动或repository_dispatch，仅运行trigger_run.py，且不持有发送权限；无schedule。GitHub线上旧工作流只有在这次修改经用户同意推送后才变化，本地修改不会自动关闭旧schedule。切换前确认旧sender已停，避免新旧重复；当前任务没有推送或替用户改线上配置。
-# Current live workflow
+## Current live workflow
 
 Live deployments now default to the versioned DAG described in [workflow.md](workflow.md).
-The per-direction serial flow below remains the explicit legacy/mock path. DAG
+The per-direction serial flow remains the explicit legacy/mock path. DAG
 collection has a 5400-second total budget, a 7200-second external trigger wait,
-and adopted-material Notion gating; it no longer waits for every unused packet
-before drafting. Consult the DAG guide for candidate preparation and token usage.
+and topic-level durable approval checkpoints. New publications do not wait for
+Notion; old immutable bindings keep their original gate. Consult the DAG guide
+for candidate preparation, deadline publication and token usage.

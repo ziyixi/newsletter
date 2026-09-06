@@ -236,22 +236,30 @@ class WorkflowState:
             )
 
     def bind_edition(
-        self, edition_id: str, run_id: str, result: Payload, required_packets: list[str]
+        self,
+        edition_id: str,
+        run_id: str,
+        result: Payload,
+        required_packets: list[str],
+        *,
+        projection_required: bool = True,
     ) -> None:
+        if type(projection_required) is not bool:
+            raise StoreError("invalid_argument", "Invalid projection policy")
         encoded = canonical_json(result)
         required = canonical_json(sorted(set(required_packets)))
         with self.store.transaction():
             previous = self.store.db.execute(
-                "SELECT run_id,editor_result,required_packets FROM workflow_editions WHERE edition_id=?",
+                "SELECT run_id,editor_result,required_packets,projection_required FROM workflow_editions WHERE edition_id=?",
                 (edition_id,),
             ).fetchone()
             if previous is not None:
-                if tuple(previous) != (run_id, encoded, required):
+                if tuple(previous) != (run_id, encoded, required, int(projection_required)):
                     raise StoreError("conflict", "Frozen workflow edition cannot change")
                 return
             self.store.db.execute(
-                "INSERT INTO workflow_editions VALUES(?,?,?,?)",
-                (edition_id, run_id, encoded, required),
+                "INSERT INTO workflow_editions(edition_id,run_id,editor_result,required_packets,projection_required) VALUES(?,?,?,?,?)",
+                (edition_id, run_id, encoded, required, int(projection_required)),
             )
 
     def edition(self, edition_id: str) -> Payload | None:
@@ -265,21 +273,8 @@ class WorkflowState:
             "run_id": row["run_id"],
             "result": json.loads(row["editor_result"]),
             "required_packets": json.loads(row["required_packets"]),
+            "projection_required": bool(row["projection_required"]),
         }
 
     def assert_publishable(self, edition_id: str) -> None:
-        binding = self.edition(edition_id)
-        if binding is None:
-            return
-        ids = binding["required_packets"]
-        with self.store.lock:
-            states = [
-                self.store.db.execute(
-                    "SELECT projection FROM packets WHERE id=?", (item,)
-                ).fetchone()
-                for item in ids
-            ]
-        if not ids or any(row is None or row[0] != "done" for row in states):
-            raise StoreError(
-                "conflict", "Adopted research must be confirmed in Notion before sending"
-            )
+        self.store.assert_workflow_research(edition_id)

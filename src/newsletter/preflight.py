@@ -1,8 +1,10 @@
-"""Fail-closed startup checks without generation, projection, or email sending.
+"""Startup checks without generation, projection, or email sending.
 
-Only enabled providers are contacted. A successful read is not evidence of write
-permission, future model/tool availability, or email delivery. Provider responses
-and credentials never appear in the returned report or safe failure messages.
+Only enabled providers are contacted. Core runtime and configuration failures
+stop startup; temporary Notion/Todofy outages are reported as degraded checks.
+A successful read is not evidence of write permission, future model/tool
+availability, or email delivery. Provider responses and credentials never appear
+in the returned report or safe failure messages.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -50,6 +53,7 @@ if TYPE_CHECKING:
 HTTP_TIMEOUT = 15.0
 CODEX_TIMEOUT = 45.0
 MAX_RESPONSE_BYTES = 512 * 1024
+logger = logging.getLogger(__name__)
 
 
 class PreflightError(RuntimeError):
@@ -138,7 +142,7 @@ def _check_resources() -> None:
             raise PreflightError("DEPENDENCY_VERSION_MISMATCH")
     check_proto_dependency()
     package = files("newsletter")
-    for filename in ("editorial.md", "reader-profile.md"):
+    for filename in ("editorial.md", "story-editorial.md", "reader-profile.md"):
         if not package.joinpath("policy", filename).read_text(encoding="utf-8").strip():
             raise PreflightError("EDITOR_POLICY_UNAVAILABLE")
     load_template()
@@ -276,6 +280,8 @@ async def _get_json(
             async with client.stream("GET", url) as response:
                 if response.status_code in {401, 403}:
                     raise PreflightError(provider + "_AUTH_FAILED")
+                if response.status_code == 429 or 500 <= response.status_code < 600:
+                    raise PreflightError(provider + "_TEMPORARILY_UNAVAILABLE")
                 if response.status_code != 200:
                     raise PreflightError(provider + "_UNAVAILABLE")
                 if (
@@ -345,7 +351,7 @@ async def preflight(
     http_transport: httpx.AsyncBaseTransport | None = None,
     sdk: ModuleType | None = None,
 ) -> PreflightReport:
-    """Raise before serving on failure; explicit dependency injection is for tests.
+    """Raise on mandatory failures; explicit dependency injection is for tests.
 
     No environment switch can bypass these gates. Adapters supplied to create_app
     must not implicitly replace these independent startup checks.
@@ -370,18 +376,52 @@ async def preflight(
             )
         if settings.notion_backend == "notion":
             stage = "NOTION"
-            await _check_notion(settings, http_transport)
-            checks.append("notion_data_source_read_and_title_schema")
-            limitations.append(
-                "Notion read access does not prove Insert content permission; no page was created."
-            )
+            try:
+                await _check_notion(settings, http_transport)
+            except PreflightError as exc:
+                if exc.code != "NOTION_TEMPORARILY_UNAVAILABLE":
+                    raise
+                checks.append("notion_temporarily_unavailable")
+            except (httpx.RequestError, TimeoutError):
+                checks.append("notion_temporarily_unavailable")
+            else:
+                checks.append("notion_data_source_read_and_title_schema")
+                limitations.append(
+                    "Notion read access does not prove Insert content permission; no page was created."
+                )
+            if "notion_temporarily_unavailable" in checks:
+                logger.warning(
+                    "Notion startup check degraded; local evidence remains authoritative. "
+                    "Legacy projection gates still apply."
+                )
+                limitations.append(
+                    "Notion is temporarily unavailable; local SQLite remains authoritative. "
+                    "Publication policies that require confirmed projection still apply. "
+                    "No page was created or retried by startup checks."
+                )
         if settings.todofy_backend == "todofy":
             stage = "TODOFY"
-            await _check_todofy(settings, http_transport)
-            checks.append("todofy_public_health_and_configuration")
-            limitations.append(
-                "Todofy public health does not validate Basic Auth or downstream summary generation."
-            )
+            try:
+                await _check_todofy(settings, http_transport)
+            except PreflightError as exc:
+                if exc.code != "TODOFY_TEMPORARILY_UNAVAILABLE":
+                    raise
+                checks.append("todofy_temporarily_unavailable")
+            except (httpx.RequestError, TimeoutError):
+                checks.append("todofy_temporarily_unavailable")
+            else:
+                checks.append("todofy_public_health_and_configuration")
+                limitations.append(
+                    "Todofy public health does not validate Basic Auth or downstream summary generation."
+                )
+            if "todofy_temporarily_unavailable" in checks:
+                logger.warning(
+                    "Todofy startup check degraded; the personal digest may be unavailable."
+                )
+                limitations.append(
+                    "Todofy is temporarily unavailable; the personal digest may be omitted "
+                    "without stopping independently prepared news. No summary was generated."
+                )
         if settings.mail_backend == "resend":
             stage = "MAIL"
             Resend(settings.resend_api_key, settings.from_email, settings.recipient_email)

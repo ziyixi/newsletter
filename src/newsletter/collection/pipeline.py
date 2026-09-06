@@ -24,6 +24,10 @@ class CollectionPipeline:
         self.runs, self.collector = runs, collector
         self.workspace, self.timeout, self.max_packets = workspace, timeout, max_packets
 
+    def has_priority_work(self) -> bool:
+        """Legacy runs require projection first; newer policies may override."""
+        return False
+
     async def collect_next(self) -> bool:
         claimed = self.runs.claim()
         if claimed is None:

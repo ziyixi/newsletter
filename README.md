@@ -8,11 +8,13 @@
           ▼
 冻结 YAML/指令/日期 → 六方向发现 + API/RSS + 历史观察
           │
-去重候选池 → 全局选题 → 动态深读 → 拟稿 → 一轮补查 → 定稿 → 独立会话审校
-          │                                                    │
-SQLite + Notion材料库                 Todofy私有事件筛选 → 冻结JSON / HTML / PNG
-                                                               │
-                              采用材料Notion确认 + 独立send token + 冻结hash
+去重候选池 → 全局选题 → 每题简版独立核验/保存 → 重点题独立深读/核验
+          │                                       │
+SQLite证据/已审版本 → Notion后台镜像        已审完整版本确定性拼版
+                                                  │
+                             Todofy私有事件 → 冻结JSON / HTML / PNG
+                                                  │
+                                 独立send token + 冻结hash + 同日防重
 ```
 
 默认 mock 模式只做离线演示；live 没有假稿或 API key 自动兜底。技术 ready 不等于事实或发布审批已通过。真实投递必须另外验收。
@@ -23,13 +25,13 @@ Live 默认使用 [可编辑 DAG](src/newsletter/workflows/daily.yaml) 和
 [六个发现方向](src/newsletter/instructions/discovery/)。流程、预算和依赖写 YAML；
 题材要求写 Markdown；数据契约仍在公共 proto。详细说明见 [DAG 与用量](docs/workflow.md)。
 
-默认最多30条候选，选最多8个问题深入研究（可配置到12），另最多3个补查问题；
+默认最多30条候选，选最多8个问题（可配置到12）；每题先核实简版，再对最多4题深入调查、展示最多2篇深读；
 不是必须填满的配额。Crossref/Nature RSS 只提供元数据线索，不冒充已读论文。
 AI/ML与其他学科可同时入选，历史候选帮助去重；总编仍需调查、解释和核对反证。
 
 服务在每次新触发冻结 DAG、方向指令、编辑政策、历史和模型配置。README.md、_开头的说明不执行；符号链接、空文件、过大内容或非法名称会失败。配置只能调用注册节点，不能执行 shell、展开密钥或获得发信权限。镜像包含默认资源，也可只读挂载 NEWSLETTER_WORKFLOW_FILE / NEWSLETTER_DISCOVERY_DIR。
 
-旧顶层 [instructions/](src/newsletter/instructions/) 和串行采集器仅用于显式 NEWSLETTER_WORKFLOW=legacy、旧运行恢复与离线 mock；不是 live 失败的回退。总编遵循 [编辑准则](src/newsletter/policy/editorial.md) 和 [读者偏好](src/newsletter/policy/reader-profile.md)，不依赖聊天 memory。“研究介绍”不点链接也应自足。
+旧顶层 [instructions/](src/newsletter/instructions/) 和串行采集器仅用于显式 NEWSLETTER_WORKFLOW=legacy、旧运行恢复与离线 mock；不是 live 失败的回退。新采编遵循 [选题级编辑准则](src/newsletter/policy/story-editorial.md) 和 [读者偏好](src/newsletter/policy/reader-profile.md)，不依赖聊天 memory。“研究介绍”不点链接也应自足，支持主阅读链接之外的补充证据引用。
 
 ## 开发
 
@@ -78,7 +80,7 @@ Content-Type: application/json
 
 外层运行状态保留 queued / collecting / editing / ready / blocked / failed；workflow 字段展示各节点状态、候选/研究数量及定义hash。默认DAG总预算5400秒，节点另有上限；外部触发器应等候7200秒，不能仍沿用一小时客户端超时。当前单进程保守串行执行模型，动态任务数不等于物理并发。完成节点不会重跑；中断中的模型任务标unknown并阻止自动重试。Notion结果不明必须核对，不盲目重建页面。
 
-初审通过时跳过额外修订；初审 HOLD 时服务自动最小修订一次（可删减不可靠内容），再由新会话独立检索复审。二次 HOLD 不发送、不循环。旧 DAG 的未发送审稿阻断可在原预算内自动接续独立冻结的修订子图，保留原稿与原图 hash；API 的 `workflow.continuations` 展示接续进度。外部 cron 负责触发和发送，人工查看日志不是运行依赖。
+新流程不再由整期二次 HOLD 决定所有选题的命运：正文/推荐卡/图表/观察短讯分别审校，正文最多一次定向修订。已核实简版立即保存，深读失败、截止或中断时用已审核的完整版本拼版；没有任何已核实内容仍拒绝发信。`publication` 字段逐题记录 deep/brief/watch/deferred 及原因，未完成的问题作为后续线索；明确发现事实错误只能按精确版本和独立证据撤回。旧冻结图和门槛不改。外部 cron 负责触发和发送，人工查看日志不是运行依赖。
 
 新材料的引用必须对应工具实际打开的地址。地址不匹配时，在同一模型上下文和原超时预算内最多纠正一次：真正打开来源或删去未支持内容；再次不合格就失败。不会把摘要链接自动当成已读PDF，也不会自动重试供应商写入。
 
@@ -108,13 +110,13 @@ Todofy 位于全部公共内容之后。推荐模式一次读取最多10条候�
 
 配置样例见 [.env.example](.env.example)，完整凭据说明见 [联调清单](docs/live-acceptance.md)。应用不自动读取旧 .env。
 
-启动在发布健康状态前检查：SQLite读写/WAL、锁定依赖、proto/resource、中文字体；live还检查配套Codex二进制、专用ChatGPT登录、禁用技能、模型目录；启用Notion则只读验证数据源；启用Todofy则检查无副作用health。失败即退出，不等到用户触发才发现。检查边界见 [运行说明](docs/collection-service.md)：账户可读不等于生成工具永久可用，公开health不能证明Todofy密码有效，也不会为检测邮件key而发信。
+启动在发布健康状态前检查：SQLite读写/WAL、锁定依赖、proto/resource、中文字体；live还检查配套Codex二进制、专用ChatGPT登录、禁用技能、模型目录；启用Notion则只读验证数据源；启用Todofy则检查无副作用health。核心运行条件或授权/配置错误失败即退出；Notion/Todofy暂时网络不可用以degraded安全日志启动，不能拖垮本地公共内容。检查边界见 [运行说明](docs/collection-service.md)：账户可读不等于生成工具永久可用，公开health不能证明Todofy密码有效，也不会为检测邮件key而发信。
 
 Docker为锁定多阶段构建，最终镜像不带uv/dev工具、旧Node/Go依赖或源码工作树。非root运行；示例Compose为只读根文件系统、有限tmpfs、本机端口和独立持久卷。Codex登录缓存需专用可写卷，不能烘焙进镜像。默认Compose仍是安全的mock配置，不是生产live部署。
 
 GitHub Actions 在原生 Linux/amd64 runner 上先跑回归，再构建、验证最终镜像，成功后才发布 `ghcr.io/ziyixi/newsletter:service-<commit>` 与 `:service`。生产 Compose 固定通过验收的 digest，不依赖可变标签；CI 不加载任何真实账号密钥。发布前检查待提交内容及 Docker 构建上下文，`.env` 变体、登录文件和真实数据不得进入公开仓库或镜像。
 
-一次只允许一个进程占有SQLite目录；不要放同步盘或启动多个uvicorn worker。Notion是材料的单向持久投影，不反向同步手工修改。DAG先本地持久化；候选索引是辅助浏览，只有正文/图表/研究介绍采用的材料必须确认投影才能发送。发送按冻结render hash单独审批，每刊期最多一次尝试；结果不明不自动重投。
+一次只允许一个进程占有SQLite目录；不要放同步盘或启动多个uvicorn worker。Notion是材料的单向后台镜像，不反向同步手工修改。新选题DAG先本地持久化证据和审核版本，不等待Notion投影；旧冻结刊期仍保留原采用材料投影门槛。发送按冻结render hash单独审批，每日最多一次尝试；结果不明不自动重投。
 
 邮件最底角显示本期已记录的 Codex tokens，覆盖发现、选题、深读、拟稿、补查、定稿与审校，包括有用量事件的失败尝试。缓存输入是子集，不重复加总；无用量事件不是零。Todofy接口没有返回Gemini usage，因此明确未计入，不把上下文日志当用量或费用。统计也包含在冻结render hash里。
 

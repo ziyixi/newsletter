@@ -34,6 +34,14 @@ from newsletter.workflow.state import WorkflowState
 
 def validate_recipe(definition: WorkflowDefinition) -> None:
     """Publishing invariants belong to code, not to operator-controlled edges."""
+    if any(
+        node.type in {"story_plan", "story_brief", "story_deep", "publish"}
+        for node in definition.nodes
+    ):
+        from newsletter.workflow.story_recipe import validate_story_recipe
+
+        validate_story_recipe(definition)
+        return
     by_id = {node.id: node for node in definition.nodes}
     required = {
         "history",

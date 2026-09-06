@@ -9,8 +9,10 @@
 | 收集题材、信源、读者偏好 | `instructions/`、`policy/` | 不把个性化内容硬编码进路由 |
 | 接口、鉴权、响应 | `app.py`、`contracts.py` | 路由不创建供应商或持有自己的数据库 |
 | 启动、依赖检查、资源关闭 | `lifecycle.py`、`preflight.py` | 不在 import 时登录、联网或启动 worker |
-| 采集、整期状态流转 | `collection/` | 不绕过 Notion 确认或直接发送 |
-| 总编、来源验证 | `editor.py` | 不把私有事件交给公开研究 |
+| 采集、整期状态流转 | `collection/`、`workflow/pipeline.py` | 不绕过冻结的证据/投递策略或直接发送 |
+| 选题采编、独立审校 | `workflow/story_editor.py`、`story_nodes.py` | 不把私有事件交给公开研究 |
+| 版本/checkpoint、确定性拼版 | `workflow/publication.py` | 不将未审内容或被明确撤回的版本自动提升为已核实 |
+| SDK调用、旧整期总编 | `editor.py` | 不把旧整期HOLD重新施加到新选题流程 |
 | 模型结构、JSON和工作目录 | `model_schema.py`、`model_io.py` | 不从另一个角色的 schema 内层取字段，不借用其私有 helper |
 | 邮件、预览、图表 | `rendering.py`、`templates/`、`charts.py` | 不让排版依赖 HTTP app，不执行模型 HTML |
 | 供应商、事务与队列 | `adapters.py`、`todofy.py`、`store.py`、`worker.py` | 不为未来假设的后端建立通用框架 |
@@ -24,6 +26,7 @@
 - 每次外部触发快照化指令；相同幂等键不重复研究、创建 Notion 页或发送。
 - SQLite 是状态权威，Notion 是单向材料投影；写入结果未知不自动重试。
 - 模型输出必须通过结构、引用及来源访问校验，不能靠删校验换取 ready。
+- 新选题先保存独立已审简版再深读；错误/截止只能拼接已核实完整版本，每个选题都有覆盖记录。新策略下 Notion 故障不阻塞发信，旧冻结绑定仍保留原门槛。
 - 真实/private 材料不进入 fixture 或测试报告；个人事件不进入公开模型上下文和 Notion。
 - 冻结预览与发送解耦：只有独立 send 权限和精确 hash 审批能发送，整期采编不发送。
 

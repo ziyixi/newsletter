@@ -259,7 +259,9 @@ async def test_forged_skip_requires_actual_skipped_dependency_and_original_hash(
 
 
 async def test_complete_recipe_never_uses_recovery_input_instead_of_review_dependency(rig, prior):
-    definition = load_definition(files("newsletter").joinpath("workflows/daily.yaml").read_bytes())
+    definition = load_definition(
+        files("newsletter").joinpath("workflows/legacy-daily.yaml").read_bytes()
+    )
     nodes = EditorialNodes(rig.store, definition, CodexEditor(rig.path / "unused-auth"), rig.path)
     alternate = deepcopy(prior)
     alternate["review"] = {"passed": True, "findings": []}

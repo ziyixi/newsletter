@@ -1,113 +1,130 @@
 # Editable editorial DAG and measured usage
 
-## Configuration, not executable code
+## Topic-first publication
 
-Live environment deployments default to `NEWSLETTER_WORKFLOW=dag`. The packaged
-recipe is `src/newsletter/workflows/daily.yaml`; its six operator directions are
-under `src/newsletter/instructions/discovery/`. Override them with an explicit,
-read-only `NEWSLETTER_WORKFLOW_FILE` / `NEWSLETTER_DISCOVERY_DIR` mount. No HTTP
-caller can supply local paths, prompts, YAML or credentials. Existing mock mode
-and `NEWSLETTER_WORKFLOW=legacy` retain the old deterministic/serialized adapter
-path for compatibility, never as a fallback from failed live research.
+Live deployments default to `NEWSLETTER_WORKFLOW=dag` and the packaged
+`src/newsletter/workflows/daily.yaml` (`daily-topics`). Six discovery directions
+remain under `instructions/discovery/`. The service, not an app routine or a
+human watching logs, performs the entire bounded preparation flow:
 
-Version 1 supports registered node types, literal bounded parameters, `needs`,
-and a bounded `map: {from: <direct-dependency>.<field>, max_items: N}`. The only
-run-level map in the default recipe is `run.instructions`. YAML aliases, tags,
-duplicate keys, unknown types, cycles, shell/Python/import hooks, secret keys and
-environment expansion are not a workflow feature. Definitions are checked at
-startup and each new run; the service additionally verifies mandatory editorial
-roles, dependency paths and the single gap-research stage. Renaming node IDs is
-fine when all references are updated. New APIs require a reviewed adapter.
+```text
+public history + unresolved topics + metadata feeds
+                  ↓
+six-direction discovery → deduplicate → select up to 8 topics
+                  ↓
+freeze complete topic plan
+                  ↓
+each topic: research a brief + independently review → checkpoint
+                  ↓
+top topics: deeper investigation + independently review → checkpoint
+                  ↓
+deterministic publication from approved whole versions
+                  ↓
+private Todofy → render + frozen hash → protected external send
+```
 
-The default stages are history, public metadata feeds, per-direction discovery,
-deduplication, selection, per-question research, composition, gap planning,
-optional follow-up research, finalization, a new-session review, conditional
-revision and final review. Private
-Todofy, rendering, Notion confirmation and delivery remain a protected service
-tail: YAML cannot grant publication or remove its safety checks.
+All brief attempts precede deep attempts. Up to four selected topics receive a
+deepening attempt; at most two complete deep pieces are displayed. Other topics
+use their separately researched and approved brief, not a truncated deep piece.
+Discovery and ranking do not count as verified writing. A minimal watch signal
+must independently verify that an event occurred, not merely attach a disclaimer.
 
-## Breadth, depth and resource budgets
+Each story has independent body, recommended-reading card, chart and signal
+assessments. The body includes its title, paragraphs and limitations as one
+indivisible version. An optional chart/card problem removes that component, not
+the body or another topic. The body must stand alone without referring to a
+missing graphic/card. A blocked body gets at most one targeted rewrite and a new
+review; there is no whole-issue HOLD/rewrite/review loop. Review sessions search
+and open every cited source. Observed opens and exact hashes are necessary
+provenance, not a guarantee of factual correctness or independent-model review.
 
-- Discovery: up to five candidates per direction; no quota to fill.
-- Candidate pool: up to 30 deduplicated lightweight leads.
-- Selection: up to eight research questions by default; configurable up to 12.
-- Research: usually one self-contained packet per question, at most two; all
-  source URLs require fresh individual open provenance. Metadata is not evidence
-  of full-text reading. The existing 32-packet contract ceiling still applies.
-- Gap planning: at most three questions in one explicit follow-up stage. Empty
-  follow-up is a persisted skipped node, not a loop. Finalization cannot produce
-  another set of supplemental packets; unresolved critical claims must be removed
-  or held. Independent-session review is not independent-model verification.
-- Editorial repair: an initial PASS skips both additional model calls. A HOLD
-  allows one fresh-session minimal revision, followed by a separate fresh-session
-  review. Prefer correcting or removing unsupported claims and shortening the
-  issue. No new packet round, automatic factual waiver, or third revision is
-  allowed. The final reviewer must search and open evidence; a second HOLD stops
-  publication. This is service behavior, not a daily manual editing task.
-- Models execute serially against one dedicated login. More map items are not
-  automatically more concurrent processes. Node deadlines are in the recipe;
-  `NEWSLETTER_WORKFLOW_TIMEOUT_SECONDS=5400` bounds total elapsed collection time.
-  Use `newsletter-trigger --send --timeout 7200` to leave persistence/render/send
-  headroom. Cron remains external and unchanged at 15:00 UTC daily.
+An approved brief/signal is synchronously checkpointed before further repair or
+deepening. Every selected topic receives an explicit `deep`, `brief`, `watch`
+or `deferred` disposition. Deferred/watch questions and relevant unfinished
+depth remain public follow-up context for future discovery; no reader clicks or
+manual rating workflow is required. This history is a lead, never recycled
+evidence. A later confirmed material factual error can withdraw only the exact
+affected approved version (and exact signal if affected), with a source-backed
+independent receipt. Ordinary deepening failure never retracts a brief.
 
-Crossref's Nature/Science journal metadata and Nature RSS provide a small,
-keyless supplement. Fixed public HTTPS endpoints have bounded response sizes,
-timeouts, no redirects/proxies/credentials and no automatic retry. Provider
-failure is an explicit diagnostic, not proof that no publications exist. DOI,
-arXiv versions, URL aliases and shared event identities reduce repeated coverage.
-Historical candidate dispositions are machine-maintained, not inferred clicks.
-An unchanged watch item is not automatically republished.
+## Deadline and failure behavior
 
-## State, recovery and Notion
+The total elapsed research budget remains 5400 seconds from the accepted run's
+frozen start. Discovery is bounded per direction; brief attempts have 300 seconds,
+deep attempts 420 seconds. Models execute serially against one dedicated login.
+More map items do not imply concurrent model processes. The default pool holds
+30 candidates; selection allows at most eight topics (operator ceiling 12).
 
-SQLite remains authoritative. `collection_workflow_snapshots` freezes the DAG,
-operator instructions, editorial policies, date, model, public history and total
-budget before the HTTP run is accepted. `workflow_runs`, `workflow_attempts` and
-`workflow_artifacts` record each node/item and immutable outputs. Map input items
-are fixed once with stable IDs. New maps preserve the upstream array's priority
-order; replaying different order conflicts, and existing expansions are never
-reordered or migrated. No transaction spans a model or provider call.
+At completion, deadline, provider fatal failure, or recovery of an unknown model
+attempt, a local deterministic tail freezes the best already approved complete
+units. It performs no model call and changes no completed attempt or review.
+Authentication, configuration and quota failure stop further model work; they
+do not invalidate previously approved unaffected content. A frozen publication
+is immutable and restartable through the local edition/render tail.
 
-Already completed stages survive restart. An in-flight request becomes `unknown`
-and is not blindly reissued; operators must inspect before arranging a retry.
-Optional source/research failures can be marked degraded and their missing
-coverage is passed into drafting/review. Authentication, configuration and model
-quota failures always stop, regardless of `on_error: continue`. There is no
-general retry endpoint, distributed executor, internal cron or implicit backfill.
+If nothing has independently passed, the run remains blocked with
+`no_publishable_content`: no invented article, empty mock issue, old issue
+relabelled as today, or unverified emergency email is sent. Storage corruption,
+privacy/recipient failure, render/hash mismatch and ambiguous previous send
+remain hard stops. Daily delivery is more resilient, not an unconditional
+guarantee during a total source/account/mail outage.
 
-The candidate index in Notion is a bounded readable list, explicitly marked as
-unverified discovery metadata. Full research packets are separate pages. It is
-one-way projection, not a bidirectional Notion database editor or manual rating
-requirement. Optional index/unused packet projection failure does not block the
-edition. All packets used by body citations, graph points or the research
-introduction card must be confirmed projected before the *first send attempt*.
-This is checked in Store, independently of graph shape. Unknown writes are never
-automatically recreated. A ready preview may exist while the outer run is held
-for required Notion persistence.
+Use the external `newsletter-trigger --send --timeout 7200` for collection,
+render and delivery headroom. Cron stays external at 15:00 UTC daily, and the
+service never schedules its own next run. The research deadline is relative to
+the trigger, not a promise that the email arrives precisely at 15:00.
 
-`GET /v1/runs/{id}` exposes the frozen definition hash, node states, candidate and
-completed research-task counts, and usage summary. It does not expose credentials
-or raw model transcripts. Candidate/history and archive diagnostics are private
-SQLite state, not a public web endpoint. An interrupted or rejected run retains
-its already acquired materials.
+## Durable state and the Notion mirror
 
-For an unsent HOLD produced by an older recipe without revision nodes, startup
-can automatically continue through a separately frozen two-node repair graph.
-`workflow_repairs` permits exactly one continuation per original run. The old
-definition hash, attempts, review artifact and held edition remain unchanged;
-the date and external request key stay the same. Research and Notion projections
-are reused. The repaired edition has its own immutable binding. The public
-`workflow.continuations` field exposes the child graph without pretending it was
-part of the old snapshot. No new model attempt starts after the original total
-deadline; restoring already-completed local receipts does not consume a new
-model budget. A continuation that also holds cannot start another continuation.
+SQLite is authoritative. Frozen run inputs include the DAG, instructions,
+editorial/reader policies, date, model, public history, pending topics and budget.
+`workflow_runs`, `workflow_attempts` and `workflow_artifacts` retain exact
+attempts and outputs. Map identities and priority order freeze once; replaying a
+changed expansion conflicts. Unknown provider requests are not blindly replayed.
 
-External cron performs the entire prepare/wait/protected-send call. Reading node
-progress or container logs is diagnostic only and is not needed for advancement.
-Authentication expiry, exhausted model budget, unresolved review failures or
-ambiguous external writes stop with durable error codes and a failing trigger
-exit status. Reliability means bounded automatic recovery and visible failures,
-not guaranteeing delivery of unverified content during provider outages.
+`publication_plans` records all selected tasks; `publication_units` is an
+append-only version/checkpoint ledger; `publication_snapshots` freezes the
+assembled result and coverage. A snapshot must reconstruct exactly from the
+stored validated approvals and evidence. Every cited body, graph and reading
+source remains bound to local packet snapshots; optional supporting references
+are checked just like the primary reading citation.
+
+For new topic editions, `projection_required=False` is an immutable internal
+binding. Notion is a one-way outbox mirror, not a critical publication dependency.
+The worker advances topic research before draining background projections.
+Candidate-index pages are labelled unverified metadata; research pages are
+separate. Failed or ambiguous Notion writes stay explicit and are never blindly
+recreated. A temporary Notion/Todofy startup outage may be reported as degraded;
+invalid credentials, schema or required local/Codex runtime still fail startup.
+
+Old frozen editions retain `projection_required=True` and their original
+adopted-material Notion confirmation barrier. The former whole-issue recipe is
+kept as `workflows/legacy-daily.yaml` for compatibility and regression. Selecting
+`NEWSLETTER_WORKFLOW=legacy` is the earlier per-direction adapter, a different
+compatibility path; it is never an automatic fallback from failed live research.
+Old continuations, receipts and deadlines are not rewritten by this upgrade.
+
+`GET /v1/runs/{id}` exposes the actual graph progress, usage and final
+`publication` coverage. The edition carries the same coverage. A failed research
+graph can therefore coexist honestly with a successfully prepared partial issue.
+No credential or raw model transcript is returned. Todofy remains a private
+bounded tail, never entering public prompts, packets or Notion.
+
+## Editing the recipe safely
+
+Override `NEWSLETTER_WORKFLOW_FILE` and `NEWSLETTER_DISCOVERY_DIR` only via
+explicit read-only operator mounts. HTTP callers cannot supply local paths,
+prompts, YAML or credentials. Version 1 supports registered types, literal
+bounded parameters, `needs` and bounded direct-dependency maps. The sole run
+map is `run.instructions`. Aliases, tags, duplicate keys, unknown types, cycles,
+shell/Python hooks and environment expansion are rejected.
+
+The code validates all required roles and dependency paths, full selected-topic
+brief coverage, bounded deepening and the non-model publication tail. A YAML
+change cannot grant send authority or waive evidence checks. New APIs require a
+reviewed adapter. Public fixed-endpoint Crossref/Nature metadata remain optional
+discovery supplements, not full-text evidence; DOI/version/event deduplication
+and historical dispositions reduce repetitive coverage.
 
 ## Token accounting
 

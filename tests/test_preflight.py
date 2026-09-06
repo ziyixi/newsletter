@@ -327,15 +327,13 @@ def test_runtime_version_mismatch_fails_closed(monkeypatch):
         startup._runtime_files()
 
 
-@pytest.mark.parametrize("failure", ["oversize", "invalid-json", "wrong-content-type", "timeout"])
+@pytest.mark.parametrize("failure", ["oversize", "invalid-json", "wrong-content-type"])
 async def test_provider_response_limits_and_timeout_are_safe(providers, sdk, monkeypatch, failure):
     module, _ = sdk
     monkeypatch.setattr(startup, "MAX_RESPONSE_BYTES", 64)
     monkeypatch.setattr(startup, "HTTP_TIMEOUT", 0.01)
 
     async def handler(request):
-        if failure == "timeout":
-            await asyncio.Event().wait()
         if failure == "oversize":
             return httpx.Response(200, json={"secret": "x" * 100})
         if failure == "invalid-json":
@@ -346,10 +344,51 @@ async def test_provider_response_limits_and_timeout_are_safe(providers, sdk, mon
 
     with pytest.raises(startup.PreflightError) as error:
         await startup.preflight(providers, sdk=module, http_transport=httpx.MockTransport(handler))
-    assert error.value.code == (
-        "NOTION_CHECK_FAILED" if failure == "timeout" else "NOTION_INVALID_RESPONSE"
-    )
+    assert error.value.code == "NOTION_INVALID_RESPONSE"
     assert "private" not in str(error.value)
+
+
+@pytest.mark.parametrize("provider", ["notion", "todofy"])
+@pytest.mark.parametrize("failure", [429, 500, 503, "timeout", "network"])
+async def test_optional_provider_transient_failure_is_degraded_not_a_startup_block(
+    providers, sdk, monkeypatch, provider, failure, caplog
+):
+    module, _ = sdk
+    settings = replace(
+        providers, **{"todofy_backend" if provider == "notion" else "notion_backend": "disabled"}
+    )
+    monkeypatch.setattr(startup, "HTTP_TIMEOUT", 0.01)
+    calls = []
+
+    async def handler(request):
+        calls.append(request)
+        if failure == "timeout":
+            await asyncio.Event().wait()
+        if failure == "network":
+            raise httpx.ConnectError("private-provider-detail", request=request)
+        return httpx.Response(failure, json={"message": "private-provider-detail"})
+
+    report = await startup.preflight(
+        settings, sdk=module, http_transport=httpx.MockTransport(handler)
+    )
+    assert len(calls) == 1
+    assert provider + "_temporarily_unavailable" in report.checks
+    assert "private" not in repr(report)
+    assert "private" not in caplog.text
+    assert "startup check degraded" in caplog.text
+    assert "resend_configuration_only" in report.checks
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 302])
+async def test_todofy_auth_or_target_errors_remain_hard_failures(providers, sdk, status):
+    module, _ = sdk
+    settings = replace(providers, notion_backend="disabled")
+    with pytest.raises(startup.PreflightError):
+        await startup.preflight(
+            settings,
+            sdk=module,
+            http_transport=httpx.MockTransport(lambda _: httpx.Response(status)),
+        )
 
 
 async def test_modified_proto_fails_before_any_provider(settings, monkeypatch):

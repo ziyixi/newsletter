@@ -119,6 +119,12 @@ def _draft_schema(packets: Sequence[Payload]) -> Payload:
     for point in props["chart"]["anyOf"][0]["properties"]["points"]["items"]["anyOf"]:
         point["properties"]["citations"]["items"].update(citation)
     props["recommended_reading"]["anyOf"][0]["properties"]["citation"].update(citation)
+    props["recommended_reading"]["anyOf"][0]["properties"]["supporting_citations"]["items"].update(
+        citation
+    )
+    props["recommended_reading"]["anyOf"][0]["properties"]["supporting_citations"].update(
+        maxItems=31, uniqueItems=True
+    )
     return draft
 
 

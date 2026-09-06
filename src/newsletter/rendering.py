@@ -25,7 +25,7 @@ from .contracts import (
 from .types import Payload, RenderResult
 from .usage import UsageSummary, normalize_usage_summary, usage_footer
 
-RENDERER_VERSION = "python-editorial/3"
+RENDERER_VERSION = "python-editorial/4"
 CHART_CID = "cid:newsletter-chart"
 _KIND_LABELS = {"world": "世界简报", "feature": "今日深读", "context": "背景与边界"}
 _ACCESS_LABELS = {
@@ -185,6 +185,9 @@ def render_edition(
         recommendation = draft["recommended_reading"]
         reading = {
             "reference": cite(recommendation["citation"]),
+            "supporting_references": [
+                cite(citation) for citation in recommendation["supporting_citations"]
+            ],
             "reason": recommendation["reason"],
             "paragraphs": _reading_paragraphs(recommendation["reason"]),
         }
@@ -239,11 +242,12 @@ def render_edition(
         text_lines.append("")
     if reading:
         ref = reading["reference"]
+        evidence = "".join(f"[{ref['number']}]" for ref in reading["supporting_references"])
         text_lines.extend(
             [
                 "研究介绍",
                 f"{ref['title']} [{ref['number']}]",
-                reading["reason"],
+                reading["reason"] + ("\n补充证据：" + evidence if evidence else ""),
                 f"原文与方法 [{ref['number']}]：{ref['url']}",
                 "",
             ]
