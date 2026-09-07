@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import time
 from urllib.parse import unquote, urlsplit
 
@@ -24,6 +25,25 @@ from newsletter.types import Payload
 logger = logging.getLogger(__name__)
 
 
+def _link_signature(url: str | None) -> str | None:
+    """Ignore Notion's colon escaping in query values, not distinct URLs.
+
+    In particular EUR-Lex's ``uri=CELEX:...`` is stored as ``uri=CELEX%3A...``.
+    Keep this readback equivalence narrow: no decoding of paths, separators,
+    parameter names, fragments, plus signs, or reordering query parameters.
+    The source blocks, their hashes and the actual outgoing links stay intact.
+    """
+    if url is None:
+        return None
+    base, fragment_mark, fragment = url.partition("#")
+    path, query_mark, query = base.partition("?")
+    params = []
+    for param in query.split("&"):
+        name, equals, value = param.partition("=")
+        params.append(name + equals + re.sub("%3a", ":", value, flags=re.IGNORECASE))
+    return path + query_mark + "&".join(params) + fragment_mark + fragment
+
+
 def _rich_text(parts: list[Payload]) -> list[Payload]:
     result: list[Payload] = []
     for part in parts:
@@ -35,7 +55,10 @@ def _rich_text(parts: list[Payload]) -> list[Payload]:
             for key, value in part.get("annotations", {}).items()
             if value and not (key == "color" and value == "default")
         }
-        formatting = {"link": (text.get("link") or {}).get("url"), "annotations": annotations}
+        formatting = {
+            "link": _link_signature((text.get("link") or {}).get("url")),
+            "annotations": annotations,
+        }
         if result and result[-1]["format"] == formatting:
             result[-1]["text"] += text["content"]
         else:
@@ -174,8 +197,65 @@ class NotionSync:
             )
         return expected
 
+    async def _reconcile_unknown(self, entity: Payload, version: Payload) -> None:
+        """Acknowledge an uncertain append by reading, never by repeating it."""
+        blocks = version_blocks(version)
+        prefix = self._expected_prefix(entity, version)
+        # Old receipts contain signatures made before a readback normalization
+        # fix. Rebuild from the immutable payload, preserving the original
+        # receipt's block count (not today's chunk-size policy).
+        receipt = json.loads(version["pending_chunk"])
+        if not isinstance(receipt, list) or not receipt:
+            raise ValueError("notion_invalid_append_receipt")
+        offset = version["offset"] + len(receipt)
+        if offset > len(blocks):
+            raise ValueError("notion_invalid_append_receipt")
+        pending = [
+            block_signature(block, image_name=_image_name(version))
+            for block in blocks[version["offset"] : offset]
+        ]
+        observed = [block_signature(block) for block in await self.api.children(entity["page_id"])]
+        if observed == prefix + pending:
+            self.journal.execute(
+                "UPDATE notion_versions SET offset=?,state=?,pending_chunk='',error='' WHERE seq=?",
+                (offset, "done" if offset == len(blocks) else "pending", version["seq"]),
+            )
+            return
+        if observed == prefix:
+            raise AdapterError("NOTION_APPEND_UNCONFIRMED", ambiguous=True)
+        raise ValueError("notion_remote_body_conflict")
+
+    async def _recover_conflict(self, entity: Payload) -> None:
+        """Only read to see whether a previously conflicting body now matches.
+
+        This covers a provider's harmless storage normalization after an
+        upgrade, or a human undoing their edit. Genuine differences remain
+        quarantined; duplicate identities and property conflicts aren't reset.
+        """
+        versions = [v for v in self.journal.versions(entity["key"]) if v["state"] != "done"]
+        if not entity["page_id"] or not versions:
+            raise ValueError("notion_unresolved_projection_conflict")
+        version = versions[0]
+        if version["state"] == "unknown":
+            await self._reconcile_unknown(entity, version)
+        elif version["state"] == "pending":
+            prefix = self._expected_prefix(entity, version)
+            observed = [
+                block_signature(block) for block in await self.api.children(entity["page_id"])
+            ]
+            if observed != prefix:
+                raise ValueError("notion_remote_body_conflict")
+        else:
+            raise ValueError("notion_unresolved_projection_conflict")
+        self.journal.execute(
+            "UPDATE notion_entities SET create_state='ready' WHERE key=?", (entity["key"],)
+        )
+
     async def _append(self, entity: Payload, version: Payload) -> None:
         j = self.journal
+        if version["state"] == "unknown":
+            await self._reconcile_unknown(entity, version)
+            return
         has_unattached_chart = any(
             block["type"] == "_newsletter_chart"
             for block in json.loads(version["blocks"])[version["offset"] :]
@@ -200,21 +280,6 @@ class NotionSync:
         expected_chunk = [
             block_signature(block, image_name=_image_name(version)) for block in chunk
         ]
-        if version["state"] == "unknown":
-            observed = [
-                block_signature(block) for block in await self.api.children(entity["page_id"])
-            ]
-            pending = json.loads(version["pending_chunk"])
-            if observed == prefix + pending:
-                offset = version["offset"] + len(pending)
-                j.execute(
-                    "UPDATE notion_versions SET offset=?,state=?,pending_chunk='',error='' WHERE seq=?",
-                    (offset, "done" if offset == len(blocks) else "pending", version["seq"]),
-                )
-                return
-            if observed == prefix:
-                raise AdapterError("NOTION_APPEND_UNCONFIRMED", ambiguous=True)
-            raise ValueError("notion_remote_body_conflict")
         if not chunk:
             j.execute("UPDATE notion_versions SET state='done' WHERE seq=?", (version["seq"],))
             return
@@ -255,13 +320,14 @@ class NotionSync:
     async def step(self) -> bool:
         j = self.journal
         for entity in j.rows(
-            "SELECT * FROM notion_entities WHERE retry_at<=? "
-            "AND create_state!='conflict' ORDER BY rowid",
+            "SELECT * FROM notion_entities WHERE retry_at<=? ORDER BY rowid",
             (time.time(),),
         ):
             key = entity["key"]
             try:
-                if not entity["page_id"]:
+                if entity["create_state"] == "conflict":
+                    await self._recover_conflict(entity)
+                elif not entity["page_id"]:
                     await self._create(entity)
                 else:
                     versions = [v for v in j.versions(key) if v["state"] != "done"]

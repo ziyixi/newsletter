@@ -19,6 +19,7 @@ import httpx
 import pytest
 from test_notion_content import PNG, candidate, edition, packet
 
+import newsletter.notion_sync as sync_module
 from newsletter.adapters import AdapterError
 from newsletter.contracts import content_hash
 from newsletter.notion_content import Projection, edition_projection, material_projection
@@ -30,6 +31,7 @@ from newsletter.workflow.repository import WorkflowRepository
 
 DAY = "2026-09-07"
 KEY = "material:offline-fixture"
+EUR_LEX_URL = "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32024R1689"
 DESTINATION = {
     "materials": "offline-materials",
     "editions": "offline-editions",
@@ -43,6 +45,12 @@ def rich(text):
 
 def paragraph(text):
     return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": rich(text)}}
+
+
+def linked_paragraph(url):
+    block = paragraph("Offline citation fixture — a real public EUR-Lex URL")
+    block["paragraph"]["rich_text"][0]["text"]["link"] = {"url": url}
+    return block
 
 
 def projected(key=KEY, *, count=2, prefix="Offline version", chart=False):
@@ -330,6 +338,260 @@ async def test_unknown_append_reads_the_pending_prefix_without_repeating_append(
         assert not rig.page()["blocks"]
 
 
+@pytest.mark.parametrize("escaped", ["%3A", "%3a"])
+def test_eur_lex_query_value_colon_serialization_has_equal_signature_without_changing_blocks(
+    escaped,
+):
+    expected = linked_paragraph(EUR_LEX_URL)
+    actual = linked_paragraph(EUR_LEX_URL.replace("CELEX:", "CELEX" + escaped))
+    before = copy.deepcopy((expected, actual))
+    hashes = [content_hash(block) for block in before]
+    assert block_signature(expected) == block_signature(actual)
+    assert (expected, actual) == before
+    assert [content_hash(block) for block in (expected, actual)] == hashes
+
+
+@pytest.mark.parametrize(
+    ("expected", "actual"),
+    [
+        (EUR_LEX_URL, EUR_LEX_URL.replace("32024R1689", "32024R1688")),
+        (EUR_LEX_URL, EUR_LEX_URL + "#article-1"),
+        (EUR_LEX_URL + "#article:1", EUR_LEX_URL + "#article%3A1"),
+        (EUR_LEX_URL + "&view=1", EUR_LEX_URL.replace("?", "?view=1&")),
+        (EUR_LEX_URL + "&view=1&view=2", EUR_LEX_URL + "&view=2&view=1"),
+        (EUR_LEX_URL + "&view=1&view=1", EUR_LEX_URL + "&view=1"),
+        (EUR_LEX_URL + "&q=a+b", EUR_LEX_URL + "&q=a%20b"),
+        (EUR_LEX_URL + "&q=a%2Fb", EUR_LEX_URL + "&q=a/b"),
+        (EUR_LEX_URL + "&q=a%26b", EUR_LEX_URL + "&q=a&b"),
+        (EUR_LEX_URL + "&q=a%3Db", EUR_LEX_URL + "&q=a=b"),
+        (EUR_LEX_URL + "&q=a%253Ab", EUR_LEX_URL + "&q=a%3Ab"),
+        (EUR_LEX_URL + "&q:r=x", EUR_LEX_URL + "&q%3Ar=x"),
+        (EUR_LEX_URL.replace("/TXT/", "/TXT:/"), EUR_LEX_URL.replace("/TXT/", "/TXT%3A/")),
+        (EUR_LEX_URL, EUR_LEX_URL.replace("/TXT/?", "/TXT?")),
+        (EUR_LEX_URL, EUR_LEX_URL.replace("https:", "http:")),
+        (EUR_LEX_URL, EUR_LEX_URL.replace("eur-lex.europa.eu", "example.org")),
+    ],
+    ids=[
+        "query-value",
+        "new-fragment",
+        "fragment-escape",
+        "query-order",
+        "duplicate-order",
+        "duplicate-removed",
+        "plus-space",
+        "encoded-slash",
+        "encoded-ampersand",
+        "encoded-equals",
+        "double-escape",
+        "query-key-escape",
+        "path-escape",
+        "non-root-slash",
+        "scheme",
+        "host",
+    ],
+)
+def test_link_signature_does_not_hide_other_source_url_changes(expected, actual):
+    assert block_signature(linked_paragraph(expected)) != block_signature(linked_paragraph(actual))
+
+
+def encode_eur_lex_response(monkeypatch, api):
+    original = api._returned_block
+
+    def returned(block, page_id, index):
+        result = original(block, page_id, index)
+        for fragment in result[result["type"]].get("rich_text", []):
+            link = fragment["text"].get("link")
+            if link:
+                link["url"] = EUR_LEX_URL.replace("CELEX:", "CELEX%3A")
+        return result
+
+    monkeypatch.setattr(api, "_returned_block", returned)
+
+
+async def test_equivalent_link_in_append_ack_preserves_frozen_projection_and_never_reappends(
+    rig, monkeypatch
+):
+    blocks = [linked_paragraph(EUR_LEX_URL)]
+    projection = replace(projected(), blocks=blocks, digest=content_hash(blocks))
+    before = copy.deepcopy(projection)
+    encode_eur_lex_response(monkeypatch, rig.api)
+    rig.journal.enqueue("material", projection)
+    await rig.drain()
+    assert rig.versions()[0]["state"] == "done"
+    assert rig.versions()[0]["digest"] == before.digest
+    assert json.loads(rig.versions()[0]["blocks"]) == before.blocks
+    assert projection == before
+    assert rig.api.count("append") == 1
+    assert rig.page()["blocks"][0]["paragraph"]["rich_text"][0]["text"]["link"]["url"] == (
+        EUR_LEX_URL.replace("CELEX:", "CELEX%3A")
+    )
+    rig.restart()
+    await rig.drain()
+    assert rig.api.count("append") == 1
+
+
+@pytest.mark.parametrize("original_url", [EUR_LEX_URL, EUR_LEX_URL.replace("CELEX:", "CELEX%3a")])
+async def test_unknown_append_with_legacy_link_signature_recovers_read_only_after_restart(
+    rig, monkeypatch, original_url
+):
+    blocks = [linked_paragraph(original_url)]
+    projection = replace(projected(), blocks=blocks, digest=content_hash(blocks))
+    encode_eur_lex_response(monkeypatch, rig.api)
+    rig.journal.enqueue("material", projection)
+    assert await rig.sync.step()
+    rig.api.fail("append", landed=True)
+    assert await rig.sync.step()
+    assert rig.versions()[0]["state"] == "unknown"
+    # A pre-fix checkpoint contains the original link spelling, not a newly
+    # computed canonical signature. Reconcile it without rewriting source data.
+    legacy_pending = [block_signature(blocks[0])]
+    legacy_pending[0]["text"][0]["format"]["link"] = original_url
+    rig.journal.execute("UPDATE notion_versions SET pending_chunk=?", (json.dumps(legacy_pending),))
+    body = copy.deepcopy(rig.page()["blocks"])
+    frozen = (rig.versions()[0]["blocks"], rig.versions()[0]["digest"])
+    rig.restart()
+    rig.due()
+    before = len(rig.api.calls)
+    assert await rig.sync.step()
+    assert [name for name, _ in rig.api.calls[before:]] == ["children"]
+    assert rig.versions()[0]["state"] == "done"
+    assert rig.versions()[0]["pending_chunk"] == ""
+    await rig.drain()
+    assert rig.api.count("append") == 1 and rig.api.count("create") == 1
+    assert rig.page()["blocks"] == body
+    assert (rig.versions()[0]["blocks"], rig.versions()[0]["digest"]) == frozen
+
+
+async def test_persisted_unknown_link_conflict_recovers_in_one_read_only_step(rig, monkeypatch):
+    blocks = [linked_paragraph(EUR_LEX_URL)]
+    projection = replace(projected(), blocks=blocks, digest=content_hash(blocks))
+    encode_eur_lex_response(monkeypatch, rig.api)
+    rig.journal.enqueue("material", projection)
+    assert await rig.sync.step()
+    rig.api.fail("append", landed=True)
+    assert await rig.sync.step()
+    rig.journal.execute(
+        "UPDATE notion_entities SET create_state='conflict',error='NOTION_PROJECTION_CONFLICT'"
+    )
+    frozen = (rig.versions()[0]["blocks"], rig.versions()[0]["digest"])
+    body = copy.deepcopy(rig.page()["blocks"])
+    rig.restart()
+    rig.due()
+    before = len(rig.api.calls)
+    assert await rig.sync.step()
+    assert [name for name, _ in rig.api.calls[before:]] == ["children"]
+    assert rig.journal.entity(KEY)["create_state"] == "ready"
+    assert rig.journal.entity(KEY)["error"] == ""
+    assert rig.versions()[0]["state"] == "done" and rig.versions()[0]["offset"] == 1
+    assert (rig.versions()[0]["blocks"], rig.versions()[0]["digest"]) == frozen
+    await rig.drain()
+    assert rig.api.count("create") == rig.api.count("append") == 1
+    assert rig.page()["blocks"] == body
+
+
+@pytest.mark.parametrize("checkpoint_count", [40, 80])
+async def test_partial_conflict_uses_original_pending_count_and_appends_only_remaining_tail(
+    rig, monkeypatch, checkpoint_count
+):
+    blocks = [linked_paragraph(EUR_LEX_URL) for _ in range(103)]
+    for index, block in enumerate(blocks):
+        block["paragraph"]["rich_text"][0]["text"]["content"] += f" — item {index}"
+    projection = replace(projected(), blocks=blocks, digest=content_hash(blocks))
+    encode_eur_lex_response(monkeypatch, rig.api)
+    rig.journal.enqueue("material", projection)
+    assert await rig.sync.step()
+    rig.api.fail("append", landed=True)
+    original_chunk = sync_module._chunk
+    # A legacy checkpoint may have used a smaller chunk than today's limit.
+    with monkeypatch.context() as historical:
+        historical.setattr(
+            sync_module,
+            "_chunk",
+            lambda items, offset: original_chunk(items, offset)[:checkpoint_count],
+        )
+        assert await rig.sync.step()
+    assert rig.versions()[0]["state"] == "unknown" and rig.versions()[0]["offset"] == 0
+    assert len(json.loads(rig.versions()[0]["pending_chunk"])) == checkpoint_count
+    rig.journal.execute("UPDATE notion_entities SET create_state='conflict'")
+    prefix = copy.deepcopy(rig.page()["blocks"])
+    rig.restart()
+    rig.due()
+    before = len(rig.api.calls)
+    assert await rig.sync.step()
+    assert [name for name, _ in rig.api.calls[before:]] == ["children"]
+    assert rig.versions()[0]["offset"] == checkpoint_count
+    assert rig.versions()[0]["state"] == "pending" and rig.api.count("append") == 1
+    assert rig.page()["blocks"] == prefix
+    await rig.drain()
+    assert [len(value[1]) for name, value in rig.api.calls if name == "append"] == [
+        checkpoint_count,
+        103 - checkpoint_count,
+    ]
+    assert rig.versions()[0]["state"] == "done" and rig.versions()[0]["offset"] == 103
+    assert [block_signature(block) for block in rig.page()["blocks"]] == [
+        block_signature(block) for block in blocks
+    ]
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+@pytest.mark.parametrize("edit", ["text", "link"])
+async def test_real_human_edit_stays_conflicted_until_undo_then_recovers_read_only(
+    rig, unknown, edit
+):
+    blocks = [linked_paragraph(EUR_LEX_URL) for _ in range(103)]
+    projection = replace(projected(), blocks=blocks, digest=content_hash(blocks))
+    rig.journal.enqueue("material", projection)
+    assert await rig.sync.step()
+    if unknown:
+        rig.api.fail("append", landed=True)
+    assert await rig.sync.step()
+    pristine = copy.deepcopy(rig.page()["blocks"])
+    text = rig.page()["blocks"][0]["paragraph"]["rich_text"][0]["text"]
+    if edit == "text":
+        text["content"] = "Reader-authored note must not be overwritten"
+    else:
+        text["link"]["url"] += "#reader-selected-article"
+    edited = copy.deepcopy(rig.page()["blocks"])
+    rig.due()
+    assert await rig.sync.step()
+    assert rig.journal.entity(KEY)["create_state"] == "conflict"
+    rig.restart()
+    for _ in range(2):
+        rig.due()
+        before = len(rig.api.calls)
+        assert await rig.sync.step()
+        assert [name for name, _ in rig.api.calls[before:]] == ["children"]
+        assert rig.journal.entity(KEY)["create_state"] == "conflict"
+        assert rig.page()["blocks"] == edited and rig.api.count("append") == 1
+    # Only the simulated user restores their edit. The synchronizer never does.
+    rig.page()["blocks"] = pristine
+    rig.due()
+    before = len(rig.api.calls)
+    assert await rig.sync.step()
+    assert [name for name, _ in rig.api.calls[before:]] == ["children"]
+    assert rig.journal.entity(KEY)["create_state"] == "ready"
+    assert rig.versions()[0]["state"] == "pending" and rig.versions()[0]["offset"] == 80
+    assert rig.page()["blocks"] == pristine and rig.api.count("append") == 1
+    await rig.drain()
+    assert [len(value[1]) for name, value in rig.api.calls if name == "append"] == [80, 23]
+    assert rig.versions()[0]["state"] == "done"
+
+
+@pytest.mark.parametrize("finished", [False, True])
+async def test_conflict_without_page_or_unfinished_version_never_opens_a_write_path(rig, finished):
+    rig.journal.enqueue("material", projected())
+    if finished:
+        await rig.drain()
+    rig.journal.execute("UPDATE notion_entities SET create_state='conflict'")
+    versions = copy.deepcopy(rig.versions())
+    before = copy.deepcopy(rig.api.calls)
+    rig.restart()
+    rig.due()
+    await rig.sync.step()
+    assert rig.journal.entity(KEY)["create_state"] == "conflict"
+    assert rig.versions() == versions and rig.api.calls == before
+
+
 async def test_large_material_is_chunked_to_eighty_and_completed_in_original_order(rig):
     projection = projected(count=173)
     rig.journal.enqueue("material", projection)
@@ -432,6 +694,98 @@ async def test_human_body_edits_conflict_without_deleting_or_overwriting_them(ri
     assert rig.journal.entity(KEY)["error"] == "NOTION_PROJECTION_CONFLICT"
     assert rig.page()["blocks"] == edited and rig.api.count("append") == 1
     assert not await rig.sync.step()
+
+
+@pytest.mark.parametrize("count", [3, 103])
+async def test_old_conflict_recovers_by_reading_then_appends_only_unwritten_tail(rig, count):
+    projection = projected(count=count - 1, chart=True)
+    projection.blocks[-1 if count == 3 else 63] = linked_paragraph(EUR_LEX_URL)
+    projection = replace(projection, digest=content_hash(projection.blocks))
+    rig.journal.enqueue("edition", projection)
+    assert await rig.sync.step() and await rig.sync.step()  # Create, upload.
+    rig.api.fail("append", landed=True)
+    assert await rig.sync.step()
+    for block in rig.page()["blocks"]:
+        for part in block[block["type"]].get("rich_text", []):
+            if part["text"].get("link"):
+                part["text"]["link"]["url"] = EUR_LEX_URL.replace("CELEX:", "CELEX%3A")
+    rig.journal.execute(
+        "UPDATE notion_entities SET create_state='conflict',error='NOTION_PROJECTION_CONFLICT'"
+    )
+    # Mimic an old signature receipt and an expired upload already attached.
+    old_receipt = rig.versions()[0]["pending_chunk"].replace("CELEX:", "CELEX%3a")
+    rig.journal.execute(
+        "UPDATE notion_versions SET pending_chunk=?,upload_at=upload_at-3600", (old_receipt,)
+    )
+    frozen = (rig.versions()[0]["blocks"], rig.versions()[0]["digest"])
+    remote_before = copy.deepcopy(rig.page()["blocks"])
+    rig.restart()
+    rig.due()
+    start = len(rig.api.calls)
+    assert await rig.sync.step()
+    assert [name for name, _ in rig.api.calls[start:]] == ["children"]
+    assert rig.journal.entity(KEY)["create_state"] == "ready"
+    assert rig.journal.entity(KEY)["error"] == ""
+    assert rig.versions()[0]["offset"] == min(count, 80)
+    assert rig.page()["blocks"] == remote_before
+    assert rig.api.count("append") == rig.api.count("upload_png") == 1
+    await rig.drain()
+    assert rig.versions()[0]["state"] == "done"
+    assert len(rig.page()["blocks"]) == count
+    assert [len(value[1]) for name, value in rig.api.calls if name == "append"] == (
+        [count] if count <= 80 else [80, count - 80]
+    )
+    assert rig.api.count("upload_png") == 1
+    assert (rig.versions()[0]["blocks"], rig.versions()[0]["digest"]) == frozen
+
+
+async def test_body_conflict_retry_never_writes_and_human_undo_only_reopens_after_read(rig):
+    rig.journal.enqueue("material", projected(count=81))
+    assert await rig.sync.step() and await rig.sync.step()
+    original = copy.deepcopy(rig.page()["blocks"])
+    rig.page()["blocks"][0] = paragraph("Reader's own note")
+    assert await rig.sync.step()
+    edited = copy.deepcopy(rig.page()["blocks"])
+    for _ in range(2):
+        rig.due()
+        start = len(rig.api.calls)
+        assert await rig.sync.step()
+        assert [name for name, _ in rig.api.calls[start:]] == ["children"]
+        assert rig.journal.entity(KEY)["create_state"] == "conflict"
+        assert rig.page()["blocks"] == edited
+    rig.page()["blocks"] = original  # Reader explicitly undoes the edit.
+    rig.due()
+    start = len(rig.api.calls)
+    assert await rig.sync.step()
+    assert [name for name, _ in rig.api.calls[start:]] == ["children"]
+    assert rig.journal.entity(KEY)["create_state"] == "ready"
+    assert rig.api.count("append") == 1
+    await rig.drain()
+    assert [len(value[1]) for name, value in rig.api.calls if name == "append"] == [80, 1]
+
+
+async def test_unlanded_unknown_conflict_stays_uncertain_without_any_write(rig):
+    rig.journal.enqueue("material", projected())
+    assert await rig.sync.step()
+    rig.api.fail("append", landed=False)
+    assert await rig.sync.step()
+    rig.journal.execute("UPDATE notion_entities SET create_state='conflict'")
+    rig.due()
+    start = len(rig.api.calls)
+    assert await rig.sync.step()
+    assert [name for name, _ in rig.api.calls[start:]] == ["children"]
+    assert rig.journal.entity(KEY)["create_state"] == "conflict"
+    assert rig.journal.entity(KEY)["error"] == "NOTION_APPEND_UNCONFIRMED"
+    assert rig.versions()[0]["state"] == "unknown"
+    assert rig.api.count("append") == 1 and not rig.page()["blocks"]
+
+
+async def test_identity_conflict_without_bound_page_never_selects_or_creates_a_page(rig):
+    rig.journal.enqueue("material", projected())
+    rig.journal.execute("UPDATE notion_entities SET create_state='conflict'")
+    assert await rig.sync.step()
+    assert rig.journal.entity(KEY)["create_state"] == "conflict"
+    assert not rig.api.calls
 
 
 async def test_uploaded_chart_placeholder_becomes_signed_file_image_and_recovers_unknown_append(
