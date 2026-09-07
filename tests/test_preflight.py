@@ -10,6 +10,7 @@ import pytest
 
 from newsletter import preflight as startup
 from newsletter.codex_runtime import skill_paths
+from newsletter.notion_api import SCHEMAS
 from newsletter.settings import Settings
 from newsletter.store import Store
 
@@ -245,6 +246,194 @@ def notion_response(settings):
         "id": settings.notion_data_source_id,
         "properties": {"Renamed column": {"id": "title", "type": "title", "title": {}}},
     }
+
+
+@pytest.fixture
+def dual_notion(providers):
+    return replace(
+        providers,
+        workflow_backend="dag",
+        notion_token="synthetic-notion-key-for-offline-tests",
+        notion_data_source_id="must-not-use-legacy-target",
+        notion_materials_data_source_id="12345678-1234-1234-1234-123456789abc",
+        notion_editions_data_source_id="22345678-1234-1234-1234-123456789abc",
+        todofy_backend="disabled",
+    )
+
+
+def dual_notion_response(settings, kind):
+    target = (
+        settings.notion_editions_data_source_id
+        if kind == "material"
+        else settings.notion_materials_data_source_id
+    )
+    properties = {}
+    for key, spec in SCHEMAS[kind].items():
+        detail = {}
+        if spec.type in {"select", "multi_select"}:
+            detail = {"options": [{"name": name} for name in spec.options]}
+        elif spec.type == "relation":
+            detail = {"data_source_id": target, "type": "single_property", "single_property": {}}
+        properties[spec.name if key != "title" else "My renamed title"] = {
+            "id": "title" if key == "title" else kind + "_" + key,
+            "type": spec.type,
+            spec.type: detail,
+        }
+    return {
+        "object": "data_source",
+        "id": settings.notion_materials_data_source_id
+        if kind == "material"
+        else settings.notion_editions_data_source_id,
+        "properties": properties,
+    }
+
+
+async def test_dual_notion_validates_both_schemas_read_only(dual_notion, sdk):
+    module, _ = sdk
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        assert request.method == "GET"
+        assert request.url.host == "api.notion.com"
+        assert request.headers["authorization"] == "Bearer " + dual_notion.notion_token
+        assert request.headers["notion-version"] == "2026-03-11"
+        kind = (
+            "material"
+            if request.url.path.endswith(dual_notion.notion_materials_data_source_id)
+            else "edition"
+        )
+        return httpx.Response(200, json=dual_notion_response(dual_notion, kind))
+
+    report = await startup.preflight(
+        dual_notion, sdk=module, http_transport=httpx.MockTransport(handler)
+    )
+    assert [request.url.path for request in calls] == [
+        "/v1/data_sources/" + dual_notion.notion_materials_data_source_id,
+        "/v1/data_sources/" + dual_notion.notion_editions_data_source_id,
+    ]
+    assert "notion_dual_data_sources_and_managed_schema" in report.checks
+    assert "notion_data_source_read_and_title_schema" not in report.checks
+    assert any("Update content" in item for item in report.limitations)
+    assert any("no page or column was created or changed" in item for item in report.limitations)
+    assert "synthetic" not in repr(report)
+
+
+@pytest.mark.parametrize(
+    "change,code",
+    [
+        ("missing", "NOTION_SCHEMA_MISSING"),
+        ("type", "NOTION_SCHEMA_INVALID"),
+        ("relation", "NOTION_SCHEMA_INVALID"),
+        ("wrong-id", "NOTION_SCHEMA_INVALID"),
+    ],
+)
+async def test_dual_notion_missing_or_wrong_schema_never_auto_migrates(dual_notion, change, code):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        assert request.method == "GET"
+        kind = (
+            "material"
+            if request.url.path.endswith(dual_notion.notion_materials_data_source_id)
+            else "edition"
+        )
+        value = dual_notion_response(dual_notion, kind)
+        if kind == "edition":
+            props = value["properties"]
+            if change == "missing":
+                del props[SCHEMAS[kind]["overview"].name]
+            elif change == "type":
+                props[SCHEMAS[kind]["overview"].name]["type"] = "number"
+            elif change == "relation":
+                props[SCHEMAS[kind]["material_ids"].name]["relation"]["data_source_id"] = (
+                    dual_notion.notion_editions_data_source_id
+                )
+            else:
+                value["id"] = dual_notion.notion_materials_data_source_id
+        return httpx.Response(200, json=value)
+
+    with pytest.raises(startup.PreflightError, match=code):
+        await startup._check_notion(dual_notion, httpx.MockTransport(handler))
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("failure", [429, 500, 503, "timeout", "network"])
+async def test_dual_notion_transient_failures_degrade_without_legacy_gates(
+    dual_notion, sdk, monkeypatch, failure, caplog
+):
+    module, _ = sdk
+    monkeypatch.setattr(startup, "HTTP_TIMEOUT", 0.01)
+    calls = []
+
+    async def handler(request):
+        calls.append(request)
+        assert request.method == "GET"
+        if failure == "timeout":
+            await asyncio.Event().wait()
+        if failure == "network":
+            raise httpx.ConnectError("private-provider-detail", request=request)
+        return httpx.Response(failure, json={"message": "private-provider-detail"})
+
+    report = await startup.preflight(
+        dual_notion, sdk=module, http_transport=httpx.MockTransport(handler)
+    )
+    assert len(calls) == 1
+    assert "notion_temporarily_unavailable" in report.checks
+    assert any("without blocking email" in item for item in report.limitations)
+    assert "Legacy projection" not in caplog.text
+    assert "private-provider-detail" not in repr(report) + caplog.text
+
+
+@pytest.mark.parametrize(
+    "status,code",
+    [
+        (401, "NOTION_AUTH_FAILED"),
+        (403, "NOTION_AUTH_FAILED"),
+        (404, "NOTION_UNAVAILABLE"),
+        (302, "NOTION_UNAVAILABLE"),
+    ],
+)
+async def test_dual_notion_auth_and_target_failures_stop_startup(dual_notion, sdk, status, code):
+    module, _ = sdk
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(
+            status,
+            json={"message": "upstream-private-secret"},
+            headers={"Location": "https://elsewhere.example.org"},
+        )
+
+    with pytest.raises(startup.PreflightError, match=code) as error:
+        await startup.preflight(
+            dual_notion, sdk=module, http_transport=httpx.MockTransport(handler)
+        )
+    assert len(calls) == 1
+    assert "private" not in repr(error.value)
+
+
+@pytest.mark.parametrize("failure", ["oversize", "invalid-json", "wrong-content-type"])
+async def test_dual_notion_invalid_response_is_a_hard_failure(dual_notion, monkeypatch, failure):
+    from newsletter import notion_api
+
+    monkeypatch.setattr(notion_api, "MAX_RESPONSE_BYTES", 64)
+
+    def handler(request):
+        assert request.method == "GET"
+        if failure == "oversize":
+            return httpx.Response(200, json={"private": "x" * 100})
+        if failure == "invalid-json":
+            return httpx.Response(
+                200, content="upstream-private-body", headers={"Content-Type": "application/json"}
+            )
+        return httpx.Response(200, content="{}", headers={"Content-Type": "text/html"})
+
+    with pytest.raises(startup.PreflightError, match="NOTION_INVALID_RESPONSE") as error:
+        await startup._check_notion(dual_notion, httpx.MockTransport(handler))
+    assert "private" not in repr(error.value)
 
 
 async def test_provider_probes_only_get_schema_and_public_health(providers, sdk):

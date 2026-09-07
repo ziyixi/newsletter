@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 _Number = TypeVar("_Number", int, float)
@@ -18,6 +19,13 @@ def _number_env(name: str, default: str, parse: Callable[[str], _Number]) -> _Nu
         # Built-in numeric errors echo the input, which may be a misplaced key.
         # Suppress that exception's context even when startup prints a traceback.
         raise ValueError(f"Set a valid numeric value for {name}") from None
+
+
+def _boolean_env(name: str, default: str = "false") -> bool:
+    value = os.getenv(name, default).lower()
+    if value not in {"true", "false"}:
+        raise ValueError(f"Set true or false for {name}")
+    return value == "true"
 
 
 @dataclass(frozen=True)
@@ -36,6 +44,9 @@ class Settings:
     notion_backend: str = "disabled"
     notion_token: str = field(default="", repr=False)
     notion_data_source_id: str = ""
+    notion_materials_data_source_id: str = ""
+    notion_editions_data_source_id: str = ""
+    notion_archive_private: bool = False
     mail_backend: str = "fake"
     allow_send: bool = False
     resend_api_key: str = field(default="", repr=False)
@@ -72,6 +83,9 @@ class Settings:
             notion_backend=os.getenv("NEWSLETTER_NOTION", "disabled"),
             notion_token=os.getenv("NOTION_TOKEN", ""),
             notion_data_source_id=os.getenv("NOTION_DATA_SOURCE_ID", ""),
+            notion_materials_data_source_id=os.getenv("NOTION_MATERIALS_DATA_SOURCE_ID", ""),
+            notion_editions_data_source_id=os.getenv("NOTION_EDITIONS_DATA_SOURCE_ID", ""),
+            notion_archive_private=_boolean_env("NEWSLETTER_NOTION_ARCHIVE_PRIVATE"),
             mail_backend=os.getenv("NEWSLETTER_MAIL", "fake"),
             allow_send=os.getenv("NEWSLETTER_ALLOW_SEND", "false").lower() == "true",
             resend_api_key=os.getenv("RESEND_API_KEY", ""),
@@ -104,6 +118,11 @@ class Settings:
                 "NEWSLETTER_WORKFLOW_TIMEOUT_SECONDS", "5400", float
             ),
         )
+
+    @property
+    def notion_v2(self) -> bool:
+        """Select the dual database adapter only when both destinations are set."""
+        return bool(self.notion_materials_data_source_id and self.notion_editions_data_source_id)
 
     def validate(self) -> None:
         if self.workflow_backend not in {"dag", "legacy"}:
@@ -157,10 +176,31 @@ class Settings:
             raise ValueError("Live mode requires the Codex editor; no mock fallback")
         if self.editor_backend == "codex" and self.codex_home is None:
             raise ValueError("Set an isolated NEWSLETTER_CODEX_HOME for the server editor")
-        if self.notion_backend == "notion" and (
-            not self.notion_token or not self.notion_data_source_id
-        ):
-            raise ValueError("Notion requires NOTION_TOKEN and NOTION_DATA_SOURCE_ID")
+        if type(self.notion_archive_private) is not bool:
+            raise ValueError("NEWSLETTER_NOTION_ARCHIVE_PRIVATE must be a boolean")
+        if bool(self.notion_materials_data_source_id) != bool(self.notion_editions_data_source_id):
+            raise ValueError(
+                "Set both NOTION_MATERIALS_DATA_SOURCE_ID and NOTION_EDITIONS_DATA_SOURCE_ID"
+            )
+        if self.notion_v2:
+            if self.workflow_backend != "dag":
+                raise ValueError("Dual-database Notion requires NEWSLETTER_WORKFLOW=dag")
+            try:
+                materials_id = UUID(self.notion_materials_data_source_id)
+                editions_id = UUID(self.notion_editions_data_source_id)
+            except (ValueError, TypeError, AttributeError):
+                raise ValueError(
+                    "Notion materials and editions require valid data source IDs"
+                ) from None
+            if materials_id == editions_id:
+                raise ValueError("Notion materials and editions require different data sources")
+        if self.notion_backend == "notion":
+            if not self.notion_token:
+                raise ValueError("Notion requires NOTION_TOKEN")
+            if not self.notion_v2 and not self.notion_data_source_id:
+                raise ValueError(
+                    "Notion requires both dual database IDs or legacy NOTION_DATA_SOURCE_ID"
+                )
         if self.mail_backend == "resend" and (
             not self.allow_send
             or not self.resend_api_key

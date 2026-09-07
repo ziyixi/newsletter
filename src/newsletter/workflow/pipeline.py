@@ -34,6 +34,12 @@ def freeze_workflow(
 ) -> tuple[list[Instruction], Payload]:
     definition = load_definition(settings.workflow_file)
     validate_recipe(definition)
+    if (
+        settings.notion_backend == "notion"
+        and settings.notion_v2
+        and not is_story_recipe(definition)
+    ):
+        raise ValueError("Notion V2 requires the story publication workflow, not legacy projection")
     instructions = load_discovery_instructions(settings.discovery_dir)
     policy = {}
     for name in ("editorial.md", "reader-profile.md"):

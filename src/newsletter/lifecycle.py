@@ -27,6 +27,9 @@ from newsletter.collection.instructions import load_instructions
 from newsletter.collection.pipeline import CollectionPipeline
 from newsletter.collection.repository import RunRepository
 from newsletter.editor import CodexEditor, Editor, MockEditor
+from newsletter.notion_api import NotionWorkspace
+from newsletter.notion_journal import NotionJournal
+from newsletter.notion_sync import NotionSync
 from newsletter.preflight import preflight
 from newsletter.settings import Settings
 from newsletter.store import Store
@@ -87,7 +90,10 @@ async def service_lifespan(
                 "fake": lambda: FakeNotion(settings.data_dir / "notion"),
                 "notion": lambda: Notion(settings.notion_token, settings.notion_data_source_id),
             }
-            chosen_notion = notion or notion_factories[settings.notion_backend]()
+            notion_v2 = settings.notion_backend == "notion" and settings.notion_v2
+            chosen_notion = notion or (
+                DisabledNotion() if notion_v2 else notion_factories[settings.notion_backend]()
+            )
             app.state.mail = mail or (
                 FakeMail(settings.data_dir / "outbox")
                 if settings.mail_backend == "fake"
@@ -145,15 +151,41 @@ async def service_lifespan(
                 settings.job_timeout_seconds,
                 todofy=todofy or todofy_factories[settings.todofy_backend](),
                 pipeline=pipeline,
+                skip_packet_projection=notion_v2,
             )
             app.state.store, app.state.worker = store, worker
             app.state.runs = runs
             app.state.workflow_state = workflow_state
+            sync = None
+            if notion_v2:
+                sync = NotionSync(
+                    NotionJournal(
+                        store,
+                        {
+                            "materials": settings.notion_materials_data_source_id,
+                            "editions": settings.notion_editions_data_source_id,
+                            "include_personal": settings.notion_archive_private,
+                        },
+                    ),
+                    NotionWorkspace(
+                        settings.notion_token,
+                        settings.notion_materials_data_source_id,
+                        settings.notion_editions_data_source_id,
+                    ),
+                    include_personal=settings.notion_archive_private,
+                )
+            app.state.notion_sync = sync
             task = asyncio.create_task(worker.run()) if start_worker else None
             app.state.worker_task = task
+            sync_task = asyncio.create_task(sync.run()) if sync and start_worker else None
+            app.state.notion_sync_task = sync_task
             try:
                 yield
             finally:
+                if sync_task:
+                    sync_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await sync_task
                 if task:
                     task.cancel()
                     with suppress(asyncio.CancelledError):

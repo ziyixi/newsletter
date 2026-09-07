@@ -36,12 +36,14 @@ class Worker:
         *,
         todofy: TodofyAdapter | None = None,
         pipeline: CollectionPipeline | None = None,
+        skip_packet_projection: bool = False,
     ) -> None:
         self.store, self.editor, self.notion = store, editor, notion
         self.workspace, self.timeout = workspace, timeout
         self.wake = asyncio.Event()
         self.todofy: TodofyAdapter = todofy or DisabledTodofy()
         self.pipeline = pipeline
+        self.skip_packet_projection = skip_packet_projection
         self.workflow_state = WorkflowState(store)
 
     async def personal_digest(self, edition: EditionRecord) -> Payload:
@@ -69,7 +71,9 @@ class Worker:
         if self.pipeline and self.pipeline.has_priority_work():
             if await self.pipeline.collect_next():
                 return True
-        packet = self.store.claim_projection()
+        # V2 projects immutable DAG material/edition snapshots independently.
+        # Preserve legacy receipts instead of marking unperformed writes done.
+        packet = None if self.skip_packet_projection else self.store.claim_projection()
         if packet:
             try:
                 async with asyncio.timeout(35):
@@ -143,7 +147,8 @@ class Worker:
                     return
             # Separate bounded budget: a slow optional Todofy must not consume
             # the editor's remaining deadline and fail the whole newsletter.
-            # Private events never enter prompts, packets, Notion or public search.
+            # Private events never enter prompts, public packets or public search.
+            # The separate Notion edition archive requires an explicit opt-in.
             if (
                 binding
                 and binding.get("projection_required") is False

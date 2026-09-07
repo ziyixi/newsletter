@@ -58,6 +58,7 @@ uv.lock 是唯一依赖锁；安装用 --locked，构建不重新生成 protobuf
 | src/newsletter/model_io.py | 研究员与总编共用的严格JSON解析和工作目录校验 |
 | src/newsletter/store.py、worker.py | SQLite事务、串行工作队列、崩溃恢复 |
 | src/newsletter/todofy.py、adapters.py | 私人事件、Notion、邮件供应商边界 |
+| src/newsletter/notion_*.py | 双库字段、材料与刊期投影、独立同步账本、恢复与操作员工具 |
 | src/newsletter/rendering.py、templates/、charts.py | 邮件正文与预览；独立的PNG绘图 |
 | ziyixi-protos 依赖包 | 公共 protobuf 代码、类型及来源清单；由 GitHub Release wheel 分发 |
 | tests/、scripts/ | 离线回归、runtime/HTTP/安装包验证、外部触发客户端 |
@@ -84,7 +85,7 @@ Content-Type: application/json
 
 新材料的引用必须对应工具实际打开的地址。地址不匹配时，在同一模型上下文和原超时预算内最多纠正一次：真正打开来源或删去未支持内容；再次不合格就失败。不会把摘要链接自动当成已读PDF，也不会自动重试供应商写入。
 
-`newsletter-trigger` 提供随包发布的标准库客户端；[scripts/trigger_run.py](scripts/trigger_run.py) 是源码目录中的同一入口。从进程环境读取 NEWSLETTER_SERVICE_URL、NEWSLETTER_EDITOR_TOKEN，另可传 NEWSLETTER_ISSUE_DATE / NEWSLETTER_REQUEST_KEY。默认只提交，`--wait` 等待准备完成，`--send` 等待并用 NEWSLETTER_SEND_TOKEN 按冻结 hash 请求一次发送。不把 token 放进 URL、参数或输出。生产调度在 [self-host-on-vultr](https://github.com/ziyixi/self-host-on-vultr) 的独立 cron 容器中，每日 **15:00 UTC** 触发；newsletter 服务本身仍没有 cron。
+`newsletter-trigger` 提供随包发布的标准库客户端；[scripts/trigger_run.py](scripts/trigger_run.py) 是源码目录中的同一入口。从进程环境读取 NEWSLETTER_SERVICE_URL、NEWSLETTER_EDITOR_TOKEN，另可传 NEWSLETTER_ISSUE_DATE / NEWSLETTER_REQUEST_KEY。默认只提交，`--wait` 等待准备完成，`--send` 等待并用 NEWSLETTER_SEND_TOKEN 按冻结 hash 请求一次发送。不把 token 放进 URL、参数或输出。生产调度在 [self-host-on-vultr](https://github.com/ziyixi/self-host-on-vultr) 的独立 cron 容器中，每日 **07:00 America/Los_Angeles** 触发，随夏令时调整；newsletter 服务本身仍没有 cron。采编预算5400秒对应08:30，触发器等待7200秒对应09:00，为09:30前收到邮件的目标留出余量；供应商故障或收件方延迟仍可能影响实际到达时间。
 
 公网调用必须使用固定 HTTPS origin。私有 Docker 网络可显式设置 NEWSLETTER_ALLOW_INTERNAL_HTTP=1，仅放行 `http://newsletter:8080`；不开宿主机端口，不跟随跳转。日期默认按 America/Los_Angeles 生成，同一天使用稳定的 daily 幂等键。失败或结果不明不会换键重投；先查运行与刊期状态。切换部署必须检查旧 GitHub scheduled workflow 已停用且无遗留发送运行。
 
@@ -109,19 +110,27 @@ Content-Type: application/json
 
 Todofy 位于全部公共内容之后。推荐模式一次读取最多10条候选，本地按行动价值筛选，NEWSLETTER_TODOFY_TOP 只控制最多显示几条，不要求凑满。安全/付款失败/逾期等异常优先；例行对账单、明确已自动处理的通知不凭空变成还款任务。没有证据时不假设自动还款开启或任务已经完成。
 
-上游仍只提供最近24小时摘要，并非实时 Todoist 状态；本地规则不等于独立核查银行、邮件或账户。Todofy读取可能触发上游Gemini，不能当成免费数据库查询。内容永远不进入公开采编、Notion或公开搜索；失败在文末说明，不拖垮公共稿件。
+上游仍只提供最近24小时摘要，并非实时 Todoist 状态；本地规则不等于独立核查银行、邮件或账户。Todofy读取可能触发上游Gemini，不能当成免费数据库查询。内容不进入公开采编、材料库或公开搜索；只有明确设置 `NEWSLETTER_NOTION_ARCHIVE_PRIVATE=true`，才会随冻结简报写入专门授权的私人 Notion 档案库。默认不归档私人事件，不能公开发布该数据库。读取失败在文末说明，不拖垮公共稿件。
+
+## Notion 材料库与简报档案
+
+推荐使用两个独立数据库：材料库按具体论文／事件整理来源、作者、机构、领域和研究记录；简报档案按唯一刊期版本保存完整正文、引用和原始图表，可明确授权包含 Todofy 事件。两个库通过关系列连接，正文版本与邮件冻结记录保留，不需要再调用模型总结。
+
+设置 `NOTION_MATERIALS_DATA_SOURCE_ID` 和 `NOTION_EDITIONS_DATA_SOURCE_ID`，继续使用 `NEWSLETTER_NOTION=notion` 和已有 `NOTION_TOKEN`。字段由操作员显式运行 `python -m newsletter.notion_cli setup --apply` 初始化，无需手建列；不带 `--apply` 只检查现状。双库要求支持 `publish` 尾部的 DAG；旧 `NOTION_DATA_SOURCE_ID` 单库模式仍兼容，但不是双库失败时的回退。
+
+SQLite 始终是权威数据源。独立后台同步读取已有材料和冻结刊期，不触发采集、不调用 LLM、不发送邮件、不新增 cron；Notion 暂时不可用不会阻塞每日邮件。字段定义、隐私边界、初始化／迁移及故障处理见 [Notion 双库操作说明](docs/notion.md)。
 
 ## 启动与部署
 
 配置样例见 [.env.example](.env.example)，完整凭据说明见 [联调清单](docs/live-acceptance.md)。应用不自动读取旧 .env。
 
-启动在发布健康状态前检查：SQLite读写/WAL、锁定依赖、proto/resource、中文字体；live还检查配套Codex二进制、专用ChatGPT登录、禁用技能、模型目录；启用Notion则只读验证数据源；启用Todofy则检查无副作用health。核心运行条件或授权/配置错误失败即退出；Notion/Todofy暂时网络不可用以degraded安全日志启动，不能拖垮本地公共内容。检查边界见 [运行说明](docs/collection-service.md)：账户可读不等于生成工具永久可用，公开health不能证明Todofy密码有效，也不会为检测邮件key而发信。
+启动在发布健康状态前检查：SQLite读写/WAL、锁定依赖、proto/resource、中文字体；live还检查配套Codex二进制、专用ChatGPT登录、禁用技能、模型目录；启用Notion则只读验证数据源，双库还校验已有字段类型和关系目标，不偷偷建列；启用Todofy则检查无副作用health。核心运行条件或授权/配置错误失败即退出；Notion/Todofy暂时网络不可用以degraded安全日志启动，不能拖垮本地公共内容。检查边界见 [运行说明](docs/collection-service.md)：账户可读不等于生成工具永久可用，Notion 只读成功不能证明 Insert／Update 权限，公开health不能证明Todofy密码有效，也不会为检测邮件key而发信。
 
 Docker为锁定多阶段构建，最终镜像不带uv/dev工具、旧Node/Go依赖或源码工作树。非root运行；示例Compose为只读根文件系统、有限tmpfs、本机端口和独立持久卷。Codex登录缓存需专用可写卷，不能烘焙进镜像。默认Compose仍是安全的mock配置，不是生产live部署。
 
 GitHub Actions 在原生 Linux/amd64 runner 上先跑回归，再构建、验证最终镜像，成功后才发布 `ghcr.io/ziyixi/newsletter:service-<commit>` 与 `:service`。生产 Compose 固定通过验收的 digest，不依赖可变标签；CI 不加载任何真实账号密钥。发布前检查待提交内容及 Docker 构建上下文，`.env` 变体、登录文件和真实数据不得进入公开仓库或镜像。
 
-一次只允许一个进程占有SQLite目录；不要放同步盘或启动多个uvicorn worker。Notion是材料的单向后台镜像，不反向同步手工修改。新选题DAG先本地持久化证据和审核版本，不等待Notion投影；旧冻结刊期仍保留原采用材料投影门槛。发送按冻结render hash单独审批，每日最多一次尝试；结果不明不自动重投。
+一次只允许一个业务进程占有SQLite目录；不要放同步盘或启动多个uvicorn worker。Notion是材料与简报的单向后台镜像，不反向同步手工修改；额外笔记请写到另一个页面，不直接编辑程序生成的正文。新选题DAG先本地持久化证据和审核版本，不等待Notion投影；旧单库流程与冻结刊期仍保留原采用材料投影门槛。双库同步与邮件使用独立账本，不能删除 SQLite 记录来重建 Notion 或重试发送。发送按冻结render hash单独审批，每日最多一次尝试；结果不明不自动重投。
 
 邮件最底角显示本期已记录的 Codex tokens，覆盖发现、选题、深读、拟稿、补查、定稿与审校，包括有用量事件的失败尝试。缓存输入是子集，不重复加总；无用量事件不是零。Todofy接口没有返回Gemini usage，因此明确未计入，不把上下文日志当用量或费用。统计也包含在冻结render hash里。
 

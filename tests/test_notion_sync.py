@@ -1,0 +1,647 @@
+"""Durable outbox regressions with a local FakeWorkspace; no provider calls.
+
+All material, images, publication rows and delivery receipts below are synthetic.
+These exercise recovery semantics, not live Notion behavior or editorial quality.
+"""
+
+import asyncio
+import copy
+import hashlib
+import json
+from collections import Counter, defaultdict
+from dataclasses import replace
+from importlib.resources import files
+from pathlib import Path
+from urllib.parse import quote
+from uuid import NAMESPACE_URL, uuid5
+
+import httpx
+import pytest
+from test_notion_content import PNG, candidate, edition, packet
+
+from newsletter.adapters import AdapterError
+from newsletter.contracts import content_hash
+from newsletter.notion_content import Projection, edition_projection, material_projection
+from newsletter.notion_journal import NotionJournal
+from newsletter.notion_sync import NotionSync, block_signature
+from newsletter.store import Store
+from newsletter.workflow.definition import load_definition
+from newsletter.workflow.repository import WorkflowRepository
+
+DAY = "2026-09-07"
+KEY = "material:offline-fixture"
+DESTINATION = {
+    "materials": "offline-materials",
+    "editions": "offline-editions",
+    "include_personal": False,
+}
+
+
+def rich(text):
+    return [{"type": "text", "text": {"content": text}}]
+
+
+def paragraph(text):
+    return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": rich(text)}}
+
+
+def projected(key=KEY, *, count=2, prefix="Offline version", chart=False):
+    blocks = [paragraph(f"{prefix} — paragraph {index}") for index in range(count)]
+    if chart:
+        blocks.insert(
+            1,
+            {
+                "object": "block",
+                "type": "_newsletter_chart",
+                "_newsletter_chart": {
+                    "caption": rich("Synthetic frozen figure, not live research")
+                },
+            },
+        )
+    digest = content_hash(
+        {"blocks": blocks, "chart": hashlib.sha256(PNG).hexdigest() if chart else ""}
+    )
+    properties = {
+        "title": {"title": rich("Offline fixture")},
+        "sync_key": {"rich_text": rich(key)},
+        "content_hash": {"rich_text": rich(digest)},
+        "fixture": {"checkbox": True},
+        "sync_state": {"select": {"name": "同步中"}},
+    }
+    return Projection(key, properties, blocks, digest, PNG if chart else None)
+
+
+class FakeWorkspace:
+    """An external-state stand-in retained when the local SQLite handle restarts."""
+
+    def __init__(self):
+        self.pages = {}
+        self.uploads = {}
+        self.calls = []
+        self.failures = defaultdict(list)
+        self.extra_lookup = []
+
+    def fail(self, method, *, landed=False, code="NOTION_UNKNOWN", cancel=False):
+        self.failures[method].append((landed, code, cancel))
+
+    def count(self, method):
+        return sum(name == method for name, _ in self.calls)
+
+    def _mutation(self, method, value, effect):
+        self.calls.append((method, copy.deepcopy(value)))
+        if not self.failures[method]:
+            return effect()
+        landed, code, cancel = self.failures[method].pop(0)
+        if landed:
+            effect()
+        if cancel:
+            raise asyncio.CancelledError
+        raise AdapterError(code, ambiguous=code == "NOTION_UNKNOWN")
+
+    async def lookup(self, kind, key):
+        self.calls.append(("lookup", (kind, key)))
+        return copy.deepcopy(
+            [p for p in self.pages.values() if p["kind"] == kind and p["key"] == key]
+            + self.extra_lookup
+        )
+
+    async def create(self, kind, properties):
+        key = "".join(p["text"]["content"] for p in properties["sync_key"]["rich_text"])
+
+        def effect():
+            page_id = str(uuid5(NAMESPACE_URL, "offline-create/" + str(self.count("create"))))
+            self.pages[page_id] = {
+                "object": "page",
+                "id": page_id,
+                "in_trash": False,
+                "kind": kind,
+                "key": key,
+                "properties": copy.deepcopy(properties),
+                "blocks": [],
+            }
+            return page_id
+
+        return self._mutation("create", (kind, properties), effect)
+
+    async def patch(self, kind, page_id, properties):
+        def effect():
+            assert self.pages[page_id]["kind"] == kind
+            self.pages[page_id]["properties"].update(copy.deepcopy(properties))
+
+        self._mutation("patch", (kind, page_id, properties), effect)
+
+    def _returned_block(self, block, page_id, index):
+        result = copy.deepcopy(block)
+        result.update(
+            id=str(uuid5(NAMESPACE_URL, page_id + "/" + str(index))),
+            has_children=False,
+            in_trash=False,
+        )
+        body = result[result["type"]]
+        if result["type"] == "image":
+            assert body["type"] == "file_upload"
+            filename = self.uploads[body["file_upload"]["id"]]["filename"]
+            result["image"] = {
+                "type": "file",
+                "file": {
+                    "url": "https://files.example.org/uploads/"
+                    + quote(filename)
+                    + "?signature=ephemeral-value",
+                    "expiry_time": "2026-09-07T20:00:00Z",
+                },
+                "caption": body.get("caption", []),
+            }
+        for name in ("rich_text", "caption"):
+            for fragment in result[result["type"]].get(name, []):
+                fragment["annotations"] = {
+                    "bold": False,
+                    "italic": False,
+                    "strikethrough": False,
+                    "underline": False,
+                    "code": False,
+                    "color": "default",
+                }
+                fragment["text"].setdefault("link", None)
+                fragment["plain_text"] = fragment["text"]["content"]
+                fragment["href"] = None
+        return result
+
+    async def append(self, page_id, blocks):
+        def effect():
+            current = self.pages[page_id]["blocks"]
+            returned = [
+                self._returned_block(block, page_id, len(current) + index)
+                for index, block in enumerate(blocks)
+            ]
+            current.extend(returned)
+            return copy.deepcopy(returned)
+
+        return self._mutation("append", (page_id, blocks), effect)
+
+    async def children(self, page_id):
+        self.calls.append(("children", page_id))
+        return copy.deepcopy(self.pages[page_id]["blocks"])
+
+    async def get_page(self, page_id):
+        self.calls.append(("get_page", page_id))
+        return copy.deepcopy(self.pages[page_id])
+
+    async def upload_png(self, png):
+        def effect():
+            upload_id = str(uuid5(NAMESPACE_URL, "offline-upload/" + str(self.count("upload_png"))))
+            self.uploads[upload_id] = {
+                "png": png,
+                "filename": "chart-" + hashlib.sha256(png).hexdigest() + ".png",
+            }
+            return upload_id
+
+        return self._mutation("upload_png", png, effect)
+
+
+class Rig:
+    def __init__(self, path):
+        self.path = path
+        self.api = FakeWorkspace()
+        self.store = Store(path, "mock")
+        self.journal = NotionJournal(self.store, DESTINATION)
+        self.sync = NotionSync(self.journal, self.api, include_personal=False)
+
+    def restart(self):
+        self.store.close()
+        self.store = Store(self.path, "mock")
+        self.journal = NotionJournal(self.store, DESTINATION)
+        self.sync = NotionSync(self.journal, self.api, include_personal=False)
+
+    def due(self):
+        self.journal.execute("UPDATE notion_entities SET retry_at=0")
+
+    def page(self, key=KEY):
+        return self.api.pages[self.journal.entity(key)["page_id"]]
+
+    def versions(self, key=KEY):
+        return self.journal.versions(key)
+
+    async def drain(self, limit=100):
+        for _ in range(limit):
+            if not await self.sync.step():
+                return
+        pytest.fail("Offline Notion outbox did not become idle within the bounded steps")
+
+
+@pytest.fixture
+def rig(tmp_path, monkeypatch):
+    async def no_network(*args, **kwargs):
+        pytest.fail("An offline Notion sync test attempted a real network request")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", no_network)
+    value = Rig(tmp_path / "newsletter.sqlite3")
+    yield value
+    value.store.close()
+
+
+async def test_enqueue_creates_properties_then_body_then_synced_state_without_changing_projection(
+    rig,
+):
+    projection = material_projection(
+        candidate(), key=KEY, first_seen=DAY, run_id="offline-run", fixture=True
+    )
+    before = copy.deepcopy(projection)
+    rig.journal.enqueue("material", projection)
+    await rig.drain()
+    assert projection == before
+    assert rig.journal.entity(KEY)["create_state"] == "ready"
+    assert rig.versions()[0]["state"] == "done"
+    assert rig.versions()[0]["offset"] == len(projection.blocks)
+    assert rig.page()["properties"]["sync_state"] == {"select": {"name": "已同步"}}
+    assert [name for name, _ in rig.api.calls] == [
+        "lookup",
+        "create",
+        "children",
+        "append",
+        "patch",
+    ]
+    assert [block_signature(b) for b in rig.page()["blocks"]] == [
+        block_signature(b) for b in projection.blocks
+    ]
+
+
+async def test_duplicate_enqueue_scan_and_real_sqlite_restart_do_not_repeat_remote_mutations(rig):
+    projection = material_projection(
+        candidate(), key=KEY, first_seen=DAY, run_id="offline-run", fixture=True
+    )
+    rig.journal.enqueue("material", projection)
+    await rig.drain()
+    before = copy.deepcopy(rig.api.calls)
+    for _ in range(3):
+        rig.journal.enqueue("material", projection)
+        assert rig.sync.intake.scan() == 0
+        await rig.drain()
+    rig.restart()
+    rig.journal.enqueue("material", projection)
+    await rig.drain()
+    assert rig.api.calls == before
+    assert len(rig.versions()) == 1
+
+
+@pytest.mark.parametrize("landed", [False, True])
+async def test_unknown_create_only_looks_up_after_restart_and_never_blindly_recreates(rig, landed):
+    rig.journal.enqueue("material", projected())
+    rig.api.fail("create", landed=landed)
+    assert await rig.sync.step()
+    assert rig.journal.entity(KEY)["create_state"] == "unknown"
+    assert rig.api.count("create") == 1
+    rig.restart()
+    for _ in range(2):
+        rig.due()
+        await rig.drain()
+    assert rig.api.count("create") == 1
+    if landed:
+        assert rig.versions()[0]["state"] == "done"
+        assert rig.api.count("append") == 1
+    else:
+        assert not rig.api.pages and not rig.api.count("append")
+        assert rig.journal.entity(KEY)["create_state"] == "unknown"
+        assert rig.journal.entity(KEY)["error"] == "NOTION_CREATE_UNCONFIRMED"
+        assert rig.api.count("lookup") == 3
+
+
+@pytest.mark.parametrize("landed", [False, True])
+async def test_unknown_append_reads_the_pending_prefix_without_repeating_append(rig, landed):
+    projection = projected()
+    rig.journal.enqueue("material", projection)
+    assert await rig.sync.step()  # Properties-only page creation.
+    rig.api.fail("append", landed=landed)
+    assert await rig.sync.step()
+    failed = rig.versions()[0]
+    assert failed["state"] == "unknown" and failed["offset"] == 0
+    assert json.loads(failed["pending_chunk"]) == [block_signature(b) for b in projection.blocks]
+    rig.restart()
+    for _ in range(2):
+        rig.due()
+        await rig.drain()
+    assert rig.api.count("append") == 1
+    if landed:
+        assert rig.versions()[0]["state"] == "done"
+        assert rig.versions()[0]["pending_chunk"] == ""
+        assert len(rig.page()["blocks"]) == len(projection.blocks)
+    else:
+        assert rig.versions()[0]["state"] == "unknown"
+        assert rig.journal.entity(KEY)["error"] == "NOTION_APPEND_UNCONFIRMED"
+        assert not rig.page()["blocks"]
+
+
+async def test_large_material_is_chunked_to_eighty_and_completed_in_original_order(rig):
+    projection = projected(count=173)
+    rig.journal.enqueue("material", projection)
+    await rig.drain()
+    chunks = [value[1] for name, value in rig.api.calls if name == "append"]
+    assert [len(chunk) for chunk in chunks] == [80, 80, 13]
+    assert [b for chunk in chunks for b in chunk] == projection.blocks
+    assert rig.versions()[0]["offset"] == 173 and rig.versions()[0]["state"] == "done"
+
+
+async def test_unknown_middle_chunk_recovers_exact_prefix_then_only_appends_the_remaining_tail(rig):
+    projection = projected(count=173)
+    rig.journal.enqueue("material", projection)
+    assert await rig.sync.step() and await rig.sync.step()
+    assert rig.versions()[0]["offset"] == 80
+    rig.api.fail("append", landed=True)
+    assert await rig.sync.step()
+    assert rig.versions()[0]["offset"] == 80 and len(rig.page()["blocks"]) == 160
+    rig.restart()
+    rig.due()
+    await rig.drain()
+    assert rig.versions()[0]["state"] == "done" and rig.versions()[0]["offset"] == 173
+    assert [len(value[1]) for name, value in rig.api.calls if name == "append"] == [80, 80, 13]
+    assert [block_signature(b) for b in rig.page()["blocks"]] == [
+        block_signature(b) for b in projection.blocks
+    ]
+
+
+async def test_chunk_byte_budget_is_respected_before_eighty_items(rig):
+    blocks = [paragraph("界" * 1800) for _ in range(80)]
+    projection = replace(projected(), blocks=blocks, digest=content_hash(blocks))
+    rig.journal.enqueue("material", projection)
+    await rig.drain()
+    chunks = [value[1] for name, value in rig.api.calls if name == "append"]
+    assert len(chunks) > 1 and sum(map(len, chunks)) == 80
+    assert all(
+        len(
+            json.dumps(
+                {"children": chunk}, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()
+        )
+        <= 400_000
+        for chunk in chunks
+    )
+
+
+async def test_delivery_property_changes_do_not_append_a_second_archive_body(rig):
+    original = edition_projection(
+        edition(), run_id="offline-run", packets=[packet()], include_personal=False
+    )
+    accepted = edition_projection(
+        edition(delivery_state="provider_accepted"),
+        run_id="offline-run",
+        packets=[packet()],
+        include_personal=False,
+    )
+    assert accepted.digest == original.digest and accepted.blocks == original.blocks
+    rig.journal.enqueue("edition", original)
+    await rig.drain()
+    before = Counter(name for name, _ in rig.api.calls)
+    body = copy.deepcopy(rig.page(original.key)["blocks"])
+    rig.journal.enqueue("edition", accepted)
+    await rig.drain()
+    after = Counter(name for name, _ in rig.api.calls)
+    assert after["create"] == before["create"]
+    assert after["append"] == before["append"]
+    assert after["upload_png"] == before["upload_png"]
+    assert after["patch"] == before["patch"] + 1
+    assert rig.page(original.key)["blocks"] == body
+    assert rig.page(original.key)["properties"]["delivery"] == {"select": {"name": "已提交"}}
+
+
+async def test_frozen_edition_body_change_is_rejected_transactionally(rig):
+    first = projected("edition:offline")
+    second = projected("edition:offline", prefix="Changed body")
+    rig.journal.enqueue("edition", first)
+    before = copy.deepcopy(rig.journal.entity(first.key))
+    with pytest.raises(ValueError, match="notion_frozen_edition_changed"):
+        rig.journal.enqueue("edition", second)
+    assert rig.journal.entity(first.key) == before
+    assert len(rig.versions(first.key)) == 1 and not rig.api.calls
+
+
+@pytest.mark.parametrize("edit", ["change", "insert", "delete"])
+async def test_human_body_edits_conflict_without_deleting_or_overwriting_them(rig, edit):
+    first = projected(count=81)
+    rig.journal.enqueue("material", first)
+    assert await rig.sync.step() and await rig.sync.step()
+    assert rig.versions()[0]["offset"] == 80
+    current = rig.page()["blocks"]
+    if edit == "change":
+        current[0]["paragraph"]["rich_text"] = rich("Reader-authored personal note")
+    elif edit == "insert":
+        current.insert(0, paragraph("Reader-authored personal note"))
+    else:
+        current.pop(0)
+    edited = copy.deepcopy(current)
+    assert await rig.sync.step()
+    assert rig.journal.entity(KEY)["create_state"] == "conflict"
+    assert rig.journal.entity(KEY)["error"] == "NOTION_PROJECTION_CONFLICT"
+    assert rig.page()["blocks"] == edited and rig.api.count("append") == 1
+    assert not await rig.sync.step()
+
+
+async def test_uploaded_chart_placeholder_becomes_signed_file_image_and_recovers_unknown_append(
+    rig,
+):
+    projection = projected(chart=True)
+    rig.journal.enqueue("edition", projection)
+    assert await rig.sync.step()  # Create page.
+    assert await rig.sync.step()  # Persist uploaded PNG ID separately from append.
+    assert rig.api.count("upload_png") == 1
+    upload = rig.versions()[0]["upload_id"]
+    assert rig.api.uploads[upload]["png"] == PNG
+    rig.api.fail("append", landed=True)
+    assert await rig.sync.step()
+    sent = next(value[1] for name, value in rig.api.calls if name == "append")
+    assert not any(b["type"] == "_newsletter_chart" for b in sent)
+    image = next(b for b in sent if b["type"] == "image")
+    assert image["image"]["file_upload"]["id"] == upload
+    returned = next(b for b in rig.page()["blocks"] if b["type"] == "image")
+    expected = "chart-" + hashlib.sha256(PNG).hexdigest() + ".png"
+    assert block_signature(returned)["filename"] == expected
+    returned["image"]["file"]["url"] = (
+        "https://files.example.org/new-expiring-path/" + quote(expected) + "?signature=rotated"
+    )
+    rig.restart()
+    rig.due()
+    await rig.drain()
+    assert rig.versions()[0]["state"] == "done"
+    assert rig.api.count("append") == rig.api.count("upload_png") == 1
+
+
+async def test_wrong_image_basename_is_conflict_not_permission_to_append_again(rig):
+    rig.journal.enqueue("edition", projected(chart=True))
+    assert await rig.sync.step() and await rig.sync.step()
+    rig.api.fail("append", landed=True)
+    assert await rig.sync.step()
+    image = next(b for b in rig.page()["blocks"] if b["type"] == "image")
+    image["image"]["file"]["url"] = "https://files.example.org/different.png?signature=x"
+    before = copy.deepcopy(rig.page()["blocks"])
+    rig.due()
+    assert await rig.sync.step()
+    assert rig.journal.entity(KEY)["create_state"] == "conflict"
+    assert rig.page()["blocks"] == before and rig.api.count("append") == 1
+
+
+async def test_expired_unattached_upload_after_restart_is_refreshed_before_any_append(rig):
+    rig.journal.enqueue("edition", projected(chart=True))
+    assert await rig.sync.step() and await rig.sync.step()
+    old_upload = rig.versions()[0]["upload_id"]
+    assert old_upload and not rig.page()["blocks"] and rig.api.count("append") == 0
+    rig.journal.execute("UPDATE notion_versions SET upload_at=upload_at-3301")
+    rig.restart()
+    assert rig.versions()[0]["state"] == "pending"
+    assert await rig.sync.step()
+    new_upload = rig.versions()[0]["upload_id"]
+    assert new_upload != old_upload and rig.api.count("upload_png") == 2
+    assert rig.api.count("append") == 0  # Upload refresh alone does not create body.
+    await rig.drain()
+    chunks = [value[1] for name, value in rig.api.calls if name == "append"]
+    uploaded_ids = [
+        b["image"]["file_upload"]["id"] for chunk in chunks for b in chunk if b["type"] == "image"
+    ]
+    assert uploaded_ids == [new_upload]
+    assert rig.versions()[0]["state"] == "done" and rig.api.count("append") == 1
+
+
+async def test_old_upload_with_unknown_landed_append_is_reconciled_without_reupload(rig):
+    rig.journal.enqueue("edition", projected(chart=True))
+    assert await rig.sync.step() and await rig.sync.step()
+    upload = rig.versions()[0]["upload_id"]
+    rig.api.fail("append", landed=True)
+    assert await rig.sync.step()
+    assert rig.versions()[0]["state"] == "unknown"
+    body = copy.deepcopy(rig.page()["blocks"])
+    rig.journal.execute("UPDATE notion_versions SET upload_at=upload_at-3301")
+    rig.restart()
+    rig.due()
+    before = len(rig.api.calls)
+    assert await rig.sync.step()
+    assert [name for name, _ in rig.api.calls[before:]] == ["children"]
+    assert rig.versions()[0]["state"] == "done"
+    assert rig.versions()[0]["upload_id"] == upload
+    await rig.drain()
+    assert rig.page()["blocks"] == body
+    assert rig.api.count("upload_png") == rig.api.count("append") == 1
+
+
+def delivery_tables(store):
+    names = ("packets", "editions", "sends", "verification_sends", "workflow_editions")
+    return {
+        name: [tuple(row) for row in store.db.execute("SELECT * FROM " + name).fetchall()]
+        for name in names
+    }
+
+
+@pytest.mark.parametrize("phase", ["create", "append", "patch"])
+async def test_known_rate_limit_defers_then_retries_without_touching_publication_or_send_ledgers(
+    rig, phase
+):
+    unrelated = rig.store.prepare(
+        {"request_key": "offline-unrelated-edition", "issue_date": DAY, "packet_ids": []}
+    )
+    rig.journal.execute(
+        "INSERT INTO sends VALUES(?,?,?,?)",
+        (DAY, unrelated["id"], "offline-send-receipt", "f" * 64),
+    )
+    before = delivery_tables(rig.store)
+    rig.journal.enqueue("material", projected())
+    if phase in {"append", "patch"}:
+        assert await rig.sync.step()
+    if phase == "patch":
+        assert await rig.sync.step()
+    rig.api.fail(phase, code="NOTION_RATE_LIMITED")
+    assert await rig.sync.step()
+    assert rig.journal.entity(KEY)["error"] == "NOTION_RATE_LIMITED"
+    assert rig.journal.entity(KEY)["attempts"] == 1
+    assert rig.journal.entity(KEY)["retry_at"] > 0
+    calls = copy.deepcopy(rig.api.calls)
+    assert not await rig.sync.step() and rig.api.calls == calls
+    rig.due()
+    await rig.drain()
+    assert rig.versions()[0]["state"] == "done"
+    assert rig.api.count(phase) == 2
+    assert delivery_tables(rig.store) == before
+
+
+@pytest.mark.parametrize("phase", ["create", "append"])
+@pytest.mark.parametrize("landed", [False, True])
+async def test_cancellation_persists_unknown_and_restart_never_blindly_repeats_mutation(
+    rig, phase, landed
+):
+    rig.journal.enqueue("material", projected())
+    if phase == "append":
+        assert await rig.sync.step()
+    rig.api.fail(phase, landed=landed, cancel=True)
+    with pytest.raises(asyncio.CancelledError):
+        await rig.sync.step()
+    if phase == "create":
+        assert rig.journal.entity(KEY)["create_state"] == "unknown"
+    else:
+        assert rig.versions()[0]["state"] == "unknown"
+    rig.restart()
+    await rig.drain()
+    assert rig.api.count(phase) == 1
+    if landed:
+        assert rig.versions()[0]["state"] == "done"
+    else:
+        assert rig.journal.entity(KEY)["error"] == "NOTION_" + phase.upper() + "_UNCONFIRMED"
+
+
+async def test_material_versions_are_appended_in_registration_order_without_recreating_page(rig):
+    first = projected(count=83, prefix="First frozen material")
+    second = projected(count=4, prefix="Second frozen material")
+    third = projected(count=2, prefix="Third frozen material")
+    for projection in (first, second, third, second):
+        rig.journal.enqueue("material", projection)
+    await rig.drain()
+    versions = rig.versions()
+    assert [v["digest"] for v in versions] == [p.digest for p in (first, second, third)]
+    assert all(v["state"] == "done" for v in versions)
+    assert [block_signature(b) for b in rig.page()["blocks"]] == [
+        block_signature(b) for p in (first, second, third) for b in p.blocks
+    ]
+    assert rig.api.count("create") == 1
+    assert [len(value[1]) for name, value in rig.api.calls if name == "append"] == [80, 3, 4, 2]
+
+
+async def test_unknown_first_material_version_must_resolve_before_later_versions(rig):
+    first, second = projected(prefix="First"), projected(prefix="Second")
+    rig.journal.enqueue("material", first)
+    rig.journal.enqueue("material", second)
+    assert await rig.sync.step()
+    rig.api.fail("append", landed=False)
+    assert await rig.sync.step()
+    rig.due()
+    await rig.drain()
+    assert [v["state"] for v in rig.versions()] == ["unknown", "pending"]
+    assert rig.api.count("append") == 1 and not rig.page()["blocks"]
+
+
+async def test_scan_imports_real_artifact_timestamp_once_and_restart_is_a_no_op(rig):
+    repository = WorkflowRepository(rig.store)
+    definition = load_definition(Path(str(files("newsletter").joinpath("workflows/daily.yaml"))))
+    repository.start("offline-candidate-run", definition, {"issue_date": DAY})
+    with rig.store.transaction():
+        artifact = repository._artifact(
+            "offline-candidate-run", "candidates", "", {"candidates": [candidate()]}
+        )
+    assert (
+        "T"
+        in rig.journal.rows("SELECT created_at FROM workflow_artifacts WHERE id=?", (artifact,))[0][
+            "created_at"
+        ]
+    )
+    assert rig.sync.intake.scan() == 1
+    imported = rig.journal.rows("SELECT * FROM notion_imports WHERE kind='candidates'")
+    assert len(imported) == 1 and imported[0]["error"] == ""
+    entities = rig.journal.rows("SELECT * FROM notion_entities")
+    assert len(entities) == 1 and entities[0]["kind"] == "material"
+    await rig.drain()
+    calls = copy.deepcopy(rig.api.calls)
+    rig.restart()
+    assert rig.sync.intake.scan() == 0
+    await rig.drain()
+    assert rig.api.calls == calls
+
+
+def test_destination_change_requires_explicit_migration_without_reassigning_journal(rig):
+    rig.journal.enqueue("material", projected())
+    before = rig.journal.entity(KEY)
+    with pytest.raises(ValueError, match="explicit migration required"):
+        NotionJournal(rig.store, {**DESTINATION, "editions": "another-destination"})
+    assert rig.journal.entity(KEY) == before

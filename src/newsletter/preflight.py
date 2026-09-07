@@ -31,7 +31,7 @@ from uuid import UUID
 import httpx
 from ziyixi_protos.newsletter import editorial_pb2 as pb
 
-from newsletter.adapters import Notion, Resend
+from newsletter.adapters import AdapterError, Notion, Resend
 from newsletter.charts import load_font, render_chart_png
 from newsletter.codex_runtime import (
     SDK_VERSION,
@@ -42,6 +42,7 @@ from newsletter.codex_runtime import (
     runtime_env,
     runtime_overrides,
 )
+from newsletter.notion_api import NotionWorkspace
 from newsletter.rendering import load_template
 from newsletter.schema_compat import check_production_output_schemas
 from newsletter.settings import Settings
@@ -305,6 +306,27 @@ async def _get_json(
 
 
 async def _check_notion(settings: Settings, transport: httpx.AsyncBaseTransport | None) -> None:
+    if settings.notion_v2:
+        try:
+            async with asyncio.timeout(2 * HTTP_TIMEOUT):
+                await NotionWorkspace(
+                    settings.notion_token,
+                    settings.notion_materials_data_source_id,
+                    settings.notion_editions_data_source_id,
+                    transport=transport,
+                ).validate()
+        except AdapterError as exc:
+            codes = {
+                "NOTION_UNAVAILABLE": "NOTION_TEMPORARILY_UNAVAILABLE",
+                "NOTION_RATE_LIMITED": "NOTION_TEMPORARILY_UNAVAILABLE",
+                "NOTION_AUTH_REJECTED": "NOTION_AUTH_FAILED",
+                "NOTION_REJECTED": "NOTION_UNAVAILABLE",
+                "NOTION_INVALID_RESPONSE": "NOTION_INVALID_RESPONSE",
+                "NOTION_SCHEMA_MISSING": "NOTION_SCHEMA_MISSING",
+                "NOTION_SCHEMA_MISMATCH": "NOTION_SCHEMA_INVALID",
+            }
+            raise PreflightError(codes.get(exc.code, "NOTION_CHECK_FAILED")) from None
+        return
     Notion(settings.notion_token, settings.notion_data_source_id)
     identifier = str(UUID(settings.notion_data_source_id))
     value = await _get_json(
@@ -389,20 +411,36 @@ async def preflight(
             except (httpx.RequestError, TimeoutError):
                 checks.append("notion_temporarily_unavailable")
             else:
-                checks.append("notion_data_source_read_and_title_schema")
+                checks.append(
+                    "notion_dual_data_sources_and_managed_schema"
+                    if settings.notion_v2
+                    else "notion_data_source_read_and_title_schema"
+                )
                 limitations.append(
-                    "Notion read access does not prove Insert content permission; no page was created."
+                    "Notion read access does not prove Insert content or Update content "
+                    "permission; no page or column was created or changed."
                 )
             if "notion_temporarily_unavailable" in checks:
-                logger.warning(
-                    "Notion startup check degraded; local evidence remains authoritative. "
-                    "Legacy projection gates still apply."
-                )
-                limitations.append(
-                    "Notion is temporarily unavailable; local SQLite remains authoritative. "
-                    "Publication policies that require confirmed projection still apply. "
-                    "No page was created or retried by startup checks."
-                )
+                if settings.notion_v2:
+                    logger.warning(
+                        "Notion startup check degraded; local evidence remains authoritative. "
+                        "Dual-database synchronization may be delayed."
+                    )
+                    limitations.append(
+                        "Notion is temporarily unavailable; local SQLite remains authoritative. "
+                        "Dual-database synchronization may be delayed without blocking email. "
+                        "No page was created or retried by startup checks."
+                    )
+                else:
+                    logger.warning(
+                        "Notion startup check degraded; local evidence remains authoritative. "
+                        "Legacy projection gates still apply."
+                    )
+                    limitations.append(
+                        "Notion is temporarily unavailable; local SQLite remains authoritative. "
+                        "Publication policies that require confirmed projection still apply. "
+                        "No page was created or retried by startup checks."
+                    )
         if settings.todofy_backend == "todofy":
             stage = "TODOFY"
             try:
