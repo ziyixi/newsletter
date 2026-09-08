@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from newsletter.types import Payload
+from newsletter.workflow.content import editorial_limits
 from newsletter.workflow.engine import NodeContext
 from newsletter.workflow.nodes import EditorialNodes
 from newsletter.workflow.publication import PublicationRepository, assemble
@@ -19,14 +20,26 @@ from newsletter.workflow.story_replay import REUSABLE_TYPES, StoryReplay
 
 
 def freeze_publication(
-    publications: PublicationRepository, run_id: str, issue_date: str, *, reason: str
+    publications: PublicationRepository,
+    run_id: str,
+    issue_date: str,
+    *,
+    reason: str,
+    max_features: int = 2,
 ) -> Payload:
     """Never change a publication after its first successful local freeze."""
     previous = publications.get_publication(run_id)
     if previous is not None:
         return previous
     tasks = publications.plan(run_id)
-    result = assemble(run_id, issue_date, tasks, publications.results(run_id), reason=reason)
+    result = assemble(
+        run_id,
+        issue_date,
+        tasks,
+        publications.results(run_id),
+        reason=reason,
+        max_features=max_features,
+    )
     return publications.record_publication(run_id, issue_date, tasks, result)
 
 
@@ -92,7 +105,11 @@ class StoryNodes(EditorialNodes):
             publications.save_plan(ctx.run_id, date, tasks)
             # Ranking already considers AI, cross-discipline and world coverage.
             # Every selected task gets a brief before any task gets deepened.
-            return {"brief_tasks": tasks, "deep_tasks": tasks[: ctx.params.get("max_deep", 4)]}
+            maximum = ctx.params.get("max_deep", 4)
+            limits = editorial_limits(ctx.run_inputs.get("content_config"))
+            if limits is not None:
+                maximum = min(maximum, limits.max_deep)
+            return {"brief_tasks": tasks, "deep_tasks": tasks[:maximum]}
         if kind in {"story_brief", "story_deep"}:
             task = cast(Payload, ctx.item)
             mode: Literal["brief", "deep"] = "brief" if kind == "story_brief" else "deep"
@@ -109,12 +126,25 @@ class StoryNodes(EditorialNodes):
                 self.store.save_workflow_supplements(ctx.run_id, result["packets"])
                 publications.save(ctx.run_id, task, mode, result, issue_date=date)
 
+            policy = ctx.run_inputs["policy"]
+            limits = editorial_limits(ctx.run_inputs.get("content_config"))
+            if limits is not None:
+                policy = {
+                    **policy,
+                    "editorial.md": policy.get("editorial.md", "")
+                    + (
+                        "\n本期冻结预算取代默认配比文案："
+                        f"公共选题最多{limits.max_public_items}项，研究主体最多{limits.max_research_items}项，"
+                        f"深读最多{limits.max_deep}项。当前任务只写自己的一个选题；"
+                        "阅读卡仅补充当前已选topic，不新增另一个研究题。"
+                    ),
+                }
             result = await StoryEditor(self.editor).prepare(
                 task=task,
                 candidates=candidates,
                 packets=prior["packets"] if prior else [],
                 issue_date=date,
-                policy=ctx.run_inputs["policy"],
+                policy=policy,
                 workspace=path,
                 mode=mode,
                 prior=prior,
@@ -124,5 +154,12 @@ class StoryNodes(EditorialNodes):
             checkpoint(result)
             return result
         if kind == "publish":
-            return freeze_publication(publications, ctx.run_id, date, reason="completed")
+            limits = editorial_limits(ctx.run_inputs.get("content_config"))
+            return freeze_publication(
+                publications,
+                ctx.run_id,
+                date,
+                reason="completed",
+                max_features=limits.max_deep if limits else 2,
+            )
         return await super().execute(kind, ctx, path)

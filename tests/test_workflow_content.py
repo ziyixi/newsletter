@@ -366,11 +366,11 @@ def test_promoted_selection_keeps_evaluated_text_and_public_safety_boundary():
 @pytest.mark.parametrize(
     "production,evaluated",
     [
-        ("04-economy.md", "v1-discovery-economy.md"),
-        ("06-technology.md", "v1-discovery-technology.md"),
+        ("04-economy.md", "v2-discovery-economy.md"),
+        ("06-technology.md", "v2-discovery-technology.md"),
     ],
 )
-def test_promoted_discovery_instructions_match_evaluated_variants(production, evaluated):
+def test_current_discovery_instructions_match_versioned_evaluation_inputs(production, evaluated):
     directory = Path(__file__).resolve().parents[1]
     actual = directory / "src/newsletter/instructions/discovery" / production
     expected = directory / "evals/prompts" / evaluated

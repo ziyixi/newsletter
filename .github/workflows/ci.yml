@@ -3,8 +3,10 @@ name: Newsletter Service CI
 on:
   push:
     branches: [main]
+    paths-ignore: ['content-config/**']
   pull_request:
     branches: [main]
+    paths-ignore: ['content-config/**']
 
 permissions:
   contents: read
@@ -56,6 +58,14 @@ jobs:
         env:
           TESTED_IMAGE: ${{ steps.build.outputs.image_id }}
         run: python3 scripts/smoke_image.py --image "$TESTED_IMAGE" --platform linux/amd64
+      - name: Validate authored content using that exact engine image
+        env:
+          TESTED_IMAGE: ${{ steps.build.outputs.image_id }}
+        run: |
+          python3 scripts/publish_content_config.py validate \
+            --image "$TESTED_IMAGE" --engine-sha "$GITHUB_SHA" \
+            --revision "$GITHUB_SHA" --source "$GITHUB_WORKSPACE/content-config" \
+            --output "$RUNNER_TEMP/engine-content-config"
       - uses: docker/login-action@v3
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         with:

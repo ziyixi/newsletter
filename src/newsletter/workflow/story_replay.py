@@ -232,11 +232,15 @@ class StoryReplay:
             roles["selection"].params.get("max_tasks", 8),
         ).research_tasks
         plan = indexed[(roles["story_plan"].id, "")]["value"]
+        deep_limit = roles["story_plan"].params.get("max_deep", 4)
+        configuration = frozen["inputs"].get("content_config")
+        if configuration is not None:
+            deep_limit = min(deep_limit, configuration["editorial"]["max_deep"])
         if (
             not tasks
             or self.publications.plan(parent_id) != tasks
             or plan["brief_tasks"] != tasks
-            or plan["deep_tasks"] != tasks[: roles["story_plan"].params.get("max_deep", 4)]
+            or plan["deep_tasks"] != tasks[:deep_limit]
         ):
             raise _conflict()
         results = self.publications.results(parent_id)

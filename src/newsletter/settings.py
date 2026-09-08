@@ -67,6 +67,7 @@ class Settings:
     workflow_backend: str = "legacy"
     workflow_file: Path = Path(__file__).parent / "workflows" / "daily.yaml"
     discovery_dir: Path = Path(__file__).parent / "instructions" / "discovery"
+    content_config_dir: Path | None = None
     workflow_timeout_seconds: float = 5400
 
     @classmethod
@@ -114,6 +115,9 @@ class Settings:
             discovery_dir=Path(os.environ["NEWSLETTER_DISCOVERY_DIR"])
             if os.getenv("NEWSLETTER_DISCOVERY_DIR")
             else Path(__file__).parent / "instructions" / "discovery",
+            content_config_dir=Path(os.environ["NEWSLETTER_CONTENT_CONFIG_DIR"])
+            if os.getenv("NEWSLETTER_CONTENT_CONFIG_DIR")
+            else None,
             workflow_timeout_seconds=_number_env(
                 "NEWSLETTER_WORKFLOW_TIMEOUT_SECONDS", "5400", float
             ),
@@ -127,6 +131,15 @@ class Settings:
     def validate(self) -> None:
         if self.workflow_backend not in {"dag", "legacy"}:
             raise ValueError("NEWSLETTER_WORKFLOW must be dag or legacy")
+        if self.content_config_dir is not None:
+            if self.workflow_backend != "dag":
+                raise ValueError("Content configuration requires NEWSLETTER_WORKFLOW=dag")
+            if self.content_config_dir.resolve() in {
+                Path("/"),
+                Path.home(),
+                self.data_dir.resolve(),
+            }:
+                raise ValueError("Content configuration requires a dedicated directory")
         if (
             not math.isfinite(self.workflow_timeout_seconds)
             or not 60 <= self.workflow_timeout_seconds <= 14400

@@ -14,6 +14,7 @@ from newsletter.collection.instructions import Instruction
 from newsletter.collection.pipeline import CollectionPipeline
 from newsletter.collection.repository import RunRepository
 from newsletter.collection.source_guides import load_discovery_instructions
+from newsletter.content_config import config_definition, config_instructions, load_active
 from newsletter.contracts import content_hash, validate_draft, validate_packet_body
 from newsletter.editor import POLICY_DIR, CodexEditor
 from newsletter.settings import Settings
@@ -32,7 +33,14 @@ from newsletter.workflow.story_recipe import is_story_recipe
 def freeze_workflow(
     settings: Settings, state: WorkflowState, issue_date: str
 ) -> tuple[list[Instruction], Payload]:
-    definition = load_definition(settings.workflow_file)
+    configuration = (
+        load_active(settings.content_config_dir) if settings.content_config_dir else None
+    )
+    definition = (
+        config_definition(configuration)
+        if configuration
+        else load_definition(settings.workflow_file)
+    )
     validate_recipe(definition)
     if (
         settings.notion_backend == "notion"
@@ -40,9 +48,16 @@ def freeze_workflow(
         and not is_story_recipe(definition)
     ):
         raise ValueError("Notion V2 requires the story publication workflow, not legacy projection")
-    instructions = load_discovery_instructions(settings.discovery_dir)
+    instructions = (
+        config_instructions(configuration["files"])
+        if configuration
+        else load_discovery_instructions(settings.discovery_dir)
+    )
     policy = {}
     for name in ("editorial.md", "reader-profile.md"):
+        if configuration:
+            policy[name] = configuration["files"]["policy/" + name]
+            continue
         filename = (
             "story-editorial.md" if name == "editorial.md" and is_story_recipe(definition) else name
         )
@@ -68,6 +83,7 @@ def freeze_workflow(
             "started_at": datetime.now(UTC).isoformat(),
             "timeout_seconds": settings.workflow_timeout_seconds,
             "model": settings.model,
+            **({"content_config": configuration} if configuration else {}),
         },
     }
 
@@ -287,8 +303,14 @@ class DagPipeline(CollectionPipeline):
         try:
             if not self.publications.plan(run["id"]):
                 raise PublicationError("no_publishable_content")
+            snapshot = self.runs.workflow_snapshot(run["id"])
+            config = snapshot["inputs"].get("content_config") if snapshot else None
             result = freeze_publication(
-                self.publications, run["id"], run["issue_date"], reason=reason
+                self.publications,
+                run["id"],
+                run["issue_date"],
+                reason=reason,
+                max_features=config["editorial"]["max_deep"] if config else 2,
             )
         except PublicationError as error:
             self.runs.update(run["id"], state="blocked", error_code=error.code)

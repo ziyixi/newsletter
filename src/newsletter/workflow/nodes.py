@@ -26,7 +26,12 @@ from newsletter.model_schema import editor_schema, legacy_review_schema
 from newsletter.store import Store
 from newsletter.types import Payload
 from newsletter.usage import usage_scope
-from newsletter.workflow.content import ContentPreparation, ResearchTask
+from newsletter.workflow.content import (
+    ContentPreparation,
+    ResearchTask,
+    candidate_budget,
+    editorial_limits,
+)
 from newsletter.workflow.definition import DefinitionError, WorkflowDefinition
 from newsletter.workflow.engine import NodeContext, NodeFailure, NodeResult
 from newsletter.workflow.sources import Candidate, PublicMetadataFeed, deduplicate_candidates
@@ -262,9 +267,26 @@ class EditorialNodes:
                 seeds=seeds,
                 history=history["candidates"],
                 watchlist=history["watchlist"],
+                **(
+                    {"content_config": ctx.run_inputs["content_config"]}
+                    if "content_config" in ctx.run_inputs
+                    else {}
+                ),
             )
             return asdict(discovered)
         if kind == "deduplicate":
+            limits = editorial_limits(ctx.run_inputs.get("content_config"))
+            classifications: dict[str, Payload] = {}
+            if limits is not None:
+                for group in self.inputs(ctx, "discovery"):
+                    for result in group or []:
+                        for identifier, classification in result.get("classifications", {}).items():
+                            previous = classifications.get(identifier)
+                            # Conflicting duplicate reports cannot upgrade an
+                            # unknown/research candidate into a news slot.
+                            if previous and previous["kind"] != "news":
+                                continue
+                            classifications[identifier] = classification
             groups = [
                 result["candidates"]
                 for group in self.inputs(ctx, "discovery")
@@ -285,13 +307,26 @@ class EditorialNodes:
                 for item in value["candidates"]
             )
             candidates = deduplicate_candidates(
-                candidates, history["candidates"], limit=ctx.params.get("max_candidates", 30)
+                candidates,
+                history["candidates"],
+                limit=60 if limits is not None else ctx.params.get("max_candidates", 30),
             )
+            if limits is not None:
+                candidates, classifications = candidate_budget(
+                    candidates,
+                    classifications,
+                    maximum=ctx.params.get("max_candidates", 30),
+                    research_maximum=limits.max_research_candidates,
+                )
             normalized = [
                 to_dict(parse_message(candidate, pb.Candidate)) for candidate in candidates
             ]
             self.state.remember(normalized, date)
-            return {"candidates": normalized, "coverage": self.coverage(ctx)}
+            return {
+                "candidates": normalized,
+                "coverage": self.coverage(ctx),
+                **({"classifications": classifications} if limits is not None else {}),
+            }
         if kind == "selection":
             candidates = self.one(ctx, "deduplicate")["candidates"]
             selected = await self.content.shortlist(
@@ -302,6 +337,14 @@ class EditorialNodes:
                 watchlist=history["watchlist"],
                 max_tasks=ctx.params.get("max_tasks", 8),
                 reader_profile=ctx.run_inputs.get("policy", {}).get("reader-profile.md", ""),
+                **(
+                    {
+                        "content_config": ctx.run_inputs["content_config"],
+                        "classifications": self.one(ctx, "deduplicate").get("classifications", {}),
+                    }
+                    if "content_config" in ctx.run_inputs
+                    else {}
+                ),
             )
             if not selected.research_tasks:
                 raise NodeFailure("no_findings")

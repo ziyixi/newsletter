@@ -22,6 +22,8 @@ from .contracts import (
     validate_personal_digest,
     validate_public_url,
 )
+from .email_templates import render_template
+from .email_templates import validate_template as validate_template
 from .types import Payload, RenderResult
 from .usage import UsageSummary, normalize_usage_summary, usage_footer
 
@@ -94,6 +96,8 @@ def render_edition(
     is_fixture: bool = False,
     personal_digest: Payload | None = None,
     usage: UsageSummary | Payload | None = None,
+    *,
+    template_source: str | None = None,
 ) -> RenderResult:
     """Return frozen HTML/plain text/base64 PNG and a hash of those exact bytes.
 
@@ -230,7 +234,13 @@ def render_edition(
         "personal": personal,
         "usage_footer": footer,
     }
-    html = load_template().render(**context)
+    # None deliberately preserves the packaged renderer for legacy runs. New
+    # runs supply source bytes from their frozen workflow inputs, never a path.
+    html = (
+        load_template().render(**context)
+        if template_source is None
+        else render_template(template_source, context)
+    )
     text_lines = []
     if fixture:
         text_lines.extend(["【试刊样张 · 模拟材料，非真实新闻】", ""])

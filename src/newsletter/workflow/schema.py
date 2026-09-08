@@ -33,6 +33,7 @@ TASK_FIELDS = (
     "evidence_context",
     "source_urls",
 )
+EDITORIAL_KINDS = ("news", "research", "unknown")
 
 
 def object_schema(properties: Payload) -> Payload:
@@ -44,7 +45,7 @@ def object_schema(properties: Payload) -> Payload:
     }
 
 
-def discovery_schema(max_candidates: int = 5) -> Payload:
+def discovery_schema(max_candidates: int = 5, *, classified: bool = False) -> Payload:
     optional_text = {"doi", "version", "event_key", "published_at", *CANDIDATE_RESEARCH_FIELDS}
     props: Payload = {
         key: {
@@ -66,6 +67,9 @@ def discovery_schema(max_candidates: int = 5) -> Payload:
     # Shape only: the parser still checks calendar validity and the issue date.
     # Unknown publication dates are deliberately allowed to remain empty.
     props["published_at"].update(maxLength=10, pattern=r"^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})?$")
+    if classified:
+        props["editorial_kind"] = {"type": "string", "enum": list(EDITORIAL_KINDS)}
+        props["change_basis"] = {"type": "string", "maxLength": 1200}
     return object_schema(
         {
             "candidates": {
@@ -79,7 +83,12 @@ def discovery_schema(max_candidates: int = 5) -> Payload:
 
 
 def planning_schema(
-    candidate_ids: list[str], source_urls: list[str], max_tasks: int, *, gaps: bool = False
+    candidate_ids: list[str],
+    source_urls: list[str],
+    max_tasks: int,
+    *,
+    gaps: bool = False,
+    classified: bool = False,
 ) -> Payload:
     def choices(values: list[str], minimum: int, maximum: int) -> Payload:
         return {
@@ -100,6 +109,9 @@ def planning_schema(
             "source_urls": choices(source_urls, 0, 8),
         }
     )
+    if classified:
+        task["properties"]["editorial_kind"] = {"type": "string", "enum": list(EDITORIAL_KINDS)}
+        task["required"].append("editorial_kind")
     return object_schema(
         {
             "research_tasks": {"type": "array", "maxItems": max_tasks, "items": task},

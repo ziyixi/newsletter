@@ -21,15 +21,21 @@ SQLite证据/已审版本 → Notion后台镜像        已审完整版本确定
 
 ## 修改你希望收集什么
 
-Live 默认使用 [可编辑 DAG](src/newsletter/workflows/daily.yaml) 和
-[八个发现方向](src/newsletter/instructions/discovery/)。流程、预算和依赖写 YAML；
-题材要求写 Markdown；数据契约仍在公共 proto。详细说明见 [DAG 与用量](docs/workflow.md)。
+生产内容配置集中在本仓库 [content-config/](content-config/)。方向和采编策略写 Markdown，
+配比与 [DAG](content-config/workflow.yaml) 写 YAML，邮件模板用受限 Jinja。
+只改这个目录的 push 只校验／发布配置，不构建镜像；服务器每15分钟匿名拉取本公开仓库，
+不需要新的 GitHub token。详见 [内容配置与回退](docs/content-config.md)。
 
-默认最多30条候选，选最多8个问题（可配置到12）；每题先核实简版，再对最多4题深入调查、展示最多2篇深读；
-不是必须填满的配额。Crossref/Nature RSS 只提供元数据线索，不冒充已读论文。
-AI/ML与其他学科可同时入选，历史候选帮助去重；总编仍需调查、解释和核对反证。
+默认最多30条候选，其中研究／未知主体最多10条；公共选题最多6个，研究主体最多1个，
+深读最多1篇。以各行业真实发生的重要变化为主，不是论文摘要合集，也不是必须填满的配额。
+八个发现方向全部保留，包括搜广推和 LLM 架构。Crossref/Nature RSS 只提供元数据线索，
+不冒充已读论文；总编仍需调查、解释和核对反证。
 
-服务在每次新触发冻结 DAG、方向指令、编辑政策、历史和模型配置。README.md、_开头的说明不执行；符号链接、空文件、过大内容或非法名称会失败。配置只能调用注册节点，不能执行 shell、展开密钥或获得发信权限。镜像包含默认资源，也可只读挂载 NEWSLETTER_WORKFLOW_FILE / NEWSLETTER_DISCOVERY_DIR。
+服务在每次新触发冻结完整配置版本（包括模板）、历史和模型配置；更新只影响下一次新运行。
+符号链接、空文件、超限内容、未知文件或不兼容能力会失败；已启用版本不会因坏更新被替换。
+配置只能调用注册节点，不能执行 shell、展开密钥、改变收件人或获得发信权限。
+生产只读挂载 NEWSLETTER_CONTENT_CONFIG_DIR；未设置此项时保留旧包内资源路径，
+供旧部署／测试兼容，不是活动配置损坏时的自动回退。
 
 旧顶层 [instructions/](src/newsletter/instructions/) 和串行采集器仅用于显式 NEWSLETTER_WORKFLOW=legacy、旧运行恢复与离线 mock；不是 live 失败的回退。新采编遵循 [选题级编辑准则](src/newsletter/policy/story-editorial.md) 和 [读者偏好](src/newsletter/policy/reader-profile.md)，不依赖聊天 memory。“研究介绍”不点链接也应自足，支持主阅读链接之外的补充证据引用。
 
@@ -51,6 +57,7 @@ uv.lock 是唯一依赖锁；安装用 --locked，构建不重新生成 protobuf
 | src/newsletter/app.py、lifecycle.py | HTTP鉴权/路由；独立的资源创建、预检和关闭 |
 | src/newsletter/collection/ | 指令快照、采集、持久运行记录和整期编排 |
 | src/newsletter/workflow/、workflows/ | 受限DAG定义、逐节点持久化、候选/研究/审校、运行账本 |
+| content-config/、content_config.py、config_sync.py | 同仓库可编辑配置、离线校验／快照、独立匿名同步器 |
 | src/newsletter/usage.py | 供应商用量累计快照、缺失标记和低调页脚 |
 | src/newsletter/editor.py | 总编、模型结果/引用验证 |
 | src/newsletter/preflight.py | 启动依赖与账号检查，失败即拒绝启动 |

@@ -1,6 +1,7 @@
 """One serialized editor worker, durable queue, bounded jobs, no automatic publication."""
 
 import asyncio
+import json
 from pathlib import Path
 from typing import cast
 
@@ -17,6 +18,7 @@ from newsletter.contracts import (
     validate_personal_digest,
 )
 from newsletter.editor import Editor, EditorError, EditorResult
+from newsletter.email_templates import template_from_inputs
 from newsletter.rendering import render_edition
 from newsletter.store import Store, now
 from newsletter.todofy import DisabledTodofy, TodofyAdapter, unavailable_digest
@@ -59,6 +61,25 @@ class Worker:
             raise
         except Exception:
             return unavailable_digest()
+
+    def frozen_template(self, binding: Payload | None) -> str | None:
+        """Resolve the exact execution snapshot, including repairs and replays.
+
+        Older/manual bindings can predate the workflow input ledger entirely;
+        only those use the packaged renderer. Invalid new snapshots fail closed
+        instead of silently substituting a newer live template.
+        """
+        if binding is None:
+            return None
+        with self.store.lock:
+            if not self.store.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_runs'"
+            ).fetchone():
+                return None
+            row = self.store.db.execute(
+                "SELECT inputs FROM workflow_runs WHERE id=?", (binding["run_id"],)
+            ).fetchone()
+        return template_from_inputs(json.loads(row[0])) if row is not None else None
 
     async def step(self) -> bool:
         if self.pipeline and self.pipeline.advance():
@@ -170,6 +191,7 @@ class Worker:
                 edition["is_fixture"],
                 personal_digest=personal,
                 usage=usage,
+                template_source=self.frozen_template(binding),
             )
             # Freeze precisely the serialized representation returned to the client.
             rendered = cast(RenderResult, to_dict(parse_message(rendered, pb.RenderedEdition)))

@@ -15,12 +15,17 @@ def reader_profile():
     return files("newsletter").joinpath("policy/reader-profile.md").read_text(encoding="utf-8")
 
 
-def test_ai_priority_does_not_exclude_parallel_cross_disciplinary_research(
+def test_news_first_reader_profile_does_not_inherit_legacy_research_reservations(
     editorial_policy, reader_profile
 ):
-    for text in (editorial_policy, reader_profile):
-        assert "高优先级" in text and "不排他" in text
-        assert "AI/ML" in text and "跨学科研究" in text and "不必二选一" in text
+    assert "高优先级" in reader_profile and "不排他" in reader_profile
+    assert "研究没有固定保留席位" in reader_profile
+    assert "默认全期最多一个以研究为主体" in reader_profile
+    assert "候选继续采集和归档" in reader_profile
+    assert "接受短刊" in reader_profile
+    # Legacy non-topic recipes and already-frozen policies retain their original
+    # two-feature contract. New topic runs freeze story-editorial.md instead.
+    assert "不必二选一" in editorial_policy
     assert "可有两个 feature" in editorial_policy
     assert "两条研究线都有足够证据和阅读价值时，优先同时入正文" in editorial_policy
     assert "未选其中一条时，在 review.findings" in editorial_policy
