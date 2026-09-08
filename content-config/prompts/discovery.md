@@ -9,3 +9,4 @@ editorial_kind按候选主体标news/research/unknown：以某篇论文、benchm
 主体就是research，换新闻标题、公司名或新闻稿URL也不能变成news。news必须是可定位的现实
 事件，并在change_basis说明原局面、此次具体变化和受影响者。仅承诺要改变不等于已实现。
 新闻引用论文作背景不自动成为研究；无法判断主体标unknown，不能猜news以填满名额。
+每天主动比较至少一个非科技领域的重要变化；只有解释得清楚、影响具体时才作为候选，不为跨界凑数。
