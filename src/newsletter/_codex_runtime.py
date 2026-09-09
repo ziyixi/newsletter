@@ -11,7 +11,17 @@ import sys
 from collections.abc import Mapping
 
 RUNTIME_ENV_KEYS = frozenset(
-    {"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR"}
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "SYSTEMROOT",
+        "WINDIR",
+    }
 )
 
 
@@ -31,9 +41,9 @@ def main() -> None:
     # Preserve the SDK's bundled tool path, without resolving arbitrary binaries.
     bundled = bundled_path_dir()
     if bundled is not None:
-        environment["PATH"] = os.pathsep.join([str(bundled), environment.get("PATH", "")]).rstrip(
-            os.pathsep
-        )
+        environment["PATH"] = os.pathsep.join(
+            [str(bundled), environment.get("PATH", "")]
+        ).rstrip(os.pathsep)
     os.execve(executable, [executable, *sys.argv[1:]], environment)
 
 

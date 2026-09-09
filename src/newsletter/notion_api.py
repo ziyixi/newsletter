@@ -29,7 +29,9 @@ MAX_JSON_BYTES = 500_000
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_PAGES = 20
 MAX_PNG_BYTES = 5 * 1024 * 1024
-_UUID = re.compile(r"(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\Z")
+_UUID = re.compile(
+    r"(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\Z"
+)
 _CATEGORIES = ("AI/ML", "科学", "世界", "经济", "健康", "技术")
 _BLOCK_TYPES = frozenset(
     {
@@ -73,18 +75,24 @@ SCHEMAS = {
         "category": Property("领域", "select", _CATEGORIES),
         "topics": Property("主题", "multi_select"),
         "material_type": Property(
-            "材料类型", "select", ("论文", "预印本", "技术报告", "新闻", "数据", "未分类")
+            "材料类型",
+            "select",
+            ("论文", "预印本", "技术报告", "新闻", "数据", "未分类"),
         ),
         "value": Property("一句话价值", "rich_text"),
         "url": Property("原始链接", "url"),
         "published_at": Property("发表日期", "date"),
         "first_seen": Property("首次发现", "date"),
-        "progress": Property("采编进度", "select", ("候选", "已研究", "继续跟进", "已刊出")),
+        "progress": Property(
+            "采编进度", "select", ("候选", "已研究", "继续跟进", "已刊出")
+        ),
         "authors": Property("作者", "rich_text"),
         "affiliations": Property("机构", "rich_text"),
         "venue": Property("刊会／发布方", "rich_text"),
         "publication_status": Property("发表状态", "rich_text"),
-        "access_scope": Property("已读范围", "select", ("仅线索", "摘要", "全文")),
+        "access_scope": Property(
+            "已读范围", "select", ("仅线索", "摘要", "全文")
+        ),
         "direction": Property("采集方向", "multi_select"),
         "version": Property("来源版本", "rich_text"),
         "edition_ids": Property("见于简报", "relation"),
@@ -92,14 +100,24 @@ SCHEMAS = {
     "edition": {
         **COMMON,
         "issue_date": Property("刊期", "date"),
-        "edition_type": Property("版本类型", "select", ("日常", "测试", "修订")),
+        "edition_type": Property(
+            "版本类型", "select", ("日常", "测试", "修订")
+        ),
         "overview": Property("本期概览", "rich_text"),
         "categories": Property("涉及领域", "multi_select", _CATEGORIES),
         "material_ids": Property("收录材料", "relation"),
         "delivery": Property(
             "发送状态",
             "select",
-            ("未发送", "发送中", "已提交", "已确认投递", "失败", "结果未知", "模拟"),
+            (
+                "未发送",
+                "发送中",
+                "已提交",
+                "已确认投递",
+                "失败",
+                "结果未知",
+                "模拟",
+            ),
         ),
         "tokens": Property("Token总量", "number"),
         "input_tokens": Property("输入Token", "number"),
@@ -250,7 +268,10 @@ class NotionWorkspace:
         file: tuple[str, bytes, str] | None = None,
     ) -> Payload:
         body = _json(payload) if payload is not None else None
-        headers = {"Authorization": f"Bearer {self._token}", "Notion-Version": API_VERSION}
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Notion-Version": API_VERSION,
+        }
         if body is not None:
             headers["Content-Type"] = "application/json"
         unknown = "NOTION_UNKNOWN" if mutation else "NOTION_UNAVAILABLE"
@@ -282,7 +303,10 @@ class NotionWorkspace:
                     if not 200 <= status < 300:
                         raise AdapterError(unknown, ambiguous=mutation)
                     if (
-                        response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                        response.headers.get("content-type", "")
+                        .split(";", 1)[0]
+                        .strip()
+                        .lower()
                         != "application/json"
                     ):
                         raise AdapterError(invalid, ambiguous=mutation)
@@ -313,22 +337,29 @@ class NotionWorkspace:
     def property_value(self, kind: str, page: Payload, key: str) -> Payload:
         identifier = self.property_ids(kind).get(key)
         props = page.get("properties") if isinstance(page, dict) else None
-        if not isinstance(props, dict) or any(not isinstance(p, dict) for p in props.values()):
+        if not isinstance(props, dict) or any(
+            not isinstance(p, dict) for p in props.values()
+        ):
             raise AdapterError("NOTION_SCHEMA_MISMATCH")
         matches = [p for p in props.values() if p.get("id") == identifier]
         if identifier is None or len(matches) != 1:
             raise AdapterError("NOTION_SCHEMA_MISMATCH")
         return copy.deepcopy(matches[0])
 
-    def _schema(self, kind: str, source: Payload) -> tuple[dict[str, str], Payload]:
+    def _schema(
+        self, kind: str, source: Payload
+    ) -> tuple[dict[str, str], Payload]:
         if (
             source.get("object") != "data_source"
-            or _id(source.get("id"), "NOTION_SCHEMA_MISMATCH") != self._sources[kind]
+            or _id(source.get("id"), "NOTION_SCHEMA_MISMATCH")
+            != self._sources[kind]
             or source.get("in_trash") is True
         ):
             raise AdapterError("NOTION_SCHEMA_MISMATCH")
         props = source.get("properties")
-        if not isinstance(props, dict) or any(not isinstance(p, dict) for p in props.values()):
+        if not isinstance(props, dict) or any(
+            not isinstance(p, dict) for p in props.values()
+        ):
             raise AdapterError("NOTION_SCHEMA_MISMATCH")
         titles = [p for p in props.values() if p.get("type") == "title"]
         if len(titles) != 1:
@@ -343,11 +374,15 @@ class NotionWorkspace:
                 prop = matches[0]
             else:
                 prop = titles[0] if key == "title" else props.get(spec.name)
-            target = self._sources["edition" if kind == "material" else "material"]
+            target = self._sources[
+                "edition" if kind == "material" else "material"
+            ]
             if prop is None:
                 detail: Payload = {}
                 if spec.type in {"select", "multi_select"}:
-                    detail = {"options": [{"name": name} for name in spec.options]}
+                    detail = {
+                        "options": [{"name": name} for name in spec.options]
+                    }
                 elif spec.type == "relation":
                     detail = {
                         "data_source_id": target,
@@ -368,19 +403,29 @@ class NotionWorkspace:
                 relation = prop.get("relation", {})
                 if (
                     not isinstance(relation, dict)
-                    or _id(relation.get("data_source_id"), "NOTION_SCHEMA_MISMATCH") != target
+                    or _id(
+                        relation.get("data_source_id"), "NOTION_SCHEMA_MISMATCH"
+                    )
+                    != target
                 ):
                     raise AdapterError("NOTION_SCHEMA_MISMATCH")
             if spec.options:
                 detail = prop.get(spec.type, {})
-                options = detail.get("options", []) if isinstance(detail, dict) else []
+                options = (
+                    detail.get("options", [])
+                    if isinstance(detail, dict)
+                    else []
+                )
                 if (
                     not isinstance(options, list)
                     or any(
-                        not isinstance(o, dict) or not isinstance(o.get("name"), str)
+                        not isinstance(o, dict)
+                        or not isinstance(o.get("name"), str)
                         for o in options
                     )
-                    or not set(spec.options).issubset({o.get("name") for o in options})
+                    or not set(spec.options).issubset(
+                        {o.get("name") for o in options}
+                    )
                 ):
                     raise AdapterError("NOTION_SCHEMA_MISMATCH")
             bound[key] = prop["id"]
@@ -396,7 +441,9 @@ class NotionWorkspace:
             kind: await self._request("GET", "data_sources/" + identifier)
             for kind, identifier in self._sources.items()
         }
-        checked = {kind: self._schema(kind, source) for kind, source in sources.items()}
+        checked = {
+            kind: self._schema(kind, source) for kind, source in sources.items()
+        }
         # A two-way relation must pair our two managed columns, not implicitly
         # change a different user-owned column when the outbox sets relations.
         for kind, relation_key, opposite, opposite_key in (
@@ -406,17 +453,22 @@ class NotionWorkspace:
             relation_id = checked[kind][0].get(relation_key)
             if relation_id:
                 prop = next(
-                    p for p in sources[kind]["properties"].values() if p.get("id") == relation_id
+                    p
+                    for p in sources[kind]["properties"].values()
+                    if p.get("id") == relation_id
                 )
                 dual = prop["relation"].get("dual_property")
                 if dual is not None and (
                     not isinstance(dual, dict)
                     or not checked[opposite][0].get(opposite_key)
-                    or dual.get("synced_property_id") != checked[opposite][0][opposite_key]
+                    or dual.get("synced_property_id")
+                    != checked[opposite][0][opposite_key]
                 ):
                     raise AdapterError("NOTION_SCHEMA_MISMATCH")
         self._bindings = {kind: bound for kind, (bound, _) in checked.items()}
-        missing = {kind: list(changes) for kind, (_, changes) in checked.items()}
+        missing = {
+            kind: list(changes) for kind, (_, changes) in checked.items()
+        }
         if apply:
             for kind, (_, changes) in checked.items():
                 if changes:
@@ -426,18 +478,23 @@ class NotionWorkspace:
                         mutation=True,
                         payload={
                             "properties": {
-                                SCHEMAS[kind][key].name: value for key, value in changes.items()
+                                SCHEMAS[kind][key].name: value
+                                for key, value in changes.items()
                             }
                         },
                     )
                     try:
                         bound, remaining = self._schema(kind, response)
                     except AdapterError:
-                        raise AdapterError("NOTION_UNKNOWN", ambiguous=True) from None
+                        raise AdapterError(
+                            "NOTION_UNKNOWN", ambiguous=True
+                        ) from None
                     if remaining:
                         raise AdapterError("NOTION_UNKNOWN", ambiguous=True)
                     self._bindings[kind] = bound
-        ready = all(len(self._bindings[kind]) == len(SCHEMAS[kind]) for kind in SCHEMAS)
+        ready = all(
+            len(self._bindings[kind]) == len(SCHEMAS[kind]) for kind in SCHEMAS
+        )
         return {
             "ready": ready,
             "applied": apply,
@@ -455,7 +512,9 @@ class NotionWorkspace:
             await self.validate()
         return self._bindings[kind]
 
-    async def _pages(self, method: str, path: str, payload: Payload | None = None) -> list[Payload]:
+    async def _pages(
+        self, method: str, path: str, payload: Payload | None = None
+    ) -> list[Payload]:
         results: list[Payload] = []
         seen: set[str] = set()
         cursor = None
@@ -467,7 +526,9 @@ class NotionWorkspace:
             page = await self._request(
                 method,
                 path,
-                payload={**(payload or {}), **page_params} if method == "POST" else None,
+                payload={**(payload or {}), **page_params}
+                if method == "POST"
+                else None,
                 params=page_params if method == "GET" else None,
             )
             values = page.get("results")
@@ -483,7 +544,11 @@ class NotionWorkspace:
             if not page["has_more"]:
                 return results
             cursor = page.get("next_cursor")
-            if not isinstance(cursor, str) or not 1 <= len(cursor) <= 2000 or cursor in seen:
+            if (
+                not isinstance(cursor, str)
+                or not 1 <= len(cursor) <= 2000
+                or cursor in seen
+            ):
                 raise AdapterError("NOTION_INVALID_RESPONSE")
             seen.add(cursor)
         raise AdapterError("NOTION_PAGINATION_LIMIT")
@@ -494,7 +559,12 @@ class NotionWorkspace:
         return await self._pages(
             "POST",
             "data_sources/" + self._sources[kind] + "/query",
-            {"filter": {"property": bindings["sync_key"], "rich_text": {"equals": key}}},
+            {
+                "filter": {
+                    "property": bindings["sync_key"],
+                    "rich_text": {"equals": key},
+                }
+            },
         )
 
     async def get_page(self, page_id: str) -> Payload:
@@ -521,9 +591,12 @@ class NotionWorkspace:
             if not isinstance(value, dict) or set(value) != {spec.type}:
                 raise AdapterError("INVALID_NOTION_INPUT")
             inner = value[spec.type]
-            if spec.type in {"title", "rich_text", "relation", "multi_select"} and not isinstance(
-                inner, list
-            ):
+            if spec.type in {
+                "title",
+                "rich_text",
+                "relation",
+                "multi_select",
+            } and not isinstance(inner, list):
                 raise AdapterError("INVALID_NOTION_INPUT")
             if spec.type in {"title", "rich_text"}:
                 for fragment in inner:
@@ -536,12 +609,18 @@ class NotionWorkspace:
                     _text(fragment["text"].get("content"))
             if spec.type == "checkbox" and type(inner) is not bool:
                 raise AdapterError("INVALID_NOTION_INPUT")
-            if spec.type == "url" and inner is not None and not isinstance(inner, str):
+            if (
+                spec.type == "url"
+                and inner is not None
+                and not isinstance(inner, str)
+            ):
                 raise AdapterError("INVALID_NOTION_INPUT")
             if (
                 spec.type == "number"
                 and inner is not None
-                and (type(inner) not in {int, float} or not math.isfinite(inner))
+                and (
+                    type(inner) not in {int, float} or not math.isfinite(inner)
+                )
             ):
                 raise AdapterError("INVALID_NOTION_INPUT")
             if spec.type == "relation":
@@ -551,17 +630,23 @@ class NotionWorkspace:
                     _id(ref["id"])
             if spec.type in {"select", "multi_select"}:
                 options = (
-                    inner if spec.type == "multi_select" else ([inner] if inner is not None else [])
+                    inner
+                    if spec.type == "multi_select"
+                    else ([inner] if inner is not None else [])
                 )
                 for option in options:
                     if not isinstance(option, dict) or set(option) != {"name"}:
                         raise AdapterError("INVALID_NOTION_INPUT")
                     name = _text(option["name"], 100, nonempty=True)
-                    if "," in name or (spec.options and name not in spec.options):
+                    if "," in name or (
+                        spec.options and name not in spec.options
+                    ):
                         raise AdapterError("INVALID_NOTION_INPUT")
             if spec.type == "date" and inner is not None:
                 try:
-                    if not isinstance(inner, dict) or not {"start"} <= inner.keys() <= {
+                    if not isinstance(inner, dict) or not {
+                        "start"
+                    } <= inner.keys() <= {
                         "start",
                         "end",
                         "time_zone",
@@ -571,7 +656,9 @@ class NotionWorkspace:
                         raise ValueError
                     for name in ("start", "end"):
                         if name in inner and inner[name] is not None:
-                            datetime.fromisoformat(inner[name].replace("Z", "+00:00"))
+                            datetime.fromisoformat(
+                                inner[name].replace("Z", "+00:00")
+                            )
                 except (ValueError, TypeError, AttributeError):
                     raise AdapterError("INVALID_NOTION_INPUT") from None
         bindings = await self._bound(kind)
@@ -586,7 +673,10 @@ class NotionWorkspace:
             "pages",
             mutation=True,
             payload={
-                "parent": {"type": "data_source_id", "data_source_id": self._sources[kind]},
+                "parent": {
+                    "type": "data_source_id",
+                    "data_source_id": self._sources[kind],
+                },
                 "properties": props,
             },
         )
@@ -598,12 +688,20 @@ class NotionWorkspace:
         identifier = _id(page_id)
         props = await self._properties(kind, properties)
         page = await self._request(
-            "PATCH", "pages/" + identifier, mutation=True, payload={"properties": props}
+            "PATCH",
+            "pages/" + identifier,
+            mutation=True,
+            payload={"properties": props},
         )
-        if page.get("object") != "page" or _received_id(page.get("id")) != identifier:
+        if (
+            page.get("object") != "page"
+            or _received_id(page.get("id")) != identifier
+        ):
             raise AdapterError("NOTION_UNKNOWN", ambiguous=True)
 
-    async def append(self, page_id: str, blocks: list[Payload]) -> list[Payload]:
+    async def append(
+        self, page_id: str, blocks: list[Payload]
+    ) -> list[Payload]:
         identifier = _id(page_id)
         if not isinstance(blocks, list) or not 1 <= len(blocks) <= 100:
             raise AdapterError("INVALID_NOTION_INPUT")
@@ -645,9 +743,16 @@ class NotionWorkspace:
             "POST",
             "file_uploads",
             mutation=True,
-            payload={"mode": "single_part", "filename": filename, "content_type": "image/png"},
+            payload={
+                "mode": "single_part",
+                "filename": filename,
+                "content_type": "image/png",
+            },
         )
-        if upload.get("object") != "file_upload" or upload.get("status") != "pending":
+        if (
+            upload.get("object") != "file_upload"
+            or upload.get("status") != "pending"
+        ):
             raise AdapterError("NOTION_UNKNOWN", ambiguous=True)
         identifier = _received_id(upload.get("id"))
         # Never use upload_url/complete_url returned by an upstream response.

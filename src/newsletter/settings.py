@@ -12,7 +12,9 @@ from zoneinfo import ZoneInfo
 _Number = TypeVar("_Number", int, float)
 
 
-def _number_env(name: str, default: str, parse: Callable[[str], _Number]) -> _Number:
+def _number_env(
+    name: str, default: str, parse: Callable[[str], _Number]
+) -> _Number:
     try:
         return parse(os.getenv(name, default))
     except ValueError:
@@ -80,15 +82,24 @@ class Settings:
             editor_token=os.getenv("NEWSLETTER_EDITOR_TOKEN", ""),
             send_token=os.getenv("NEWSLETTER_SEND_TOKEN", ""),
             time_zone=os.getenv("NEWSLETTER_TIME_ZONE", "America/Los_Angeles"),
-            job_timeout_seconds=_number_env("NEWSLETTER_JOB_TIMEOUT_SECONDS", "900", float),
+            job_timeout_seconds=_number_env(
+                "NEWSLETTER_JOB_TIMEOUT_SECONDS", "900", float
+            ),
             notion_backend=os.getenv("NEWSLETTER_NOTION", "disabled"),
             notion_token=os.getenv("NOTION_TOKEN", ""),
             notion_data_source_id=os.getenv("NOTION_DATA_SOURCE_ID", ""),
-            notion_materials_data_source_id=os.getenv("NOTION_MATERIALS_DATA_SOURCE_ID", ""),
-            notion_editions_data_source_id=os.getenv("NOTION_EDITIONS_DATA_SOURCE_ID", ""),
-            notion_archive_private=_boolean_env("NEWSLETTER_NOTION_ARCHIVE_PRIVATE"),
+            notion_materials_data_source_id=os.getenv(
+                "NOTION_MATERIALS_DATA_SOURCE_ID", ""
+            ),
+            notion_editions_data_source_id=os.getenv(
+                "NOTION_EDITIONS_DATA_SOURCE_ID", ""
+            ),
+            notion_archive_private=_boolean_env(
+                "NEWSLETTER_NOTION_ARCHIVE_PRIVATE"
+            ),
             mail_backend=os.getenv("NEWSLETTER_MAIL", "fake"),
-            allow_send=os.getenv("NEWSLETTER_ALLOW_SEND", "false").lower() == "true",
+            allow_send=os.getenv("NEWSLETTER_ALLOW_SEND", "false").lower()
+            == "true",
             resend_api_key=os.getenv("RESEND_API_KEY", ""),
             recipient_email=os.getenv("RECIPIENT_EMAIL", ""),
             from_email=os.getenv("NEWSLETTER_FROM_EMAIL", ""),
@@ -97,7 +108,9 @@ class Settings:
             else None,
             model=os.getenv("NEWSLETTER_MODEL", "gpt-5.6-sol"),
             todofy_backend=os.getenv("NEWSLETTER_TODOFY", "disabled"),
-            todofy_base_url=os.getenv("TODO_API_BASE", "https://daily.ziyixi.science"),
+            todofy_base_url=os.getenv(
+                "TODO_API_BASE", "https://daily.ziyixi.science"
+            ),
             todofy_user=os.getenv("TODO_API_USER", ""),
             todofy_password=os.getenv("TODO_API_PASSWORD", ""),
             todofy_mode=os.getenv("NEWSLETTER_TODOFY_MODE", "recommendation"),
@@ -126,78 +139,127 @@ class Settings:
     @property
     def notion_v2(self) -> bool:
         """Select the dual database adapter only when both destinations are set."""
-        return bool(self.notion_materials_data_source_id and self.notion_editions_data_source_id)
+        return bool(
+            self.notion_materials_data_source_id
+            and self.notion_editions_data_source_id
+        )
 
     def validate(self) -> None:
         if self.workflow_backend not in {"dag", "legacy"}:
             raise ValueError("NEWSLETTER_WORKFLOW must be dag or legacy")
         if self.content_config_dir is not None:
             if self.workflow_backend != "dag":
-                raise ValueError("Content configuration requires NEWSLETTER_WORKFLOW=dag")
+                raise ValueError(
+                    "Content configuration requires NEWSLETTER_WORKFLOW=dag"
+                )
             if self.content_config_dir.resolve() in {
                 Path("/"),
                 Path.home(),
                 self.data_dir.resolve(),
             }:
-                raise ValueError("Content configuration requires a dedicated directory")
+                raise ValueError(
+                    "Content configuration requires a dedicated directory"
+                )
         if (
             not math.isfinite(self.workflow_timeout_seconds)
             or not 60 <= self.workflow_timeout_seconds <= 14400
         ):
-            raise ValueError("Workflow timeout must be within 60..14400 seconds")
+            raise ValueError(
+                "Workflow timeout must be within 60..14400 seconds"
+            )
         if (
             not math.isfinite(self.collection_timeout_seconds)
             or not 0 < self.collection_timeout_seconds <= 1800
         ):
-            raise ValueError("Collection timeout must be within 0..1800 seconds per direction")
+            raise ValueError(
+                "Collection timeout must be within 0..1800 seconds per direction"
+            )
         if self.todofy_backend not in {"disabled", "fake", "todofy"}:
-            raise ValueError("NEWSLETTER_TODOFY must be disabled, fake or todofy")
-        if self.todofy_mode not in {"recommendation", "summary"} or not 1 <= self.todofy_top <= 10:
+            raise ValueError(
+                "NEWSLETTER_TODOFY must be disabled, fake or todofy"
+            )
+        if (
+            self.todofy_mode not in {"recommendation", "summary"}
+            or not 1 <= self.todofy_top <= 10
+        ):
             raise ValueError("Invalid Todofy mode or item limit")
-        if self.todofy_backend == "todofy" and not (self.todofy_user and self.todofy_password):
-            raise ValueError("Todofy requires TODO_API_USER and TODO_API_PASSWORD")
+        if self.todofy_backend == "todofy" and not (
+            self.todofy_user and self.todofy_password
+        ):
+            raise ValueError(
+                "Todofy requires TODO_API_USER and TODO_API_PASSWORD"
+            )
         if self.mode == "mock" and self.todofy_backend == "todofy":
             raise ValueError("Mock mode forbids real Todofy requests")
         if self.mode == "live" and self.todofy_backend == "fake":
             raise ValueError("Live mode forbids fake personal events")
         directory = self.data_dir.resolve()
-        if directory in {Path(directory.anchor), Path.home().resolve(), Path.cwd().resolve()}:
-            raise ValueError("Use a dedicated child directory for newsletter data")
-        if self.data_dir.is_symlink() or (directory.exists() and not directory.is_dir()):
-            raise ValueError("Newsletter data must be a dedicated real directory")
+        if directory in {
+            Path(directory.anchor),
+            Path.home().resolve(),
+            Path.cwd().resolve(),
+        }:
+            raise ValueError(
+                "Use a dedicated child directory for newsletter data"
+            )
+        if self.data_dir.is_symlink() or (
+            directory.exists() and not directory.is_dir()
+        ):
+            raise ValueError(
+                "Newsletter data must be a dedicated real directory"
+            )
         if self.mode not in {"mock", "live"}:
             raise ValueError("NEWSLETTER_MODE must be mock or live")
         if self.editor_backend not in {"mock", "codex"}:
             raise ValueError("NEWSLETTER_EDITOR must be mock or codex")
         if self.notion_backend not in {"disabled", "fake", "notion"}:
-            raise ValueError("NEWSLETTER_NOTION must be disabled, fake or notion")
+            raise ValueError(
+                "NEWSLETTER_NOTION must be disabled, fake or notion"
+            )
         if self.mail_backend not in {"fake", "resend"}:
             raise ValueError("NEWSLETTER_MAIL must be fake or resend")
         tokens = [self.ingest_token, self.editor_token, self.send_token]
         if (
-            any(len(t) < 24 or len(t) > 512 or any(c.isspace() for c in t) for t in tokens)
+            any(
+                len(t) < 24 or len(t) > 512 or any(c.isspace() for c in t)
+                for t in tokens
+            )
             or len(set(tokens)) != 3
         ):
-            raise ValueError("Configure three distinct NEWSLETTER_*_TOKEN values (24+ characters)")
+            raise ValueError(
+                "Configure three distinct NEWSLETTER_*_TOKEN values (24+ characters)"
+            )
         if self.mode == "mock" and (
             self.editor_backend != "mock"
             or self.mail_backend != "fake"
             or self.notion_backend == "notion"
         ):
-            raise ValueError("Mock mode forbids real model, Notion, and mail adapters")
+            raise ValueError(
+                "Mock mode forbids real model, Notion, and mail adapters"
+            )
         if self.mode == "live" and self.editor_backend != "codex":
-            raise ValueError("Live mode requires the Codex editor; no mock fallback")
+            raise ValueError(
+                "Live mode requires the Codex editor; no mock fallback"
+            )
         if self.editor_backend == "codex" and self.codex_home is None:
-            raise ValueError("Set an isolated NEWSLETTER_CODEX_HOME for the server editor")
+            raise ValueError(
+                "Set an isolated NEWSLETTER_CODEX_HOME for the server editor"
+            )
         if type(self.notion_archive_private) is not bool:
-            raise ValueError("NEWSLETTER_NOTION_ARCHIVE_PRIVATE must be a boolean")
-        if bool(self.notion_materials_data_source_id) != bool(self.notion_editions_data_source_id):
+            raise ValueError(
+                "NEWSLETTER_NOTION_ARCHIVE_PRIVATE must be a boolean"
+            )
+        if bool(self.notion_materials_data_source_id) != bool(
+            self.notion_editions_data_source_id
+        ):
             raise ValueError(
                 "Set both NOTION_MATERIALS_DATA_SOURCE_ID and NOTION_EDITIONS_DATA_SOURCE_ID"
             )
         if self.notion_v2:
             if self.workflow_backend != "dag":
-                raise ValueError("Dual-database Notion requires NEWSLETTER_WORKFLOW=dag")
+                raise ValueError(
+                    "Dual-database Notion requires NEWSLETTER_WORKFLOW=dag"
+                )
             try:
                 materials_id = UUID(self.notion_materials_data_source_id)
                 editions_id = UUID(self.notion_editions_data_source_id)
@@ -206,7 +268,9 @@ class Settings:
                     "Notion materials and editions require valid data source IDs"
                 ) from None
             if materials_id == editions_id:
-                raise ValueError("Notion materials and editions require different data sources")
+                raise ValueError(
+                    "Notion materials and editions require different data sources"
+                )
         if self.notion_backend == "notion":
             if not self.notion_token:
                 raise ValueError("Notion requires NOTION_TOKEN")
@@ -220,10 +284,20 @@ class Settings:
             or not self.recipient_email
             or not self.from_email
         ):
-            raise ValueError("Resend requires explicit send enablement, key, from and recipient")
-        if not math.isfinite(self.job_timeout_seconds) or not 0 < self.job_timeout_seconds <= 3600:
-            raise ValueError("Job timeout must be finite and within 0..3600 seconds")
-        if not 1 <= self.max_packets <= 32 or not 1 <= self.max_pending_jobs <= 100:
+            raise ValueError(
+                "Resend requires explicit send enablement, key, from and recipient"
+            )
+        if (
+            not math.isfinite(self.job_timeout_seconds)
+            or not 0 < self.job_timeout_seconds <= 3600
+        ):
+            raise ValueError(
+                "Job timeout must be finite and within 0..3600 seconds"
+            )
+        if (
+            not 1 <= self.max_packets <= 32
+            or not 1 <= self.max_pending_jobs <= 100
+        ):
             raise ValueError("Invalid packet or queue limits")
         if not 1024 <= self.max_body_bytes <= 8 * 1024 * 1024:
             raise ValueError("Invalid request body limit")

@@ -32,7 +32,9 @@ def test_uv_is_the_only_lock_and_direct_pins_match_resolution():
         *project["project"]["optional-dependencies"]["codex"],
         *project["dependency-groups"]["dev"],
     ]
-    resolved = {(package["name"], package["version"]) for package in lock["package"]}
+    resolved = {
+        (package["name"], package["version"]) for package in lock["package"]
+    }
     for requirement in declared:
         name, version = requirement.split("==")
         assert (re.sub(r"[-_.]+", "-", name.lower()), version) in resolved
@@ -46,7 +48,10 @@ def test_registry_artifacts_are_hash_locked():
         if "sdist" in package:
             artifacts.append(package["sdist"])
         assert artifacts, package["name"]
-        assert all(re.fullmatch(r"sha256:[a-f0-9]{64}", item["hash"]) for item in artifacts)
+        assert all(
+            re.fullmatch(r"sha256:[a-f0-9]{64}", item["hash"])
+            for item in artifacts
+        )
 
 
 def test_python_and_uv_versions_are_shared_by_local_ci_and_docker():
@@ -60,11 +65,15 @@ def test_python_and_uv_versions_are_shared_by_local_ci_and_docker():
 
     dockerfile = (ROOT / "Dockerfile").read_text()
     python_images = re.findall(r"(?im)^FROM python:([^\s]+)", dockerfile)
-    assert python_images and all(image.startswith(python_version + "-") for image in python_images)
+    assert python_images and all(
+        image.startswith(python_version + "-") for image in python_images
+    )
     assert f"ghcr.io/astral-sh/uv:{uv_version}" in dockerfile
     ci = (ROOT / ".github/workflows/ci.yml").read_text()
     assert re.search(r"python-version-file:\s*['\"]?\.python-version", ci)
-    assert re.search(r"version:\s*['\"]?" + re.escape(uv_version) + r"(?:['\"]|\s)", ci)
+    assert re.search(
+        r"version:\s*['\"]?" + re.escape(uv_version) + r"(?:['\"]|\s)", ci
+    )
 
 
 def test_mypy_checks_service_without_vendoring_proto_artifacts():
@@ -74,7 +83,8 @@ def test_mypy_checks_service_without_vendoring_proto_artifacts():
     assert mypy["check_untyped_defs"] and mypy["disallow_untyped_defs"]
     assert not mypy.get("ignore_errors", False)
     assert not any(
-        "generated" in item for item in project["tool"]["setuptools"]["package-data"]["newsletter"]
+        "generated" in item
+        for item in project["tool"]["setuptools"]["package-data"]["newsletter"]
     )
     assert not (ROOT / "src/newsletter/generated/editorial_pb2.py").exists()
     assert not (ROOT / "scripts/generate_proto.py").exists()
@@ -83,7 +93,9 @@ def test_mypy_checks_service_without_vendoring_proto_artifacts():
 def test_public_proto_uses_a_hash_locked_github_release_not_local_source():
     project = read_config("pyproject.toml")
     declaration = next(
-        item for item in project["project"]["dependencies"] if item.startswith("ziyixi-protos==")
+        item
+        for item in project["project"]["dependencies"]
+        if item.startswith("ziyixi-protos==")
     )
     package_version = declaration.split("==", 1)[1]
     source = project["tool"]["uv"]["sources"]["ziyixi-protos"]
@@ -91,15 +103,20 @@ def test_public_proto_uses_a_hash_locked_github_release_not_local_source():
     url = urlsplit(source["url"])
     assert url.scheme == "https" and url.netloc == "github.com"
     assert url.path.startswith("/ziyixi/protos/releases/download/")
-    assert url.path.endswith("/ziyixi_protos-" + package_version + "-py3-none-any.whl")
+    assert url.path.endswith(
+        "/ziyixi_protos-" + package_version + "-py3-none-any.whl"
+    )
     assert not url.username and not url.password and not url.query
     locked = next(
-        item for item in read_config("uv.lock")["package"] if item["name"] == "ziyixi-protos"
+        item
+        for item in read_config("uv.lock")["package"]
+        if item["name"] == "ziyixi-protos"
     )
     assert locked["version"] == package_version
     assert locked["source"] == {"url": source["url"]}
     assert locked["wheels"] and all(
-        re.fullmatch(r"sha256:[a-f0-9]{64}", wheel["hash"]) for wheel in locked["wheels"]
+        re.fullmatch(r"sha256:[a-f0-9]{64}", wheel["hash"])
+        for wheel in locked["wheels"]
     )
 
 
@@ -107,7 +124,9 @@ def test_make_has_one_locked_install_and_shared_quality_gate():
     makefile = (ROOT / "Makefile").read_text()
     setup = re.search(r"(?m)^setup:[^\n]*\n((?:\t[^\n]*\n)+)", makefile)
     assert setup is not None
-    assert all(option in setup[1] for option in ("sync", "--locked", "--extra codex"))
+    assert all(
+        option in setup[1] for option in ("sync", "--locked", "--extra codex")
+    )
     assert "requirements.lock" not in makefile
     assert "pip install" not in makefile
     gate = re.search(r"(?m)^check:([^\n]*)", makefile)
@@ -141,10 +160,15 @@ def test_docker_context_only_allows_build_inputs():
 
 def test_docker_installs_locked_production_environment_and_starts_directly():
     dockerfile = (ROOT / "Dockerfile").read_text().replace("\\\n", " ")
-    install_lines = [line for line in dockerfile.splitlines() if "uv sync" in line]
+    install_lines = [
+        line for line in dockerfile.splitlines() if "uv sync" in line
+    ]
     assert install_lines
     for line in install_lines:
-        assert all(option in line for option in ("--locked", "--no-dev", "--extra codex"))
+        assert all(
+            option in line
+            for option in ("--locked", "--no-dev", "--extra codex")
+        )
         # A dependency-cache stage may deliberately omit the project entirely.
         assert "--no-install-project" in line or "--no-editable" in line
     assert "--no-editable" in install_lines[-1]
@@ -154,7 +178,9 @@ def test_docker_installs_locked_production_environment_and_starts_directly():
     assert entrypoint is not None
     assert Path(json.loads(entrypoint[1])[0]).name == "newsletter"
     startup = "\n".join(
-        line for line in runtime.splitlines() if line.startswith(("RUN ", "CMD ", "ENTRYPOINT "))
+        line
+        for line in runtime.splitlines()
+        if line.startswith(("RUN ", "CMD ", "ENTRYPOINT "))
     )
     assert not re.search(r"\b(?:uv|pip)\b", startup)
 

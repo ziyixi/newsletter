@@ -77,7 +77,9 @@ def load_template() -> Template:
         keep_trailing_newline=True,
     )
     return environment.from_string(
-        files("newsletter").joinpath("templates/edition.html.j2").read_text(encoding="utf-8")
+        files("newsletter")
+        .joinpath("templates/edition.html.j2")
+        .read_text(encoding="utf-8")
     )
 
 
@@ -117,12 +119,18 @@ def render_edition(
             meta.append(f"最近 {personal['time_window_hours']} 小时")
         if "task_count" in personal:
             meta.append(f"{personal['task_count']} 条来源记录")
-        provenance = [personal["source_label"]] if personal["source_label"] else []
+        provenance = (
+            [personal["source_label"]] if personal["source_label"] else []
+        )
         if personal["fetched_at"]:
-            at = datetime.fromisoformat(personal["fetched_at"].replace("Z", "+00:00"))
+            at = datetime.fromisoformat(
+                personal["fetched_at"].replace("Z", "+00:00")
+            )
             # validate_personal_digest already requires an aware timestamp.
             zone = (
-                "UTC" if cast(timedelta, at.utcoffset()).total_seconds() == 0 else at.strftime("%z")
+                "UTC"
+                if cast(timedelta, at.utcoffset()).total_seconds() == 0
+                else at.strftime("%z")
             )
             provenance.append(at.strftime("%m-%d %H:%M ") + zone + " 获取")
         personal["meta"] = " · ".join(meta)
@@ -164,7 +172,10 @@ def render_edition(
             "heading": section["heading"],
             "limitations": _limitations(section.get("limitations", "")),
             "paragraphs": [
-                {"text": p["text"], "references": [cite(c) for c in p.get("citations", [])]}
+                {
+                    "text": p["text"],
+                    "references": [cite(c) for c in p.get("citations", [])],
+                }
                 for p in section["paragraphs"]
             ],
         }
@@ -185,7 +196,9 @@ def render_edition(
             "rows": [
                 {
                     "label": p["label"],
-                    "value": p["decimal_value"] if "decimal_value" in p else None,
+                    "value": p["decimal_value"]
+                    if "decimal_value" in p
+                    else None,
                     "missing_reason": p.get("missing_reason", ""),
                     "references": [cite(c) for c in p.get("citations", [])],
                 }
@@ -194,7 +207,9 @@ def render_edition(
         }
         chart["metadata"] = chart_metadata(chart)
         chart_references = {
-            ref["number"]: ref for row in chart["rows"] for ref in row["references"]
+            ref["number"]: ref
+            for row in chart["rows"]
+            for ref in row["references"]
         }
         chart["source_note"] = "来源：" + "；".join(
             f"[{ref['number']}] {ref['title']}"
@@ -208,13 +223,15 @@ def render_edition(
         reading = {
             "reference": cite(recommendation["citation"]),
             "supporting_references": [
-                cite(citation) for citation in recommendation["supporting_citations"]
+                cite(citation)
+                for citation in recommendation["supporting_citations"]
             ],
             "reason": recommendation["reason"],
             "paragraphs": _reading_paragraphs(recommendation["reason"]),
         }
     footer = usage_footer(
-        normalize_usage_summary(usage) if usage is not None else None, is_fixture=fixture
+        normalize_usage_summary(usage) if usage is not None else None,
+        is_fixture=fixture,
     )
     context = {
         "draft": {
@@ -229,7 +246,8 @@ def render_edition(
         "reading": reading,
         "issue_date": str(issue_date),
         "date_label": date.fromisoformat(issue_date).strftime("%Y / %m / %d"),
-        "weekday_label": "星期" + "一二三四五六日"[date.fromisoformat(issue_date).weekday()],
+        "weekday_label": "星期"
+        + "一二三四五六日"[date.fromisoformat(issue_date).weekday()],
         "is_fixture": fixture,
         "personal": personal,
         "usage_footer": footer,
@@ -244,11 +262,15 @@ def render_edition(
     text_lines = []
     if fixture:
         text_lines.extend(["【试刊样张 · 模拟材料，非真实新闻】", ""])
-    text_lines.extend([str(issue_date), draft["title"], "", draft.get("introduction", ""), ""])
+    text_lines.extend(
+        [str(issue_date), draft["title"], "", draft.get("introduction", ""), ""]
+    )
     for section in sections:
         text_lines.extend([f"{section['label']}｜{section['heading']}", ""])
         for paragraph in section["paragraphs"]:
-            markers = "".join(f"[{ref['number']}]" for ref in paragraph["references"])
+            markers = "".join(
+                f"[{ref['number']}]" for ref in paragraph["references"]
+            )
             text_lines.extend([paragraph["text"] + markers, ""])
         for limitation in section["limitations"]:
             text_lines.append(f"边界：{limitation}")
@@ -264,19 +286,28 @@ def render_edition(
         )
         text_lines.append(f"图表说明：{chart['alt_text']}")
         for row in chart["rows"]:
-            value = row["value"] if row["value"] is not None else f"缺失（{row['missing_reason']}）"
+            value = (
+                row["value"]
+                if row["value"] is not None
+                else f"缺失（{row['missing_reason']}）"
+            )
             markers = "".join(f"[{ref['number']}]" for ref in row["references"])
             text_lines.append(f"{row['label']}：{value}{markers}")
-        text_lines.extend(f"边界：{item}" for item in chart.get("limitations", []))
+        text_lines.extend(
+            f"边界：{item}" for item in chart.get("limitations", [])
+        )
         text_lines.append("")
     if reading:
         ref = reading["reference"]
-        evidence = "".join(f"[{ref['number']}]" for ref in reading["supporting_references"])
+        evidence = "".join(
+            f"[{ref['number']}]" for ref in reading["supporting_references"]
+        )
         text_lines.extend(
             [
                 "研究介绍",
                 f"{ref['title']} [{ref['number']}]",
-                reading["reason"] + ("\n补充证据：" + evidence if evidence else ""),
+                reading["reason"]
+                + ("\n补充证据：" + evidence if evidence else ""),
                 f"原文与方法 [{ref['number']}]：{ref['url']}",
                 "",
             ]
@@ -292,10 +323,18 @@ def render_edition(
         text_lines.append("")
     if personal:
         text_lines.extend(
-            ["TODOFY / 与你有关", personal["title"], personal["meta"], personal["summary"], ""]
+            [
+                "TODOFY / 与你有关",
+                personal["title"],
+                personal["meta"],
+                personal["summary"],
+                "",
+            ]
         )
         for item in personal["items"]:
-            text_lines.extend([f"{item['rank']}. {item['title']}", item["detail"], ""])
+            text_lines.extend(
+                [f"{item['rank']}. {item['title']}", item["detail"], ""]
+            )
         text_lines.extend([personal["provenance"], personal["limitations"], ""])
     if footer:
         text_lines.extend([footer, ""])
@@ -305,9 +344,9 @@ def render_edition(
         "text": text,
         "chart_png": base64.b64encode(chart_bytes).decode("ascii"),
     }
-    payload = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    payload = json.dumps(
+        result, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
     return {
         "html": html,
         "text": text,

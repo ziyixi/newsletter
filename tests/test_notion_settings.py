@@ -39,7 +39,9 @@ def test_dual_destinations_need_no_legacy_id(live):
 
 
 def test_legacy_destination_remains_supported(live):
-    settings = replace(live, notion_data_source_id=MATERIALS, workflow_backend="legacy")
+    settings = replace(
+        live, notion_data_source_id=MATERIALS, workflow_backend="legacy"
+    )
     settings.validate()
     assert not settings.notion_v2
 
@@ -67,15 +69,22 @@ def test_dual_mode_takes_precedence_over_legacy_destination(live):
 
 
 @pytest.mark.parametrize(
-    "field", ["notion_materials_data_source_id", "notion_editions_data_source_id"]
+    "field",
+    ["notion_materials_data_source_id", "notion_editions_data_source_id"],
 )
 def test_half_configured_dual_mode_does_not_silently_fall_back(live, field):
-    settings = replace(live, notion_data_source_id=MATERIALS, **{field: EDITIONS})
-    with pytest.raises(ValueError, match="Set both NOTION_MATERIALS_DATA_SOURCE_ID"):
+    settings = replace(
+        live, notion_data_source_id=MATERIALS, **{field: EDITIONS}
+    )
+    with pytest.raises(
+        ValueError, match="Set both NOTION_MATERIALS_DATA_SOURCE_ID"
+    ):
         settings.validate()
 
 
-@pytest.mark.parametrize("editions", [MATERIALS, MATERIALS.replace("-", "").upper()])
+@pytest.mark.parametrize(
+    "editions", [MATERIALS, MATERIALS.replace("-", "").upper()]
+)
 def test_same_destination_is_rejected_in_all_uuid_formats(live, editions):
     settings = replace(
         live,
@@ -110,7 +119,9 @@ def test_missing_notion_token_remains_invalid(live):
 
 
 def test_programmatic_privacy_configuration_rejects_truthy_strings(live):
-    settings = replace(live, notion_data_source_id=MATERIALS, notion_archive_private="false")
+    settings = replace(
+        live, notion_data_source_id=MATERIALS, notion_archive_private="false"
+    )
     with pytest.raises(ValueError, match="must be a boolean"):
         settings.validate()
 
@@ -138,16 +149,26 @@ def test_dual_settings_read_exact_environment_names(monkeypatch):
     assert settings.notion_archive_private is True
 
 
-@pytest.mark.parametrize("value,expected", [(None, False), ("false", False), ("TRUE", True)])
-def test_private_archive_requires_explicit_boolean(monkeypatch, value, expected):
+@pytest.mark.parametrize(
+    "value,expected", [(None, False), ("false", False), ("TRUE", True)]
+)
+def test_private_archive_requires_explicit_boolean(
+    monkeypatch, value, expected
+):
     monkeypatch.delenv("NEWSLETTER_NOTION_ARCHIVE_PRIVATE", raising=False)
     if value is not None:
         monkeypatch.setenv("NEWSLETTER_NOTION_ARCHIVE_PRIVATE", value)
     assert Settings.from_env().notion_archive_private is expected
 
 
-def test_private_archive_invalid_boolean_is_safe_configuration_error(monkeypatch):
-    monkeypatch.setenv("NEWSLETTER_NOTION_ARCHIVE_PRIVATE", "misplaced-private-key")
-    with pytest.raises(ValueError, match="NEWSLETTER_NOTION_ARCHIVE_PRIVATE") as error:
+def test_private_archive_invalid_boolean_is_safe_configuration_error(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "NEWSLETTER_NOTION_ARCHIVE_PRIVATE", "misplaced-private-key"
+    )
+    with pytest.raises(
+        ValueError, match="NEWSLETTER_NOTION_ARCHIVE_PRIVATE"
+    ) as error:
         Settings.from_env()
     assert "misplaced-private-key" not in str(error.value)

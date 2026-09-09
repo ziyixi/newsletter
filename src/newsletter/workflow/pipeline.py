@@ -14,16 +14,31 @@ from newsletter.collection.instructions import Instruction
 from newsletter.collection.pipeline import CollectionPipeline
 from newsletter.collection.repository import RunRepository
 from newsletter.collection.source_guides import load_discovery_instructions
-from newsletter.content_config import config_definition, config_instructions, load_active
-from newsletter.contracts import content_hash, validate_draft, validate_packet_body
+from newsletter.content_config import (
+    config_definition,
+    config_instructions,
+    load_active,
+)
+from newsletter.contracts import (
+    content_hash,
+    validate_draft,
+    validate_packet_body,
+)
 from newsletter.editor import POLICY_DIR, CodexEditor
 from newsletter.settings import Settings
 from newsletter.store import StoreError
 from newsletter.types import Payload
 from newsletter.workflow.definition import load_definition, parse_definition
 from newsletter.workflow.engine import WorkflowEngine
-from newsletter.workflow.nodes import EditorialNodes, validate_recipe, validate_revision_subgraph
-from newsletter.workflow.publication import PublicationError, PublicationRepository
+from newsletter.workflow.nodes import (
+    EditorialNodes,
+    validate_recipe,
+    validate_revision_subgraph,
+)
+from newsletter.workflow.publication import (
+    PublicationError,
+    PublicationRepository,
+)
 from newsletter.workflow.repository import WorkflowError, WorkflowRepository
 from newsletter.workflow.state import WorkflowState
 from newsletter.workflow.story_nodes import StoryNodes, freeze_publication
@@ -34,7 +49,9 @@ def freeze_workflow(
     settings: Settings, state: WorkflowState, issue_date: str
 ) -> tuple[list[Instruction], Payload]:
     configuration = (
-        load_active(settings.content_config_dir) if settings.content_config_dir else None
+        load_active(settings.content_config_dir)
+        if settings.content_config_dir
+        else None
     )
     definition = (
         config_definition(configuration)
@@ -47,7 +64,9 @@ def freeze_workflow(
         and settings.notion_v2
         and not is_story_recipe(definition)
     ):
-        raise ValueError("Notion V2 requires the story publication workflow, not legacy projection")
+        raise ValueError(
+            "Notion V2 requires the story publication workflow, not legacy projection"
+        )
     instructions = (
         config_instructions(configuration["files"])
         if configuration
@@ -59,14 +78,23 @@ def freeze_workflow(
             policy[name] = configuration["files"]["policy/" + name]
             continue
         filename = (
-            "story-editorial.md" if name == "editorial.md" and is_story_recipe(definition) else name
+            "story-editorial.md"
+            if name == "editorial.md" and is_story_recipe(definition)
+            else name
         )
         path = POLICY_DIR / filename
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > 100_000:
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_size > 100_000
+        ):
             raise ValueError("Invalid editorial policy")
         policy[name] = path.read_text(encoding="utf-8")
     editions = [
-        {"issue_date": e["issue_date"], "title": e.get("draft", {}).get("title", "")}
+        {
+            "issue_date": e["issue_date"],
+            "title": e.get("draft", {}).get("title", ""),
+        }
         for e in state.store.recent_history()
     ]
     return instructions, {
@@ -75,7 +103,9 @@ def freeze_workflow(
             "issue_date": issue_date,
             "instructions": [item.snapshot() for item in instructions],
             "history": state.history(issue_date),
-            "pending_stories": PublicationRepository(state.store).pending_history(issue_date)
+            "pending_stories": PublicationRepository(
+                state.store
+            ).pending_history(issue_date)
             if is_story_recipe(definition)
             else [],
             "editions": editions,
@@ -102,7 +132,10 @@ class DagPipeline(CollectionPipeline):
     ) -> None:
         super().__init__(runs, collector, workspace, timeout, max_packets)
         self.editor = editor
-        self.recipe_path = recipe_path or Path(__file__).parents[1] / "workflows" / "daily.yaml"
+        self.recipe_path = (
+            recipe_path
+            or Path(__file__).parents[1] / "workflows" / "daily.yaml"
+        )
         self.repository = WorkflowRepository(runs.store)
         self.state = WorkflowState(runs.store)
         self.publications = PublicationRepository(runs.store)
@@ -116,7 +149,9 @@ class DagPipeline(CollectionPipeline):
         for row in rows:
             run = json.loads(row[0])
             snapshot = self.runs.workflow_snapshot(run["id"])
-            if snapshot is not None and is_story_recipe(parse_definition(snapshot["definition"])):
+            if snapshot is not None and is_story_recipe(
+                parse_definition(snapshot["definition"])
+            ):
                 return True
         return False
 
@@ -167,7 +202,9 @@ class DagPipeline(CollectionPipeline):
 
     def graph_progress(self, run_id: str) -> Payload:
         run = self.repository.get(run_id)
-        definition = parse_definition(self.repository.snapshot(run_id)["definition"])
+        definition = parse_definition(
+            self.repository.snapshot(run_id)["definition"]
+        )
         nodes = []
         for node in definition.nodes:
             state = run["nodes"][node.id]
@@ -176,17 +213,25 @@ class DagPipeline(CollectionPipeline):
                     "id": node.id,
                     "type": node.type,
                     "state": state["state"],
-                    "completed_items": sum(item["state"] == "succeeded" for item in state["items"]),
+                    "completed_items": sum(
+                        item["state"] == "succeeded" for item in state["items"]
+                    ),
                     "failed_items": sum(
-                        item["state"] in {"failed", "unknown"} for item in state["items"]
+                        item["state"] in {"failed", "unknown"}
+                        for item in state["items"]
                     ),
                     "error_code": state["error_code"],
                 }
             )
         count = 0
         for node in definition.nodes:
-            if node.type == "deduplicate" and run["nodes"][node.id]["state"] == "succeeded":
-                count = len(self.repository.output(run_id, node.id)["candidates"])
+            if (
+                node.type == "deduplicate"
+                and run["nodes"][node.id]["state"] == "succeeded"
+            ):
+                count = len(
+                    self.repository.output(run_id, node.id)["candidates"]
+                )
         return {
             "id": definition.id,
             "definition_hash": definition.digest,
@@ -220,29 +265,45 @@ class DagPipeline(CollectionPipeline):
                 validate_revision_subgraph(definition)
             else:
                 validate_recipe(definition)
-            status = self.repository.start(execution_id, definition, snapshot["inputs"])
+            status = self.repository.start(
+                execution_id, definition, snapshot["inputs"]
+            )
             # A crash may leave completed artifacts without an edition receipt.
             # Recover that local, idempotent tail even after the model deadline.
             if self.finish_graph(run, definition, execution_id, status):
                 return True
             elapsed = (
-                datetime.now(UTC) - datetime.fromisoformat(snapshot["inputs"]["started_at"])
+                datetime.now(UTC)
+                - datetime.fromisoformat(snapshot["inputs"]["started_at"])
             ).total_seconds()
             remaining = snapshot["inputs"]["timeout_seconds"] - elapsed
             if remaining <= 0:
                 if is_story_recipe(definition):
-                    self.publish_available(run, definition, reason="workflow_deadline")
+                    self.publish_available(
+                        run, definition, reason="workflow_deadline"
+                    )
                 else:
-                    self.runs.update(run["id"], state="blocked", error_code="workflow_deadline")
+                    self.runs.update(
+                        run["id"],
+                        state="blocked",
+                        error_code="workflow_deadline",
+                    )
                 return True
             # The frozen run's model, not a newly edited setting, owns this attempt.
             editor = CodexEditor(
-                self.editor.codex_home, model=snapshot["inputs"]["model"], timeout_seconds=900
+                self.editor.codex_home,
+                model=snapshot["inputs"]["model"],
+                timeout_seconds=900,
             )
-            node_class = StoryNodes if is_story_recipe(definition) else EditorialNodes
-            handlers = node_class(self.runs.store, definition, editor, self.workspace)
+            node_class = (
+                StoryNodes if is_story_recipe(definition) else EditorialNodes
+            )
+            handlers = node_class(
+                self.runs.store, definition, editor, self.workspace
+            )
             engine = WorkflowEngine(
-                self.repository, {node.type: handlers for node in definition.nodes}
+                self.repository,
+                {node.type: handlers for node in definition.nodes},
             )
             try:
                 async with asyncio.timeout(remaining):
@@ -250,7 +311,9 @@ class DagPipeline(CollectionPipeline):
             except TimeoutError:
                 if not is_story_recipe(definition):
                     raise
-                self.publish_available(run, definition, reason="workflow_deadline")
+                self.publish_available(
+                    run, definition, reason="workflow_deadline"
+                )
                 return True
             status = self.repository.get(execution_id)
             self.finish_graph(run, definition, execution_id, status)
@@ -258,12 +321,18 @@ class DagPipeline(CollectionPipeline):
         except asyncio.CancelledError:
             raise
         except TimeoutError:
-            self.runs.update(run["id"], state="blocked", error_code="workflow_deadline")
+            self.runs.update(
+                run["id"], state="blocked", error_code="workflow_deadline"
+            )
         except StoreError as error:
             if error.code != "busy":
-                self.runs.update(run["id"], state="failed", error_code="workflow_storage")
+                self.runs.update(
+                    run["id"], state="failed", error_code="workflow_storage"
+                )
         except Exception:
-            self.runs.update(run["id"], state="failed", error_code="workflow_invalid_result")
+            self.runs.update(
+                run["id"], state="failed", error_code="workflow_invalid_result"
+            )
         return True
 
     def finish_graph(
@@ -271,7 +340,11 @@ class DagPipeline(CollectionPipeline):
     ) -> bool:
         if is_story_recipe(definition):
             frozen = self.publications.get_publication(run["id"])
-            if frozen is not None or status["state"] in {"failed", "unknown", "succeeded"}:
+            if frozen is not None or status["state"] in {
+                "failed",
+                "unknown",
+                "succeeded",
+            }:
                 self.publish_available(
                     run,
                     definition,
@@ -298,13 +371,17 @@ class DagPipeline(CollectionPipeline):
             return True
         return False
 
-    def publish_available(self, run: Payload, definition: Any, *, reason: str) -> None:
+    def publish_available(
+        self, run: Payload, definition: Any, *, reason: str
+    ) -> None:
         """A bounded local tail: exact approved units, never another model pass."""
         try:
             if not self.publications.plan(run["id"]):
                 raise PublicationError("no_publishable_content")
             snapshot = self.runs.workflow_snapshot(run["id"])
-            config = snapshot["inputs"].get("content_config") if snapshot else None
+            config = (
+                snapshot["inputs"].get("content_config") if snapshot else None
+            )
             result = freeze_publication(
                 self.publications,
                 run["id"],
@@ -324,17 +401,26 @@ class DagPipeline(CollectionPipeline):
             },
             workflow_binding={
                 "run_id": run["id"],
-                "result": {"draft": result["draft"], "review": result["review"]},
+                "result": {
+                    "draft": result["draft"],
+                    "review": result["review"],
+                },
                 "required_packets": required,
                 "projection_required": False,
             },
         )
         self.runs.store.finish(edition["id"], publication=result["coverage"])
-        self.runs.update(run["id"], state="editing", edition_id=edition["id"], error_code="")
+        self.runs.update(
+            run["id"], state="editing", edition_id=edition["id"], error_code=""
+        )
         try:
-            self.archive_candidates(run, definition, required, result["packets"])
+            self.archive_candidates(
+                run, definition, required, result["packets"]
+            )
         except Exception:
-            self.state.archive_result(run["id"], error_code="candidate_archive_failed")
+            self.state.archive_result(
+                run["id"], error_code="candidate_archive_failed"
+            )
 
     def queue_edition(
         self,
@@ -346,7 +432,10 @@ class DagPipeline(CollectionPipeline):
         execution_id = execution_id or run["id"]
         review_node = next(
             (node for node in definition.nodes if node.type == "final_review"),
-            next((node for node in definition.nodes if node.type == "review"), None),
+            next(
+                (node for node in definition.nodes if node.type == "review"),
+                None,
+            ),
         )
         if review_node is None:
             raise ValueError("Missing publication review")
@@ -361,28 +450,43 @@ class DagPipeline(CollectionPipeline):
             },
             workflow_binding={
                 "run_id": execution_id,
-                "result": {"draft": result["draft"], "review": result["review"]},
+                "result": {
+                    "draft": result["draft"],
+                    "review": result["review"],
+                },
                 "required_packets": required,
             },
         )
-        self.runs.update(run["id"], state="editing", edition_id=edition["id"], error_code="")
+        self.runs.update(
+            run["id"], state="editing", edition_id=edition["id"], error_code=""
+        )
         if execution_id != run["id"]:
             # The original index and research writes already have durable receipts.
             # Never rewrite/recreate them just because a held draft is revised.
             return
         try:
-            self.archive_candidates(run, definition, required, result["packets"])
+            self.archive_candidates(
+                run, definition, required, result["packets"]
+            )
         except Exception:
             # Candidate browsing is optional; failure must not discard a frozen
             # edition or hide the separately enforced adopted-material barrier.
-            self.state.archive_result(run["id"], error_code="candidate_archive_failed")
+            self.state.archive_result(
+                run["id"], error_code="candidate_archive_failed"
+            )
 
     def archive_candidates(
-        self, run: Payload, definition: Any, required: list[str], packets: list[Payload]
+        self,
+        run: Payload,
+        definition: Any,
+        required: list[str],
+        packets: list[Payload],
     ) -> None:
         from newsletter.workflow.sources import identity_keys
 
-        node = next(node for node in definition.nodes if node.type == "deduplicate")
+        node = next(
+            node for node in definition.nodes if node.type == "deduplicate"
+        )
         candidates = self.repository.output(run["id"], node.id)["candidates"]
         if not candidates:
             return
@@ -395,12 +499,16 @@ class DagPipeline(CollectionPipeline):
             )
         )
         used = [c["id"] for c in candidates if identity_keys(c) & source_keys]
-        self.state.mark(used, "used", "本期正文引用关联的公开来源；不推断读者点击偏好。")
+        self.state.mark(
+            used, "used", "本期正文引用关联的公开来源；不推断读者点击偏好。"
+        )
         rows = [
             f"本期 {len(candidates)} 条候选。以下为发现元数据，不是已验证研究结论；邮件只采用部分深读材料。"
         ]
         for index, candidate in enumerate(candidates, 1):
-            status = "本期关联采用" if candidate["id"] in used else "候选/继续观察"
+            status = (
+                "本期关联采用" if candidate["id"] in used else "候选/继续观察"
+            )
             rows.append(
                 f"{index}. [{status}] {candidate['title'][:180]}\n{candidate['summary'][:600]}\n为何现在关注：{candidate['why_now'][:300]}\n见来源 {index}；发现元数据尚非结论。"
             )
@@ -445,7 +553,9 @@ class DagPipeline(CollectionPipeline):
                 self.runs.update(
                     run["id"],
                     state=edition["state"],
-                    error_code=edition.get("error_code", "workflow_editor_failed"),
+                    error_code=edition.get(
+                        "error_code", "workflow_editor_failed"
+                    ),
                 )
                 changed = True
                 continue
@@ -457,16 +567,24 @@ class DagPipeline(CollectionPipeline):
                     self.state.assert_publishable(edition["id"])
                 except StoreError:
                     self.runs.update(
-                        run["id"], state="blocked", error_code="publication_evidence_invalid"
+                        run["id"],
+                        state="blocked",
+                        error_code="publication_evidence_invalid",
                     )
                 else:
                     self.runs.update(run["id"], state="ready")
                 changed = True
                 continue
-            states = self.runs.projection_states(binding["required_packets"] if binding else [])
-            if not states or any(state in {"failed", "unknown"} for state in states):
+            states = self.runs.projection_states(
+                binding["required_packets"] if binding else []
+            )
+            if not states or any(
+                state in {"failed", "unknown"} for state in states
+            ):
                 self.runs.update(
-                    run["id"], state="blocked", error_code="notion_projection_unconfirmed"
+                    run["id"],
+                    state="blocked",
+                    error_code="notion_projection_unconfirmed",
                 )
                 changed = True
             elif all(state == "done" for state in states):
@@ -494,7 +612,9 @@ class DagPipeline(CollectionPipeline):
             ).fetchall()
         for row in rows:
             run = json.loads(row[0])
-            if run.get("error_code") != "editorial_review_failed" or not run.get("edition_id"):
+            if run.get(
+                "error_code"
+            ) != "editorial_review_failed" or not run.get("edition_id"):
                 continue
             snapshot = self.runs.workflow_snapshot(run["id"])
             if snapshot is None:
@@ -504,14 +624,18 @@ class DagPipeline(CollectionPipeline):
                 validate_recipe(original)
                 if is_story_recipe(original):
                     continue
-                if any(node.type in {"revision", "final_review"} for node in original.nodes):
+                if any(
+                    node.type in {"revision", "final_review"}
+                    for node in original.nodes
+                ):
                     continue  # A second HOLD is terminal, never a third review cycle.
                 repair = self.state.repair(run["id"])
                 if repair and repair["source_edition_id"] != run["edition_id"]:
                     continue  # The continuation's revised edition also held.
                 inputs = snapshot["inputs"]
                 elapsed = (
-                    datetime.now(UTC) - datetime.fromisoformat(inputs["started_at"])
+                    datetime.now(UTC)
+                    - datetime.fromisoformat(inputs["started_at"])
                 ).total_seconds()
                 if repair is None and elapsed >= inputs["timeout_seconds"]:
                     continue  # Upgrading must not reset or extend a run's deadline.
@@ -541,14 +665,18 @@ class DagPipeline(CollectionPipeline):
                         }
                     )
                     validate_revision_subgraph(definition)
-                    review_node = next(node for node in original.nodes if node.type == "review")
+                    review_node = next(
+                        node for node in original.nodes if node.type == "review"
+                    )
                     result = self.repository.output(run["id"], review_node.id)
                     binding = self.state.edition(run["edition_id"])
                     if binding is None or binding["result"] != {
                         "draft": result["draft"],
                         "review": result["review"],
                     }:
-                        raise ValueError("Held result does not match its original artifact")
+                        raise ValueError(
+                            "Held result does not match its original artifact"
+                        )
                     frozen = deepcopy(inputs)
                     frozen.update(
                         prior_review_result=result,
@@ -557,17 +685,24 @@ class DagPipeline(CollectionPipeline):
                         parent_result_hash=content_hash(result),
                     )
                     repair = self.state.create_repair(
-                        run["id"], run["edition_id"], definition.snapshot(), frozen
+                        run["id"],
+                        run["edition_id"],
+                        definition.snapshot(),
+                        frozen,
                     )
                 definition = parse_definition(repair["snapshot"]["definition"])
                 validate_revision_subgraph(definition)
                 self.repository.start(
-                    repair["child_run_id"], definition, repair["snapshot"]["inputs"]
+                    repair["child_run_id"],
+                    definition,
+                    repair["snapshot"]["inputs"],
                 )
                 self.runs.update(run["id"], state="collecting", error_code="")
                 return True
             except Exception:
-                self.runs.update(run["id"], error_code="workflow_repair_invalid")
+                self.runs.update(
+                    run["id"], error_code="workflow_repair_invalid"
+                )
                 return True
         return False
 
@@ -580,9 +715,13 @@ def adopted_packets(draft: Payload) -> list[str]:
         for ref in paragraph["citations"]
     ]
     references += [
-        ref for point in draft.get("chart", {}).get("points", []) for ref in point["citations"]
+        ref
+        for point in draft.get("chart", {}).get("points", [])
+        for ref in point["citations"]
     ]
     if draft.get("recommended_reading"):
         references.append(draft["recommended_reading"]["citation"])
-        references.extend(draft["recommended_reading"].get("supporting_citations", []))
+        references.extend(
+            draft["recommended_reading"].get("supporting_citations", [])
+        )
     return sorted({ref.split("/", 1)[0] for ref in references})

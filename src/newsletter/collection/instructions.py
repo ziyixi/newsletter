@@ -35,13 +35,18 @@ def load_instructions(directory: Path) -> list[Instruction]:
     """
     try:
         absolute = directory.absolute()
-        if any(p.is_symlink() for p in (absolute, *absolute.parents)) or not absolute.is_dir():
+        if (
+            any(p.is_symlink() for p in (absolute, *absolute.parents))
+            or not absolute.is_dir()
+        ):
             raise InstructionError()
         entries = sorted(absolute.iterdir(), key=lambda p: p.name)
         selected = [
             p
             for p in entries
-            if p.suffix == ".md" and p.stem != "README" and not p.name.startswith("_")
+            if p.suffix == ".md"
+            and p.stem != "README"
+            and not p.name.startswith("_")
         ]
         if not 1 <= len(selected) <= MAX_DIRECTIONS:
             raise InstructionError()
@@ -56,7 +61,11 @@ def load_instructions(directory: Path) -> list[Instruction]:
             with path.open("rb") as source:
                 raw = source.read(MAX_INSTRUCTION_BYTES + 1)
             text = raw.decode("utf-8")
-            if not text.strip() or len(raw) > MAX_INSTRUCTION_BYTES or "\x00" in text:
+            if (
+                not text.strip()
+                or len(raw) > MAX_INSTRUCTION_BYTES
+                or "\x00" in text
+            ):
                 raise InstructionError()
             result.append(Instruction(path.stem, text, content_hash(text)))
         return result

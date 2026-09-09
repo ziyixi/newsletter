@@ -32,7 +32,11 @@ from newsletter.workflow.repository import WorkflowRepository
 
 @pytest.fixture
 def source():
-    return files("newsletter").joinpath("templates/edition.html.j2").read_text(encoding="utf-8")
+    return (
+        files("newsletter")
+        .joinpath("templates/edition.html.j2")
+        .read_text(encoding="utf-8")
+    )
 
 
 def config(source, revision="fixture-a"):
@@ -61,10 +65,14 @@ def test_packaged_source_in_sandbox_has_identical_frozen_bytes(source, full):
         "personal_digest": unavailable_digest() if full else None,
         "usage": summarize_usage(record_one()) if full else None,
     }
-    assert render_edition(**args, template_source=source) == render_edition(**args)
+    assert render_edition(**args, template_source=source) == render_edition(
+        **args
+    )
 
 
-def test_external_layout_preserves_graph_sources_sections_personal_and_usage(source):
+def test_external_layout_preserves_graph_sources_sections_personal_and_usage(
+    source,
+):
     packets = copy.deepcopy(SAMPLE_PACKETS)
     packets[0]["is_fixture"] = False
     changed = source.replace("视野", "新版晨报")
@@ -79,20 +87,32 @@ def test_external_layout_preserves_graph_sources_sections_personal_and_usage(sou
     parsed = ParsedEmail(rendered["html"])
     visible = "".join(parsed.text)
     assert "新版晨报" in visible
-    assert len(parsed.images) == 1 and parsed.images[0]["src"] == "cid:newsletter-chart"
+    assert (
+        len(parsed.images) == 1
+        and parsed.images[0]["src"] == "cid:newsletter-chart"
+    )
     assert parsed.images[0]["alt"] == SAMPLE_DRAFT["chart"]["alt_text"]
     for section in SAMPLE_DRAFT["sections"]:
         assert section["heading"] in visible
         for paragraph in section["paragraphs"]:
             assert paragraph["text"] in visible
     assert "https://example.org/research/methods" in parsed.links
-    assert visible.index("TODOFY / 与你有关") > visible.index(SAMPLE_DRAFT["chart"]["question"])
-    assert visible.index("Codex 已记录 120 tokens") > visible.index("TODOFY / 与你有关")
+    assert visible.index("TODOFY / 与你有关") > visible.index(
+        SAMPLE_DRAFT["chart"]["question"]
+    )
+    assert visible.index("Codex 已记录 120 tokens") > visible.index(
+        "TODOFY / 与你有关"
+    )
     assert rendered["chart_png"]
 
 
-def test_template_cache_keys_the_immutable_source_not_one_global_template(source):
-    first, second = source.replace("视野", "缓存版本甲"), source.replace("视野", "缓存版本乙")
+def test_template_cache_keys_the_immutable_source_not_one_global_template(
+    source,
+):
+    first, second = (
+        source.replace("视野", "缓存版本甲"),
+        source.replace("视野", "缓存版本乙"),
+    )
     _compiled.cache_clear()
     first_html = render_template(first, _fixture_context(full=True))
     second_html = render_template(second, _fixture_context(full=True))
@@ -137,7 +157,9 @@ def test_template_cache_keys_the_immutable_source_not_one_global_template(source
         "{% if issue_date == '1999-01-01' %}{{ credentials }}{% endif %}",
     ],
 )
-def test_template_language_cannot_escape_or_allocate_without_bound(source, fragment):
+def test_template_language_cannot_escape_or_allocate_without_bound(
+    source, fragment
+):
     with pytest.raises(TemplateValidationError):
         validate_template(source + fragment)
 
@@ -169,7 +191,9 @@ def test_template_language_cannot_escape_or_allocate_without_bound(source, fragm
         "<p title='one' title='two'>example</p>",
     ],
 )
-def test_email_markup_cannot_execute_or_fetch_remote_resources(source, fragment):
+def test_email_markup_cannot_execute_or_fetch_remote_resources(
+    source, fragment
+):
     with pytest.raises(TemplateValidationError):
         validate_template(source + fragment)
 
@@ -191,7 +215,9 @@ def test_validation_catches_accidentally_dropped_content(source, expression):
         validate_template(source.replace(expression, ""))
 
 
-def test_unknown_nested_property_fails_strictly_and_errors_never_expose_content(source):
+def test_unknown_nested_property_fails_strictly_and_errors_never_expose_content(
+    source,
+):
     private = "secret-context-value-never-log"
     with pytest.raises(TemplateValidationError) as failure:
         validate_template(source + "{{ personal.nonexistent_" + private + " }}")
@@ -229,9 +255,15 @@ def test_source_and_output_sizes_are_bounded(source):
 
 def test_optional_chart_and_alt_text_must_match_frozen_data(source):
     with pytest.raises(TemplateValidationError, match="chart and description"):
-        validate_template(source.replace('alt="{{ chart.alt_text }}"', 'alt="wrong"'))
+        validate_template(
+            source.replace('alt="{{ chart.alt_text }}"', 'alt="wrong"')
+        )
     with pytest.raises(TemplateValidationError):
-        validate_template(source.replace('src="{{ chart_cid }}"', 'src="https://example.org/plot"'))
+        validate_template(
+            source.replace(
+                'src="{{ chart_cid }}"', 'src="https://example.org/plot"'
+            )
+        )
 
 
 @pytest.mark.parametrize(
@@ -242,7 +274,9 @@ def test_optional_chart_and_alt_text_must_match_frozen_data(source):
         "https://example.org/other-public-but-unreferenced",
     ],
 )
-def test_template_cannot_embed_personal_data_or_tracking_in_even_public_links(source, link):
+def test_template_cannot_embed_personal_data_or_tracking_in_even_public_links(
+    source, link
+):
     with pytest.raises(TemplateValidationError, match="preserve source URLs"):
         validate_template(source + '<a href="' + link + '">extra link</a>')
 
@@ -258,7 +292,9 @@ def test_runtime_link_allowlist_also_guards_unexercised_date_branch(source):
     context = _fixture_context(full=True)
     context["issue_date"] = "2026-09-08"
     context["personal"]["summary"] = "synthetic_private_marker"
-    with pytest.raises(TemplateValidationError, match="preserve source URLs") as failure:
+    with pytest.raises(
+        TemplateValidationError, match="preserve source URLs"
+    ) as failure:
         render_template(changed, context)
     assert "synthetic_private_marker" not in str(failure.value)
 
@@ -269,12 +305,18 @@ def test_macros_cannot_multiply_buffers_by_calling_other_macros(source):
         "{% macro b() %}{{ a() }}{{ a() }}{% endmacro %}"
         "{% macro c() %}{{ b() }}{{ b() }}{% endmacro %}{{ c() }}"
     )
-    with pytest.raises(TemplateValidationError, match="macros cannot call other macros"):
+    with pytest.raises(
+        TemplateValidationError, match="macros cannot call other macros"
+    ):
         validate_template(source + fragment)
 
 
-def test_literal_budget_stops_expansion_before_single_macro_buffer_returns(source, monkeypatch):
-    monkeypatch.setattr("newsletter.email_templates.MAX_TEMPLATE_WORK_BYTES", 200_000)
+def test_literal_budget_stops_expansion_before_single_macro_buffer_returns(
+    source, monkeypatch
+):
+    monkeypatch.setattr(
+        "newsletter.email_templates.MAX_TEMPLATE_WORK_BYTES", 200_000
+    )
     fragment = (
         "{% macro expand() %}{% for ref in references %}"
         + "x" * 40000
@@ -301,36 +343,56 @@ def test_literal_budget_stops_expansion_before_single_macro_buffer_returns(sourc
     assert entered == [True] and returned == []
 
 
-def test_absent_config_is_legacy_but_partial_new_config_is_not_a_silent_fallback(source):
+def test_absent_config_is_legacy_but_partial_new_config_is_not_a_silent_fallback(
+    source,
+):
     assert template_from_inputs({"model": "fixture"}) is None
     assert template_from_inputs(config(source)) == source
-    for value in ({}, {"schema_version": 2}, {"schema_version": 1, "files": {}}, None):
+    for value in (
+        {},
+        {"schema_version": 2},
+        {"schema_version": 1, "files": {}},
+        None,
+    ):
         with pytest.raises(TemplateValidationError):
             template_from_inputs({"content_config": value})
 
 
 @pytest.mark.asyncio
-async def test_worker_freezes_a_during_b_activation_and_keeps_old_ready_bytes(source, tmp_path):
+async def test_worker_freezes_a_during_b_activation_and_keeps_old_ready_bytes(
+    source, tmp_path
+):
     store = Store(tmp_path / "newsletter.sqlite3", "mock")
     try:
-        worker = Worker(store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10)
+        worker = Worker(
+            store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10
+        )
         repository = WorkflowRepository(store)
         definition = parse_definition(
-            yaml.safe_load(files("newsletter").joinpath("workflows/daily.yaml").read_text())
+            yaml.safe_load(
+                files("newsletter").joinpath("workflows/daily.yaml").read_text()
+            )
         )
         first_source = source.replace("视野", "冻结版本甲")
         second_source = source.replace("视野", "更新版本乙")
         live_file = tmp_path / "edition.html.j2"
         live_file.write_text(first_source)
         first, _, _, binding = queue(store, key="template-run-a")
-        repository.start(binding["run_id"], definition, config(live_file.read_text(), "a"))
+        repository.start(
+            binding["run_id"], definition, config(live_file.read_text(), "a")
+        )
         # Activate B after run A is frozen but before its rendering tail starts.
         live_file.write_text(second_source)
         assert await worker.step()
         frozen_first = store.get(first["id"])["rendered"]
-        assert "冻结版本甲" in frozen_first["html"] and "更新版本乙" not in frozen_first["html"]
+        assert (
+            "冻结版本甲" in frozen_first["html"]
+            and "更新版本乙" not in frozen_first["html"]
+        )
         second, _, _, binding = queue(store, key="template-run-b")
-        repository.start(binding["run_id"], definition, config(live_file.read_text(), "b"))
+        repository.start(
+            binding["run_id"], definition, config(live_file.read_text(), "b")
+        )
         assert await worker.step()
         assert "更新版本乙" in store.get(second["id"])["rendered"]["html"]
         assert store.get(first["id"])["rendered"] == frozen_first
@@ -340,16 +402,26 @@ async def test_worker_freezes_a_during_b_activation_and_keeps_old_ready_bytes(so
 
 
 @pytest.mark.asyncio
-async def test_worker_invalid_frozen_template_does_not_substitute_packaged_html(source, tmp_path):
+async def test_worker_invalid_frozen_template_does_not_substitute_packaged_html(
+    source, tmp_path
+):
     store = Store(tmp_path / "newsletter.sqlite3", "mock")
     try:
-        worker = Worker(store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10)
+        worker = Worker(
+            store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10
+        )
         repository = WorkflowRepository(store)
         definition = parse_definition(
-            yaml.safe_load(files("newsletter").joinpath("workflows/daily.yaml").read_text())
+            yaml.safe_load(
+                files("newsletter").joinpath("workflows/daily.yaml").read_text()
+            )
         )
         edition, _, _, binding = queue(store)
-        repository.start(binding["run_id"], definition, config(source + "<script>bad</script>"))
+        repository.start(
+            binding["run_id"],
+            definition,
+            config(source + "<script>bad</script>"),
+        )
         assert await worker.step()
         finished = store.get(edition["id"])
         assert finished["state"] == "failed"

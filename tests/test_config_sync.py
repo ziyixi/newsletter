@@ -11,8 +11,17 @@ import httpx
 import pytest
 
 from newsletter import config_sync
-from newsletter.config_sync import ConfigSync, GitHubSource, SyncError, SyncSettings
-from newsletter.content_config import load_active, packaged_snapshot, validate_snapshot
+from newsletter.config_sync import (
+    ConfigSync,
+    GitHubSource,
+    SyncError,
+    SyncSettings,
+)
+from newsletter.content_config import (
+    load_active,
+    packaged_snapshot,
+    validate_snapshot,
+)
 from newsletter.contracts import content_hash
 
 SHA = "a" * 40
@@ -45,7 +54,9 @@ def source_for(value: dict, requests: list | None = None) -> GitHubSource:
             requests.append(request)
         assert "authorization" not in request.headers
         if request.url.path.endswith("/git/ref/heads/published"):
-            return httpx.Response(200, json={"object": {"type": "commit", "sha": SHA}})
+            return httpx.Response(
+                200, json={"object": {"type": "commit", "sha": SHA}}
+            )
         assert request.url.path.endswith("/contents/bundle.json")
         assert request.url.params["ref"] == SHA
         assert request.headers["accept"] == "application/vnd.github.raw+json"
@@ -54,7 +65,9 @@ def source_for(value: dict, requests: list | None = None) -> GitHubSource:
     return GitHubSource("ziyixi/newsletter", httpx.MockTransport(handle))
 
 
-def test_pull_resolves_one_commit_then_fetches_entire_validated_bundle(seeded: ConfigSync):
+def test_pull_resolves_one_commit_then_fetches_entire_validated_bundle(
+    seeded: ConfigSync,
+):
     requests: list[httpx.Request] = []
     expected = bundle()
     seeded.source = source_for(expected, requests)
@@ -72,7 +85,9 @@ def test_pull_resolves_one_commit_then_fetches_entire_validated_bundle(seeded: C
 def test_identical_digest_does_not_reinstall(seeded: ConfigSync, monkeypatch):
     seeded.source = source_for(bundle())
     seeded.once()
-    install = Mock(side_effect=AssertionError("must not rewrite an identical release"))
+    install = Mock(
+        side_effect=AssertionError("must not rewrite an identical release")
+    )
     monkeypatch.setattr(config_sync, "install_snapshot", install)
     assert seeded.once()["error"] is None
     install.assert_not_called()
@@ -89,17 +104,23 @@ def test_identical_digest_does_not_reinstall(seeded: ConfigSync, monkeypatch):
         (302, "CONFIG_GITHUB_UNAVAILABLE"),
     ],
 )
-def test_remote_errors_preserve_active_and_never_echo_response(seeded: ConfigSync, status, code):
+def test_remote_errors_preserve_active_and_never_echo_response(
+    seeded: ConfigSync, status, code
+):
     previous = load_active(seeded.root)
     calls = []
 
     def handle(request):
         calls.append(request)
         return httpx.Response(
-            status, text=SECRET, headers={"Location": "https://evil.invalid/token"}
+            status,
+            text=SECRET,
+            headers={"Location": "https://evil.invalid/token"},
         )
 
-    seeded.source = GitHubSource("ziyixi/newsletter", httpx.MockTransport(handle))
+    seeded.source = GitHubSource(
+        "ziyixi/newsletter", httpx.MockTransport(handle)
+    )
     report = seeded.once()
     assert report["error"] == code
     assert load_active(seeded.root) == previous
@@ -112,13 +133,20 @@ def test_transport_failure_preserves_baseline(seeded: ConfigSync):
     def handle(request):
         raise httpx.ConnectError(SECRET, request=request)
 
-    seeded.source = GitHubSource("ziyixi/newsletter", httpx.MockTransport(handle))
+    seeded.source = GitHubSource(
+        "ziyixi/newsletter", httpx.MockTransport(handle)
+    )
     assert seeded.once()["error"] == "CONFIG_GITHUB_NETWORK_ERROR"
     assert load_active(seeded.root)["revision"] == "packaged"
 
 
 @pytest.mark.parametrize(
-    "field,value", [("schema_version", 999), ("digest", "0" * 64), ("revision", "../untrusted")]
+    "field,value",
+    [
+        ("schema_version", 999),
+        ("digest", "0" * 64),
+        ("revision", "../untrusted"),
+    ],
 )
 def test_invalid_bundle_never_activates(seeded: ConfigSync, field, value):
     snapshot = bundle()
@@ -143,18 +171,23 @@ def test_invalid_bundle_never_activates(seeded: ConfigSync, field, value):
 )
 def test_untrusted_ref_must_resolve_to_exact_commit(payload):
     source = GitHubSource(
-        "ziyixi/newsletter", httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+        "ziyixi/newsletter",
+        httpx.MockTransport(lambda _: httpx.Response(200, json=payload)),
     )
     with pytest.raises(SyncError, match="CONFIG_PUBLISHED_REF_INVALID"):
         source.resolve()
 
 
-def test_oversized_download_rejected_before_parsing(seeded: ConfigSync, monkeypatch):
+def test_oversized_download_rejected_before_parsing(
+    seeded: ConfigSync, monkeypatch
+):
     seeded.source = source_for(bundle())
     monkeypatch.setattr(config_sync, "MAX_BUNDLE_BYTES", 50)
     # _get's default is bound at definition time; exercise the explicit limit.
     with pytest.raises(SyncError, match="CONFIG_DOWNLOAD_TOO_LARGE"):
-        seeded.source._get("contents/bundle.json?ref=" + SHA, raw=True, limit=50)
+        seeded.source._get(
+            "contents/bundle.json?ref=" + SHA, raw=True, limit=50
+        )
 
 
 @pytest.mark.parametrize(
@@ -166,7 +199,8 @@ def test_oversized_download_rejected_before_parsing(seeded: ConfigSync, monkeypa
 )
 def test_ambiguous_or_deep_json_is_a_safe_failure(raw):
     source = GitHubSource(
-        "ziyixi/newsletter", httpx.MockTransport(lambda _: httpx.Response(200, text=raw))
+        "ziyixi/newsletter",
+        httpx.MockTransport(lambda _: httpx.Response(200, text=raw)),
     )
     with pytest.raises(SyncError, match="CONFIG_PUBLISHED_REF_INVALID"):
         source.resolve()
@@ -178,19 +212,23 @@ def test_duplicate_bundle_fields_cannot_bypass_validation():
     value = json.dumps(bundle())
     ambiguous = value[:-1] + ',"schema_version":1}'
     source = GitHubSource(
-        "ziyixi/newsletter", httpx.MockTransport(lambda _: httpx.Response(200, text=ambiguous))
+        "ziyixi/newsletter",
+        httpx.MockTransport(lambda _: httpx.Response(200, text=ambiguous)),
     )
     with pytest.raises(SyncError, match="CONFIG_BUNDLE_INVALID"):
         source.fetch(SHA)
 
 
-def test_pin_rolls_back_and_survives_restart_without_any_github_request(seeded: ConfigSync):
+def test_pin_rolls_back_and_survives_restart_without_any_github_request(
+    seeded: ConfigSync,
+):
     old_digest = load_active(seeded.root)["digest"]
     seeded.source = source_for(bundle())
     seeded.once()
     assert seeded.pin(old_digest)["active_revision"] == "packaged"
     restarted = ConfigSync(
-        SyncSettings(seeded.root), Mock(side_effect=AssertionError("no network"))
+        SyncSettings(seeded.root),
+        Mock(side_effect=AssertionError("no network")),
     )
     report = restarted.once()
     assert report["pinned_digest"] == old_digest
@@ -219,7 +257,9 @@ def test_crash_after_pin_intent_is_completed_locally(seeded: ConfigSync):
 
 
 @pytest.mark.parametrize("digest", ["../bundle", "a" * 40, "f" * 64])
-def test_pin_requires_existing_validated_local_release(seeded: ConfigSync, digest):
+def test_pin_requires_existing_validated_local_release(
+    seeded: ConfigSync, digest
+):
     old = load_active(seeded.root)
     with pytest.raises(SyncError):
         seeded.pin(digest)
@@ -238,21 +278,37 @@ def test_missing_baseline_requires_explicit_seed(tmp_path: Path):
         sync.seed()
 
 
-def test_status_is_read_only_and_does_not_call_providers(seeded: ConfigSync, monkeypatch):
-    before = {str(path): path.stat().st_mtime_ns for path in seeded.root.rglob("*")}
-    monkeypatch.setattr(config_sync, "_writer_lock", Mock(side_effect=AssertionError("no writes")))
+def test_status_is_read_only_and_does_not_call_providers(
+    seeded: ConfigSync, monkeypatch
+):
+    before = {
+        str(path): path.stat().st_mtime_ns for path in seeded.root.rglob("*")
+    }
+    monkeypatch.setattr(
+        config_sync,
+        "_writer_lock",
+        Mock(side_effect=AssertionError("no writes")),
+    )
     seeded.source = Mock()
     assert seeded.status()["active_revision"] == "packaged"
-    after = {str(path): path.stat().st_mtime_ns for path in seeded.root.rglob("*")}
+    after = {
+        str(path): path.stat().st_mtime_ns for path in seeded.root.rglob("*")
+    }
     assert after == before
     seeded.source.resolve.assert_not_called()
 
 
-def test_seed_does_not_open_sqlite_launch_models_or_call_http(tmp_path: Path, monkeypatch):
+def test_seed_does_not_open_sqlite_launch_models_or_call_http(
+    tmp_path: Path, monkeypatch
+):
     import sqlite3
     import subprocess
 
-    denied = Mock(side_effect=AssertionError("configuration must not run service operations"))
+    denied = Mock(
+        side_effect=AssertionError(
+            "configuration must not run service operations"
+        )
+    )
     monkeypatch.setattr(sqlite3, "connect", denied)
     monkeypatch.setattr(subprocess, "Popen", denied)
     monkeypatch.setattr(httpx.Client, "send", denied)
@@ -270,7 +326,9 @@ def test_concurrent_writer_does_not_race_pin_or_activation(seeded: ConfigSync):
                 operation()
 
 
-def test_health_requires_initialized_store_and_recent_poll(seeded: ConfigSync, monkeypatch):
+def test_health_requires_initialized_store_and_recent_poll(
+    seeded: ConfigSync, monkeypatch
+):
     assert not seeded.health()
     seeded.source = source_for(bundle())
     monkeypatch.setattr(config_sync.time, "time", lambda: 1000.0)
@@ -295,7 +353,11 @@ def test_anonymous_client_does_not_inherit_credentials_or_proxy_environment(
 @pytest.mark.parametrize(
     "name,value,code",
     [
-        ("NEWSLETTER_CONTENT_CONFIG_DIR", "relative/path", "CONFIG_DIRECTORY_REQUIRED"),
+        (
+            "NEWSLETTER_CONTENT_CONFIG_DIR",
+            "relative/path",
+            "CONFIG_DIRECTORY_REQUIRED",
+        ),
         (
             "NEWSLETTER_CONFIG_REPOSITORY",
             "https://evil.invalid/private",
@@ -306,7 +368,9 @@ def test_anonymous_client_does_not_inherit_credentials_or_proxy_environment(
         ("NEWSLETTER_CONFIG_POLL_SECONDS", "86401", "CONFIG_INTERVAL_INVALID"),
     ],
 )
-def test_invalid_settings_never_echo_raw_values(tmp_path: Path, monkeypatch, name, value, code):
+def test_invalid_settings_never_echo_raw_values(
+    tmp_path: Path, monkeypatch, name, value, code
+):
     monkeypatch.setenv("NEWSLETTER_CONTENT_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv(name, value)
     with pytest.raises(SyncError, match=code) as caught:
@@ -327,10 +391,14 @@ def test_symlinked_store_and_journal_are_rejected(tmp_path: Path):
     assert not (tmp_path / "outside").exists()
 
 
-def test_cli_error_does_not_dump_arbitrary_exception(tmp_path: Path, monkeypatch, capsys):
+def test_cli_error_does_not_dump_arbitrary_exception(
+    tmp_path: Path, monkeypatch, capsys
+):
     monkeypatch.setenv("NEWSLETTER_CONTENT_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(config_sync.sys, "argv", ["config-sync", "seed"])
-    monkeypatch.setattr(config_sync, "install_snapshot", Mock(side_effect=ValueError(SECRET)))
+    monkeypatch.setattr(
+        config_sync, "install_snapshot", Mock(side_effect=ValueError(SECRET))
+    )
     with pytest.raises(SystemExit) as caught:
         config_sync.main()
     assert caught.value.code == 1

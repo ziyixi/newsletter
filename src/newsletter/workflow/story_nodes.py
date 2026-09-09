@@ -43,14 +43,20 @@ def freeze_publication(
     return publications.record_publication(run_id, issue_date, tasks, result)
 
 
-def _covered_history(candidates: list[Payload], pending: list[Payload]) -> list[Payload]:
+def _covered_history(
+    candidates: list[Payload], pending: list[Payload]
+) -> list[Payload]:
     """Unfinished investigations are not already-covered discovery exclusions.
 
     Historical aliases inherit the exception, but identities/dates themselves do
     not change. The ordinary discovery, pool and selection deduplicators still
     merge equivalent items within today's pool and suppress other covered topics.
     """
-    pending_ids = {candidate_id for story in pending for candidate_id in story["candidate_ids"]}
+    pending_ids = {
+        candidate_id
+        for story in pending
+        for candidate_id in story["candidate_ids"]
+    }
     pending_keys = set().union(*(identity_keys(story) for story in pending))
     for story in pending:
         for url in story["source_urls"]:
@@ -78,7 +84,9 @@ class StoryNodes(EditorialNodes):
         if kind == "history":
             history = await super().execute(kind, ctx, path)
             unfinished = ctx.run_inputs.get("pending_stories", [])
-            history["candidates"] = _covered_history(history["candidates"], unfinished)
+            history["candidates"] = _covered_history(
+                history["candidates"], unfinished
+            )
             # These are questions to investigate, never recycled verified claims.
             pending = [
                 {
@@ -100,7 +108,8 @@ class StoryNodes(EditorialNodes):
             return history
         if kind == "story_plan":
             tasks = sorted(
-                self.one(ctx, "selection")["research_tasks"], key=lambda task: task["priority"]
+                self.one(ctx, "selection")["research_tasks"],
+                key=lambda task: task["priority"],
             )
             publications.save_plan(ctx.run_id, date, tasks)
             # Ranking already considers AI, cross-discipline and world coverage.
@@ -112,19 +121,29 @@ class StoryNodes(EditorialNodes):
             return {"brief_tasks": tasks, "deep_tasks": tasks[:maximum]}
         if kind in {"story_brief", "story_deep"}:
             task = cast(Payload, ctx.item)
-            mode: Literal["brief", "deep"] = "brief" if kind == "story_brief" else "deep"
+            mode: Literal["brief", "deep"] = (
+                "brief" if kind == "story_brief" else "deep"
+            )
             candidates = [
                 item
                 for item in self.one(ctx, "deduplicate")["candidates"]
                 if item["id"] in task["candidate_ids"]
             ]
-            prior = publications.best_result(ctx.run_id, task["id"]) if mode == "deep" else None
+            prior = (
+                publications.best_result(ctx.run_id, task["id"])
+                if mode == "deep"
+                else None
+            )
 
             def checkpoint(result: Payload) -> None:
                 # Commit evidence before its approval receipt. Both operations
                 # replay exactly; neither waits for the optional Notion mirror.
-                self.store.save_workflow_supplements(ctx.run_id, result["packets"])
-                publications.save(ctx.run_id, task, mode, result, issue_date=date)
+                self.store.save_workflow_supplements(
+                    ctx.run_id, result["packets"]
+                )
+                publications.save(
+                    ctx.run_id, task, mode, result, issue_date=date
+                )
 
             policy = ctx.run_inputs["policy"]
             limits = editorial_limits(ctx.run_inputs.get("content_config"))

@@ -34,7 +34,10 @@ def bundle():
                     "kind": "feature",
                     "heading": "Synthetic statement",
                     "paragraphs": [
-                        {"text": "Synthetic evidence only.", "citations": ["supplement-1/s1"]}
+                        {
+                            "text": "Synthetic evidence only.",
+                            "citations": ["supplement-1/s1"],
+                        }
                     ],
                 }
             ],
@@ -69,7 +72,9 @@ def bundle():
 def test_same_host_and_content_id_do_not_prove_exact_source_was_opened(
     bundle, source_url, other_url
 ):
-    bundle["supplemental_packets"][0]["content"]["sources"][0]["url"] = source_url
+    bundle["supplemental_packets"][0]["content"]["sources"][0]["url"] = (
+        source_url
+    )
     text = json.dumps(bundle)
     with pytest.raises(EditorError) as error:
         _result(text, [], {other_url}, searched=True)
@@ -81,7 +86,9 @@ def test_same_host_and_content_id_do_not_prove_exact_source_was_opened(
     assert result.review["passed"] is True
     added = result.supplemental_packets[0]
     assert added["content"]["sources"][0]["url"] == source_url
-    assert result.draft["sections"][0]["paragraphs"][0]["citations"] == [added["id"] + "/s1"]
+    assert result.draft["sections"][0]["paragraphs"][0]["citations"] == [
+        added["id"] + "/s1"
+    ]
     validate_draft(result.draft, result.supplemental_packets)
 
 
@@ -90,15 +97,25 @@ def test_same_host_and_content_id_do_not_prove_exact_source_was_opened(
     [
         (CANONICAL_URL + "#table-1", CANONICAL_URL),
         (CANONICAL_URL + "#different-section", CANONICAL_URL),
-        (CANONICAL_URL + "?edition=first#table-1", CANONICAL_URL + "?edition=first"),
+        (
+            CANONICAL_URL + "?edition=first#table-1",
+            CANONICAL_URL + "?edition=first",
+        ),
     ],
 )
-def test_fragment_is_the_only_ignored_url_component(bundle, source_url, opened_url):
-    bundle["supplemental_packets"][0]["content"]["sources"][0]["url"] = source_url
+def test_fragment_is_the_only_ignored_url_component(
+    bundle, source_url, opened_url
+):
+    bundle["supplemental_packets"][0]["content"]["sources"][0]["url"] = (
+        source_url
+    )
     # _collect already removes fragments from observed opens before _result.
     result = _result(json.dumps(bundle), [], {opened_url}, searched=True)
     assert result.review["passed"] is True
-    assert result.supplemental_packets[0]["content"]["sources"][0]["url"] == source_url
+    assert (
+        result.supplemental_packets[0]["content"]["sources"][0]["url"]
+        == source_url
+    )
     validate_draft(result.draft, result.supplemental_packets)
 
 
@@ -112,16 +129,25 @@ def test_fragment_is_the_only_ignored_url_component(bundle, source_url, opened_u
         ("?edition=first&view=full", "?view=full&edition=first"),
     ],
 )
-def test_query_parameters_are_not_removed_or_normalized(bundle, source_suffix, opened_suffix):
+def test_query_parameters_are_not_removed_or_normalized(
+    bundle, source_suffix, opened_suffix
+):
     bundle["supplemental_packets"][0]["content"]["sources"][0]["url"] = (
         CANONICAL_URL + source_suffix
     )
     with pytest.raises(EditorError) as error:
-        _result(json.dumps(bundle), [], {CANONICAL_URL + opened_suffix}, searched=True)
+        _result(
+            json.dumps(bundle),
+            [],
+            {CANONICAL_URL + opened_suffix},
+            searched=True,
+        )
     assert error.value.code == "invalid_output"
 
 
-def test_reading_supporting_citations_receive_the_same_host_owned_packet_identity(bundle):
+def test_reading_supporting_citations_receive_the_same_host_owned_packet_identity(
+    bundle,
+):
     supplement = bundle["supplemental_packets"][0]
     supplement["content"]["sources"].append(
         {
@@ -135,7 +161,9 @@ def test_reading_supporting_citations_receive_the_same_host_owned_packet_identit
         "reason": "Synthetic primary reading and journal record.",
         "supporting_citations": ["supplement-1/journal"],
     }
-    result = _result(json.dumps(bundle), [], {CANONICAL_URL, SHORT_URL}, searched=True)
+    result = _result(
+        json.dumps(bundle), [], {CANONICAL_URL, SHORT_URL}, searched=True
+    )
     identity = result.supplemental_packets[0]["id"]
     reading = result.draft["recommended_reading"]
     assert identity != "supplement-1"
@@ -158,10 +186,15 @@ def test_component_approval_selects_only_missing_observed_actions(
     component, opened, searched, expected
 ):
     value = {
-        "assessments": [{"component": component, "status": "approved", "findings": []}],
+        "assessments": [
+            {"component": component, "status": "approved", "findings": []}
+        ],
         "issues": [],
     }
-    assert _unobserved_approval_actions(json.dumps(value), opened, searched) == expected
+    assert (
+        _unobserved_approval_actions(json.dumps(value), opened, searched)
+        == expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -180,15 +213,24 @@ def test_component_approval_selects_only_missing_observed_actions(
         [None, "approved"],
     ],
 )
-def test_honest_component_hold_or_malformed_claim_does_not_trigger_research(assessments):
+def test_honest_component_hold_or_malformed_claim_does_not_trigger_research(
+    assessments,
+):
     assert (
-        _unobserved_approval_actions(json.dumps({"assessments": assessments}), set(), False) == []
+        _unobserved_approval_actions(
+            json.dumps({"assessments": assessments}), set(), False
+        )
+        == []
     )
 
 
-async def test_component_approval_gets_one_same_thread_source_action_correction(tmp_path, fake_sdk):
+async def test_component_approval_gets_one_same_thread_source_action_correction(
+    tmp_path, fake_sdk
+):
     value = {
-        "assessments": [{"component": "body", "status": "approved", "findings": []}],
+        "assessments": [
+            {"component": "body", "status": "approved", "findings": []}
+        ],
         "issues": [],
     }
     fake_sdk.turns = [FakeTurn(value, research=False), FakeTurn(value)]
@@ -207,7 +249,9 @@ async def test_second_component_self_approval_never_fabricates_actions_or_third_
     tmp_path, fake_sdk
 ):
     value = {
-        "assessments": [{"component": "signal", "status": "approved", "findings": []}],
+        "assessments": [
+            {"component": "signal", "status": "approved", "findings": []}
+        ],
         "issues": [],
     }
     fake_sdk.turn = FakeTurn(value, research=False)
@@ -216,12 +260,23 @@ async def test_second_component_self_approval_never_fabricates_actions_or_third_
     )
     assert not opened and not searched and len(fake_sdk.prompts) == 2
     # The StoryEditor receipt boundary still rejects this unobserved approval.
-    assert _unobserved_approval_actions(text, opened, searched) == ["search", "openPage"]
+    assert _unobserved_approval_actions(text, opened, searched) == [
+        "search",
+        "openPage",
+    ]
 
 
-async def test_all_components_blocked_do_not_spend_an_action_correction(tmp_path, fake_sdk):
+async def test_all_components_blocked_do_not_spend_an_action_correction(
+    tmp_path, fake_sdk
+):
     value = {
-        "assessments": [{"component": "body", "status": "blocked", "findings": ["Cannot confirm"]}],
+        "assessments": [
+            {
+                "component": "body",
+                "status": "blocked",
+                "findings": ["Cannot confirm"],
+            }
+        ],
         "issues": [],
     }
     fake_sdk.turn = FakeTurn(value, research=False)
@@ -234,11 +289,18 @@ async def test_all_components_blocked_do_not_spend_an_action_correction(tmp_path
 
 def test_exact_prior_retraction_claim_needs_fresh_actions_even_without_new_body_approval():
     value = {
-        "assessments": [{"component": "body", "status": "not_present", "findings": []}],
+        "assessments": [
+            {"component": "body", "status": "not_present", "findings": []}
+        ],
         "prior_withdrawal": {"target_body_hash": "a" * 64},
     }
-    assert _unobserved_approval_actions(json.dumps(value), set(), False) == ["search", "openPage"]
-    assert _unobserved_approval_actions(json.dumps(value), {SHORT_URL}, True) == []
+    assert _unobserved_approval_actions(json.dumps(value), set(), False) == [
+        "search",
+        "openPage",
+    ]
+    assert (
+        _unobserved_approval_actions(json.dumps(value), {SHORT_URL}, True) == []
+    )
     value["prior_withdrawal"] = None
     assert _unobserved_approval_actions(json.dumps(value), set(), False) == []
 
@@ -246,7 +308,8 @@ def test_exact_prior_retraction_claim_needs_fresh_actions_even_without_new_body_
 def component_review(**statuses):
     return {
         "assessments": [
-            {"component": key, "status": status, "findings": []} for key, status in statuses.items()
+            {"component": key, "status": status, "findings": []}
+            for key, status in statuses.items()
         ],
         "issues": [],
         "prior_withdrawal": None,
@@ -259,12 +322,13 @@ class SourceTurn(FakeTurn):
         self.urls, self.searched = urls, searched
 
     async def stream(self):
-        actions = ([{"type": "search", "query": "synthetic"}] if self.searched else []) + [
-            {"type": "openPage", "url": url} for url in self.urls
-        ]
+        actions = (
+            [{"type": "search", "query": "synthetic"}] if self.searched else []
+        ) + [{"type": "openPage", "url": url} for url in self.urls]
         for action in actions:
             yield SimpleNamespace(
-                method="item/completed", payload={"item": {"type": "webSearch", "action": action}}
+                method="item/completed",
+                payload={"item": {"type": "webSearch", "action": action}},
             )
         async for event in super().stream():
             yield event
@@ -279,39 +343,60 @@ def test_only_approved_components_select_code_owned_missing_urls():
         }
     )
     value = component_review(
-        body="approved", reading="blocked", chart="not_present", signal="approved"
+        body="approved",
+        reading="blocked",
+        chart="not_present",
+        signal="approved",
     )
     value["assessments"][0]["url"] = "https://example.org/model-invented"
-    assert _unopened_approval_sources(json.dumps(value), {SHORT_URL}, sources) == [CANONICAL_URL]
+    assert _unopened_approval_sources(
+        json.dumps(value), {SHORT_URL}, sources
+    ) == [CANONICAL_URL]
 
 
-@pytest.mark.parametrize("status", ["blocked", "not_present", None, True, "APPROVED"])
+@pytest.mark.parametrize(
+    "status", ["blocked", "not_present", None, True, "APPROVED"]
+)
 def test_blocked_or_absent_component_never_selects_missing_urls(status):
     sources = ApprovalSources({"body": [CANONICAL_URL]})
     assert (
-        _unopened_approval_sources(json.dumps(component_review(body=status)), set(), sources) == []
+        _unopened_approval_sources(
+            json.dumps(component_review(body=status)), set(), sources
+        )
+        == []
     )
 
 
 def test_withdrawal_only_selects_its_declared_known_evidence_not_all_sources():
-    sources = ApprovalSources({}, {"p/first": SHORT_URL, "p/second": CANONICAL_URL})
+    sources = ApprovalSources(
+        {}, {"p/first": SHORT_URL, "p/second": CANONICAL_URL}
+    )
     value = component_review(body="not_present")
     value["prior_withdrawal"] = {
         "target_body_hash": "a" * 64,
         "evidence": ["p/second", "https://example.org/model-url", None],
     }
-    assert _unopened_approval_sources(json.dumps(value), set(), sources) == [CANONICAL_URL]
+    assert _unopened_approval_sources(json.dumps(value), set(), sources) == [
+        CANONICAL_URL
+    ]
     value["prior_withdrawal"] = None
     assert _unopened_approval_sources(json.dumps(value), set(), sources) == []
 
 
 def test_exact_review_url_matching_ignores_only_fragment_not_query_or_canonical_alias():
-    sources = ApprovalSources({"body": [SHORT_URL + "?v=1#table", CANONICAL_URL]})
+    sources = ApprovalSources(
+        {"body": [SHORT_URL + "?v=1#table", CANONICAL_URL]}
+    )
     text = json.dumps(component_review(body="approved"))
-    assert _unopened_approval_sources(text, {SHORT_URL + "?v=1", CANONICAL_URL}, sources) == []
-    assert _unopened_approval_sources(text, {SHORT_URL, CANONICAL_URL}, sources) == [
-        SHORT_URL + "?v=1#table"
-    ]
+    assert (
+        _unopened_approval_sources(
+            text, {SHORT_URL + "?v=1", CANONICAL_URL}, sources
+        )
+        == []
+    )
+    assert _unopened_approval_sources(
+        text, {SHORT_URL, CANONICAL_URL}, sources
+    ) == [SHORT_URL + "?v=1#table"]
 
 
 async def test_first_open_does_not_hide_second_required_url_and_only_one_correction_runs(
@@ -322,16 +407,25 @@ async def test_first_open_does_not_hide_second_required_url_and_only_one_correct
         SourceTurn(value, [SHORT_URL]),
         SourceTurn(value, [CANONICAL_URL], searched=False),
     ]
-    sources = ApprovalSources({"body": [SHORT_URL, CANONICAL_URL], "signal": [SHORT_URL]})
+    sources = ApprovalSources(
+        {"body": [SHORT_URL, CANONICAL_URL], "signal": [SHORT_URL]}
+    )
     text, opened, searched = await live_editor(tmp_path).execute(
         "{}", {}, "fixture", tmp_path / "job", approval_sources=sources
     )
-    assert json.loads(text) == value and opened == {SHORT_URL, CANONICAL_URL} and searched
+    assert (
+        json.loads(text) == value
+        and opened == {SHORT_URL, CANONICAL_URL}
+        and searched
+    )
     assert len(fake_sdk.prompts) == 2 and fake_sdk.thread_starts == 1
     correction = fake_sdk.prompts[1]
     assert correction["unverified_urls"] == [CANONICAL_URL]
     assert correction["missing_approval_actions"] == []
-    assert "逐个独立open" in correction["task"] and "不要一次调用批量打开" in correction["task"]
+    assert (
+        "逐个独立open" in correction["task"]
+        and "不要一次调用批量打开" in correction["task"]
+    )
 
 
 async def test_still_missing_second_url_returns_observations_without_third_turn_or_global_failure(
@@ -349,12 +443,17 @@ async def test_still_missing_second_url_returns_observations_without_third_turn_
     assert _unopened_approval_sources(text, opened, sources) == [CANONICAL_URL]
 
 
-async def test_correction_can_block_only_unverifiable_component_and_keep_body(tmp_path, fake_sdk):
+async def test_correction_can_block_only_unverifiable_component_and_keep_body(
+    tmp_path, fake_sdk
+):
     first, final = (
         component_review(body="approved", reading="approved"),
         component_review(body="approved", reading="blocked"),
     )
-    fake_sdk.turns = [SourceTurn(first, [SHORT_URL]), SourceTurn(final, [], searched=False)]
+    fake_sdk.turns = [
+        SourceTurn(first, [SHORT_URL]),
+        SourceTurn(final, [], searched=False),
+    ]
     sources = ApprovalSources({"body": [SHORT_URL], "reading": [CANONICAL_URL]})
     text, opened, _ = await live_editor(tmp_path).execute(
         "{}", {}, "fixture", tmp_path / "job", approval_sources=sources
@@ -369,30 +468,51 @@ async def test_source_packet_and_component_misses_share_one_correction_slot(
     value = component_review(body="approved")
     value["supplemental_packets"] = bundle["supplemental_packets"]
     third_url = "https://example.org/third-source"
-    fake_sdk.turns = [SourceTurn(value, [SHORT_URL]), SourceTurn(value, [CANONICAL_URL, third_url])]
+    fake_sdk.turns = [
+        SourceTurn(value, [SHORT_URL]),
+        SourceTurn(value, [CANONICAL_URL, third_url]),
+    ]
     sources = ApprovalSources({"body": [third_url]})
     _, opened, _ = await live_editor(tmp_path).execute(
         "{}", {}, "fixture", tmp_path / "job", approval_sources=sources
     )
     assert len(fake_sdk.prompts) == 2
-    assert set(fake_sdk.prompts[1]["unverified_urls"]) == {CANONICAL_URL, third_url}
+    assert set(fake_sdk.prompts[1]["unverified_urls"]) == {
+        CANONICAL_URL,
+        third_url,
+    }
     assert opened == {SHORT_URL, CANONICAL_URL, third_url}
 
 
-async def test_withdrawal_missing_specific_evidence_gets_existing_correction(tmp_path, fake_sdk):
+async def test_withdrawal_missing_specific_evidence_gets_existing_correction(
+    tmp_path, fake_sdk
+):
     value = component_review(body="not_present")
-    value["prior_withdrawal"] = {"target_body_hash": "a" * 64, "evidence": ["p/second"]}
-    fake_sdk.turns = [SourceTurn(value, [SHORT_URL]), SourceTurn(value, [CANONICAL_URL])]
-    sources = ApprovalSources({}, {"p/first": SHORT_URL, "p/second": CANONICAL_URL})
+    value["prior_withdrawal"] = {
+        "target_body_hash": "a" * 64,
+        "evidence": ["p/second"],
+    }
+    fake_sdk.turns = [
+        SourceTurn(value, [SHORT_URL]),
+        SourceTurn(value, [CANONICAL_URL]),
+    ]
+    sources = ApprovalSources(
+        {}, {"p/first": SHORT_URL, "p/second": CANONICAL_URL}
+    )
     await live_editor(tmp_path).execute(
         "{}", {}, "fixture", tmp_path / "job", approval_sources=sources
     )
     assert fake_sdk.prompts[1]["unverified_urls"] == [CANONICAL_URL]
 
 
-async def test_missing_component_url_correction_stays_inside_original_timeout(tmp_path, fake_sdk):
+async def test_missing_component_url_correction_stays_inside_original_timeout(
+    tmp_path, fake_sdk
+):
     value = component_review(body="approved")
-    fake_sdk.turns = [SourceTurn(value, [SHORT_URL]), SourceTurn(value, [], hang=True)]
+    fake_sdk.turns = [
+        SourceTurn(value, [SHORT_URL]),
+        SourceTurn(value, [], hang=True),
+    ]
     with pytest.raises(EditorError) as error:
         await live_editor(tmp_path, timeout_seconds=0.01).execute(
             "{}",
@@ -431,4 +551,6 @@ def test_review_source_snapshot_cannot_be_changed_by_later_caller_mutation():
     frozen = _approval_snapshot(ApprovalSources({"body": urls}, evidence))
     urls.append(CANONICAL_URL)
     evidence["p/second"] = CANONICAL_URL
-    assert frozen.components == {"body": (SHORT_URL,)} and frozen.evidence == {"p/first": SHORT_URL}
+    assert frozen.components == {"body": (SHORT_URL,)} and frozen.evidence == {
+        "p/first": SHORT_URL
+    }

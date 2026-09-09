@@ -15,7 +15,9 @@ from newsletter.usage import (
 )
 
 
-def notification(input_tokens=100, output_tokens=20, cached=60, reasoning=10, **extra):
+def notification(
+    input_tokens=100, output_tokens=20, cached=60, reasoning=10, **extra
+):
     counts = {
         "inputTokens": input_tokens,
         "cachedInputTokens": cached,
@@ -27,7 +29,11 @@ def notification(input_tokens=100, output_tokens=20, cached=60, reasoning=10, **
     return {
         "threadId": "thread-test",
         "turnId": "turn-test",
-        "tokenUsage": {"total": counts, "last": counts, "modelContextWindow": 200000},
+        "tokenUsage": {
+            "total": counts,
+            "last": counts,
+            "modelContextWindow": 200000,
+        },
     }
 
 
@@ -36,12 +42,17 @@ def observe(payload=None):
 
 
 def complete():
-    observe_codex_usage("turn/completed", {"turn": {"id": "turn-test", "status": "completed"}})
+    observe_codex_usage(
+        "turn/completed", {"turn": {"id": "turn-test", "status": "completed"}}
+    )
 
 
 def record_one(payload=None):
     records = []
-    with usage_scope(records.append, "research:synthetic"), codex_usage("fixture-model") as usage:
+    with (
+        usage_scope(records.append, "research:synthetic"),
+        codex_usage("fixture-model") as usage,
+    ):
         usage.start_turn()
         usage.bind_turn("thread-test", "turn-test")
         observe(payload)
@@ -51,11 +62,16 @@ def record_one(payload=None):
 
 def test_cumulative_snapshots_replace_and_correction_does_not_double_count():
     records = []
-    with usage_scope(records.append, "research:synthetic"), codex_usage("fixture-model") as usage:
+    with (
+        usage_scope(records.append, "research:synthetic"),
+        codex_usage("fixture-model") as usage,
+    ):
         usage.start_turn()
         observe(notification(100, 20))
         observe(notification(150, 35))
-        observe(notification(150, 35))  # Duplicate snapshot is not another request.
+        observe(
+            notification(150, 35)
+        )  # Duplicate snapshot is not another request.
         complete()
         usage.start_turn()
         observe(notification(250, 70, 120, 30))
@@ -114,11 +130,18 @@ def test_missing_correction_usage_retains_partial_known_amount():
     assert "未含未返回用量的调用" in usage_footer(summary)
 
 
-@pytest.mark.parametrize("failure", [RuntimeError("synthetic"), asyncio.CancelledError()])
-def test_failure_and_cancellation_flush_known_usage_without_claiming_complete(failure):
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("synthetic"), asyncio.CancelledError()]
+)
+def test_failure_and_cancellation_flush_known_usage_without_claiming_complete(
+    failure,
+):
     records = []
     with pytest.raises(type(failure)):
-        with usage_scope(records.append, "editor"), codex_usage("fixture") as usage:
+        with (
+            usage_scope(records.append, "editor"),
+            codex_usage("fixture") as usage,
+        ):
             usage.start_turn()
             observe()
             raise failure
@@ -138,13 +161,22 @@ def test_malformed_counters_do_not_become_zero_or_leak_other_payload(bad):
 
 
 @pytest.mark.parametrize(
-    "key,value", [("totalTokens", 135), ("cachedInputTokens", 200), ("reasoningOutputTokens", 30)]
+    "key,value",
+    [
+        ("totalTokens", 135),
+        ("cachedInputTokens", 200),
+        ("reasoningOutputTokens", 30),
+    ],
 )
-def test_provider_total_is_preserved_not_recomputed_when_subsets_disagree(key, value):
+def test_provider_total_is_preserved_not_recomputed_when_subsets_disagree(
+    key, value
+):
     records = record_one(notification(**{key: value}))
     summary = summarize_usage(records)
     assert summary["partial"]
-    assert summary["usage"]["total_tokens"] == (135 if key == "totalTokens" else 120)
+    assert summary["usage"]["total_tokens"] == (
+        135 if key == "totalTokens" else 120
+    )
 
 
 def test_counter_reset_keeps_last_trusted_snapshot_and_marks_partial():
@@ -186,7 +218,10 @@ def test_no_model_attempt_does_not_create_a_zero_usage_entry():
 async def test_contextvar_scopes_do_not_cross_concurrent_research_tasks():
     async def run(stage, input_tokens):
         records = []
-        with usage_scope(records.append, stage), codex_usage("fixture") as usage:
+        with (
+            usage_scope(records.append, stage),
+            codex_usage("fixture") as usage,
+        ):
             usage.start_turn()
             await asyncio.sleep(0)
             observe(notification(input_tokens, 20))
@@ -216,13 +251,18 @@ def test_sink_cannot_mutate_in_memory_counters():
 
 def test_proto_json_uint64_strings_and_defaults_normalize_losslessly():
     summary = summarize_usage(record_one())
-    wire = {**summary, "usage": {key: str(value) for key, value in summary["usage"].items()}}
+    wire = {
+        **summary,
+        "usage": {key: str(value) for key, value in summary["usage"].items()},
+    }
     assert normalize_usage_summary(wire) == summary
     assert normalize_usage_summary({})["usage"] is None
     assert normalize_usage_summary({"usage": {}})["usage"]["total_tokens"] == 0
 
 
-@pytest.mark.parametrize("bad", [True, -1, "-1", "1.2", "１", "secret", "9" * 21])
+@pytest.mark.parametrize(
+    "bad", [True, -1, "-1", "1.2", "１", "secret", "9" * 21]
+)
 def test_footer_rejects_invalid_proto_json_counter(bad):
     with pytest.raises(ValueError, match="^invalid_usage_summary$"):
         normalize_usage_summary({"usage": {"total_tokens": bad}})
@@ -234,4 +274,6 @@ def test_mock_does_not_present_synthetic_usage_as_real():
 
 
 def test_unknown_gemini_usage_explicitly_excluded_not_assumed_zero():
-    assert "Todofy/Gemini 用量未计入" in usage_footer(summarize_usage(record_one()))
+    assert "Todofy/Gemini 用量未计入" in usage_footer(
+        summarize_usage(record_one())
+    )

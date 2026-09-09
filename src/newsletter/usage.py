@@ -47,7 +47,9 @@ class UsageSummary(TypedDict):
 
 
 UsageSink = Callable[[UsageRecord], None]
-_SCOPE: ContextVar[tuple[UsageSink, str] | None] = ContextVar("usage_scope", default=None)
+_SCOPE: ContextVar[tuple[UsageSink, str] | None] = ContextVar(
+    "usage_scope", default=None
+)
 _CODEX: ContextVar[CodexUsage | None] = ContextVar("codex_usage", default=None)
 _CountField = Literal[
     "input_tokens",
@@ -69,14 +71,17 @@ def _counts(value: object) -> TokenCounts | None:
     if not isinstance(value, dict):
         return None
     fields = {name: value.get(wire) for name, wire in _FIELDS.items()}
-    if any(type(n) is not int or not 0 <= n <= 2**63 - 1 for n in fields.values()):
+    if any(
+        type(n) is not int or not 0 <= n <= 2**63 - 1 for n in fields.values()
+    ):
         return None
     return cast(TokenCounts, fields)
 
 
 def _consistent(counts: TokenCounts) -> bool:
     return (
-        counts["total_tokens"] == counts["input_tokens"] + counts["output_tokens"]
+        counts["total_tokens"]
+        == counts["input_tokens"] + counts["output_tokens"]
         and counts["cached_input_tokens"] <= counts["input_tokens"]
         and counts["reasoning_output_tokens"] <= counts["output_tokens"]
     )
@@ -148,7 +153,9 @@ class CodexUsage:
             ):
                 return
             usage = payload.get("tokenUsage")
-            counts = _counts(usage.get("total")) if isinstance(usage, dict) else None
+            counts = (
+                _counts(usage.get("total")) if isinstance(usage, dict) else None
+            )
             previous = self.record["usage"]
             if (
                 counts is None
@@ -220,7 +227,9 @@ def summarize_usage(records: Sequence[UsageRecord]) -> UsageSummary:
             input_tokens=sum(r["input_tokens"] for r in known),
             cached_input_tokens=sum(r["cached_input_tokens"] for r in known),
             output_tokens=sum(r["output_tokens"] for r in known),
-            reasoning_output_tokens=sum(r["reasoning_output_tokens"] for r in known),
+            reasoning_output_tokens=sum(
+                r["reasoning_output_tokens"] for r in known
+            ),
             total_tokens=sum(r["total_tokens"] for r in known),
         )
         if known
@@ -231,7 +240,9 @@ def summarize_usage(records: Sequence[UsageRecord]) -> UsageSummary:
         invocations=len(latest),
         missing_invocations=len(latest) - len(known),
         partial=not latest
-        or any(r["partial"] or r["status"] != "completed" for r in latest.values()),
+        or any(
+            r["partial"] or r["status"] != "completed" for r in latest.values()
+        ),
     )
 
 
@@ -252,7 +263,9 @@ def normalize_usage_summary(value: object) -> UsageSummary:
     if raw is not None:
         if not isinstance(raw, dict) or set(raw) - set(_FIELDS):
             raise ValueError("invalid_usage_summary")
-        usage = cast(TokenCounts, {key: number(raw.get(key, 0)) for key in _FIELDS})
+        usage = cast(
+            TokenCounts, {key: number(raw.get(key, 0)) for key in _FIELDS}
+        )
     partial = value.get("partial", False)
     if type(partial) is not bool:
         raise ValueError("invalid_usage_summary")
@@ -269,11 +282,16 @@ def normalize_usage_summary(value: object) -> UsageSummary:
         usage=usage,
         invocations=invocations,
         missing_invocations=missing,
-        partial=partial or usage is None or missing > 0 or not _consistent(usage),
+        partial=partial
+        or usage is None
+        or missing > 0
+        or not _consistent(usage),
     )
 
 
-def usage_footer(summary: UsageSummary | None, *, is_fixture: bool = False) -> str:
+def usage_footer(
+    summary: UsageSummary | None, *, is_fixture: bool = False
+) -> str:
     if summary is None:
         return ""
     if is_fixture:

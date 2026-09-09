@@ -94,9 +94,21 @@ SAMPLE_DRAFT = {
         "alt_text": "模拟数值：试用42%，稳定使用18%，流程改造7%；另一组数据缺失，不能记作零。",
         "limitations": "展示为独立条形；群体可能重叠。数据缺失不代表没有人采用。",
         "points": [
-            {"label": "试用过", "decimal_value": "42", "citations": ["sample-packet/survey"]},
-            {"label": "稳定使用", "decimal_value": "18", "citations": ["sample-packet/survey"]},
-            {"label": "流程改造", "decimal_value": "7", "citations": ["sample-packet/survey"]},
+            {
+                "label": "试用过",
+                "decimal_value": "42",
+                "citations": ["sample-packet/survey"],
+            },
+            {
+                "label": "稳定使用",
+                "decimal_value": "18",
+                "citations": ["sample-packet/survey"],
+            },
+            {
+                "label": "流程改造",
+                "decimal_value": "7",
+                "citations": ["sample-packet/survey"],
+            },
             {"label": "另一组", "missing_reason": "尚未公布", "citations": []},
         ],
     },
@@ -145,11 +157,15 @@ def sample_without_chart():
 def test_safe_static_email_and_plain_text_sources():
     result = render_edition(SAMPLE_DRAFT, SAMPLE_PACKETS, "2026-09-05")
     parsed = ParsedEmail(result["html"])
-    assert not {"script", "svg", "details", "summary", "iframe"}.intersection(parsed.tags)
+    assert not {"script", "svg", "details", "summary", "iframe"}.intersection(
+        parsed.tags
+    )
     assert parsed.images[0]["src"] == CHART_CID
     assert parsed.images[0]["alt"] == SAMPLE_DRAFT["chart"]["alt_text"]
     assert "图表原始数据" in result["html"]
-    assert "42" in result["text"] and "另一组：缺失（尚未公布）" in result["text"]
+    assert (
+        "42" in result["text"] and "另一组：缺失（尚未公布）" in result["text"]
+    )
     assert "[1] 模拟调查：工具使用与流程变化" in result["text"]
     assert "https://example.org/research/methods" in result["text"]
     assert result["html"].count("研究介绍") == 1
@@ -173,7 +189,9 @@ def test_render_does_not_mutate_inputs_and_is_byte_deterministic():
     assert "timestamp" not in image.info
 
 
-def test_rendered_png_contains_chart_context_and_only_its_own_source_titles(monkeypatch):
+def test_rendered_png_contains_chart_context_and_only_its_own_source_titles(
+    monkeypatch,
+):
     records = record_draw_text(monkeypatch)
     rendered = render_edition(SAMPLE_DRAFT, SAMPLE_PACKETS, "2026-09-05")
     image = Image.open(io.BytesIO(base64.b64decode(rendered["chart_png"])))
@@ -190,7 +208,9 @@ def test_rendered_png_contains_chart_context_and_only_its_own_source_titles(monk
 
 
 @pytest.mark.parametrize("kind", ["bar", "line"])
-def test_graph_card_without_images_or_body_preserves_supplied_explanation_and_data(kind):
+def test_graph_card_without_images_or_body_preserves_supplied_explanation_and_data(
+    kind,
+):
     draft = copy.deepcopy(SAMPLE_DRAFT)
     chart = draft["chart"]
     chart.update(
@@ -210,9 +230,14 @@ def test_graph_card_without_images_or_body_preserves_supplied_explanation_and_da
     chart["points"][2]["decimal_value"] = "0.7"
     rendered = render_edition(draft, SAMPLE_PACKETS, "2026-09-05")
     degraded_html = re.sub(
-        r"<style\b[^>]*>.*?</style>|<img\b[^>]*>", "", rendered["html"], flags=re.S
+        r"<style\b[^>]*>.*?</style>|<img\b[^>]*>",
+        "",
+        rendered["html"],
+        flags=re.S,
     )
-    card_html = degraded_html.split("一图看懂 / 数据视角", 1)[1].split("研究介绍", 1)[0]
+    card_html = degraded_html.split("一图看懂 / 数据视角", 1)[1].split(
+        "研究介绍", 1
+    )[0]
     parsed = ParsedEmail(card_html)
     visible = "".join(parsed.text)
     assert not parsed.images
@@ -224,7 +249,9 @@ def test_graph_card_without_images_or_body_preserves_supplied_explanation_and_da
     assert "来源：[1] 模拟调查：工具使用与流程变化 · 2026-09-04" in visible
     for point in chart["points"]:
         assert point["label"] in visible
-        expected = point.get("decimal_value", f"缺失（{point.get('missing_reason')}）")
+        expected = point.get(
+            "decimal_value", f"缺失（{point.get('missing_reason')}）"
+        )
         assert expected in visible
     assert "小效应" not in visible and "大效应" not in visible
     for section in draft["sections"]:
@@ -232,7 +259,9 @@ def test_graph_card_without_images_or_body_preserves_supplied_explanation_and_da
 
 
 @pytest.mark.parametrize("with_chart", [False, True])
-def test_legacy_frozen_artifacts_never_use_the_current_chart_or_template(monkeypatch, with_chart):
+def test_legacy_frozen_artifacts_never_use_the_current_chart_or_template(
+    monkeypatch, with_chart
+):
     # A synthetic old-format payload: no current renderer is used to build it.
     buffer = io.BytesIO()
     if with_chart:
@@ -250,13 +279,20 @@ def test_legacy_frozen_artifacts_never_use_the_current_chart_or_template(monkeyp
     original = copy.deepcopy(edition)
 
     def fail_rerender(*args, **kwargs):
-        pytest.fail("frozen delivery must not rerender an earlier approved edition")
+        pytest.fail(
+            "frozen delivery must not rerender an earlier approved edition"
+        )
 
     monkeypatch.setattr("newsletter.rendering.render_edition", fail_rerender)
     monkeypatch.setattr("newsletter.rendering.render_chart_png", fail_rerender)
     monkeypatch.setattr("newsletter.rendering.load_template", fail_rerender)
     monkeypatch.setattr("newsletter.charts.render_chart_png", fail_rerender)
-    assert _frozen(edition) == ("离线旧版样张", rendered["html"], rendered["text"], png)
+    assert _frozen(edition) == (
+        "离线旧版样张",
+        rendered["html"],
+        rendered["text"],
+        png,
+    )
     assert edition == original
 
 
@@ -272,14 +308,18 @@ def test_reading_support_is_numbered_without_adding_primary_reading_links():
         }
     )
     original = render_edition(draft, packets, "2026-09-05")
-    draft["recommended_reading"]["supporting_citations"] = ["sample-packet/journal"]
+    draft["recommended_reading"]["supporting_citations"] = [
+        "sample-packet/journal"
+    ]
     rendered = render_edition(draft, packets, "2026-09-05")
     assert rendered["render_hash"] != original["render_hash"]
     assert "补充证据：[3]" in rendered["html"]
     assert "补充证据：[3]" in rendered["text"]
     assert "[3] 模拟期刊收录记录" in rendered["text"]
     assert rendered["html"].count('href="https://example.org/journal"') == 1
-    reading_card = rendered["html"].split("研究介绍", 1)[1].split("来源与核对", 1)[0]
+    reading_card = (
+        rendered["html"].split("研究介绍", 1)[1].split("来源与核对", 1)[0]
+    )
     assert reading_card.count("href=") == 1
     assert "原文与方法 [2]" in reading_card
     assert render_edition(draft, packets, "2026-09-05") == rendered
@@ -335,7 +375,10 @@ def test_chart_zero_and_missing_are_distinct():
         "decimal_value": "0",
         "citations": ["sample-packet/survey"],
     }
-    assert render_edition(changed, SAMPLE_PACKETS, "2026-09-05")["chart_png"] != result["chart_png"]
+    assert (
+        render_edition(changed, SAMPLE_PACKETS, "2026-09-05")["chart_png"]
+        != result["chart_png"]
+    )
 
 
 def test_line_chart_breaks_at_missing_instead_of_connecting(monkeypatch):
@@ -390,8 +433,12 @@ def test_optional_protojson_defaults_are_rendered_consistently():
 
 def test_source_title_and_query_attribute_are_escaped():
     packets = copy.deepcopy(SAMPLE_PACKETS)
-    packets[0]["content"]["sources"][0]["title"] = '<b onclick="alert(1)">来源</b>'
-    packets[0]["content"]["sources"][0]["url"] = 'https://example.org/?q="quoted"&x=1'
+    packets[0]["content"]["sources"][0]["title"] = (
+        '<b onclick="alert(1)">来源</b>'
+    )
+    packets[0]["content"]["sources"][0]["url"] = (
+        'https://example.org/?q="quoted"&x=1'
+    )
     rendered = render_edition(sample_without_chart(), packets, "2026-09-05")
     parsed = ParsedEmail(rendered["html"])
     assert "b" not in parsed.tags
@@ -408,7 +455,11 @@ def test_research_card_paragraphs_preserve_plain_text_and_escape_markup():
     reason = first + "\r\n \t\r\n" + second + "\n\n" + third
     draft["recommended_reading"]["reason"] = reason
     result = render_edition(draft, SAMPLE_PACKETS, "2026-09-05")
-    card = result["html"].split('class="reading-panel"', 1)[1].split("</table>", 1)[0]
+    card = (
+        result["html"]
+        .split('class="reading-panel"', 1)[1]
+        .split("</table>", 1)[0]
+    )
     parsed = ParsedEmail(card)
     assert not {"script", "img", "details", "summary"}.intersection(parsed.tags)
     assert card.count('class="body-copy ink"') == 3
@@ -426,7 +477,10 @@ def test_research_card_keeps_full_contract_length_without_silent_truncation():
     result = render_edition(draft, SAMPLE_PACKETS, "2026-09-05")
     assert reason in result["html"] and reason in result["text"]
     draft["recommended_reading"]["reason"] += "究"
-    with pytest.raises(ContractError, match="recommended_reading.reason exceeds its length limit"):
+    with pytest.raises(
+        ContractError,
+        match="recommended_reading.reason exceeds its length limit",
+    ):
         render_edition(draft, SAMPLE_PACKETS, "2026-09-05")
 
 
@@ -458,9 +512,9 @@ def test_ai_and_cross_disciplinary_research_can_both_be_feature_sections():
         for output in (result["html"], result["text"]):
             assert section["heading"] in output
             assert all(p["text"] in output for p in section["paragraphs"])
-    assert result["text"].index(draft["sections"][0]["heading"]) < result["text"].index(
-        draft["sections"][1]["heading"]
-    )
+    assert result["text"].index(draft["sections"][0]["heading"]) < result[
+        "text"
+    ].index(draft["sections"][1]["heading"])
 
 
 def test_eight_semantic_topics_have_independent_titles_bodies_and_local_boundaries():
@@ -496,7 +550,10 @@ def test_eight_semantic_topics_have_independent_titles_bodies_and_local_boundari
     }
     frozen = copy.deepcopy(draft)
     rendered = render_edition(
-        draft, SAMPLE_PACKETS, "2026-09-05", personal_digest=unavailable_digest()
+        draft,
+        SAMPLE_PACKETS,
+        "2026-09-05",
+        personal_digest=unavailable_digest(),
     )
     panels = rendered["html"].split('class="story-panel"')[1:]
     assert len(panels) == 8
@@ -510,13 +567,17 @@ def test_eight_semantic_topics_have_independent_titles_bodies_and_local_boundari
         assert 'class="story-note"' in panel
         for paragraph in section["paragraphs"]:
             assert paragraph["text"] in panel
-        assert panel.index(section["paragraphs"][-1]["text"]) < panel.index(section["limitations"])
+        assert panel.index(section["paragraphs"][-1]["text"]) < panel.index(
+            section["limitations"]
+        )
         assert f"{label}｜{section['heading']}" in rendered["text"]
         assert rendered["html"].count(section["heading"]) == 1
         if index < 8:
             assert draft["sections"][index]["limitations"] not in panel
     assert "今日简讯" not in rendered["html"]
-    assert "今日深读" not in rendered["html"]  # The category cannot imply a brief is a deep dive.
+    assert (
+        "今日深读" not in rendered["html"]
+    )  # The category cannot imply a brief is a deep dive.
     assert rendered["chart_png"] == ""
     assert not ParsedEmail(
         rendered["html"]
@@ -529,7 +590,12 @@ def test_eight_semantic_topics_have_independent_titles_bodies_and_local_boundari
     )
     assert draft == frozen
     assert (
-        render_edition(draft, SAMPLE_PACKETS, "2026-09-05", personal_digest=unavailable_digest())
+        render_edition(
+            draft,
+            SAMPLE_PACKETS,
+            "2026-09-05",
+            personal_digest=unavailable_digest(),
+        )
         == rendered
     )
 
@@ -552,7 +618,10 @@ def test_topic_boundary_preserves_newlines_and_escapes_markup_without_parsing_ti
     ]
     rendered = render_edition(draft, SAMPLE_PACKETS, "2026-09-05")
     assert "研究与进展" in rendered["html"]
-    assert "第一条限制。<br>第二条限制 &lt;b&gt;不是HTML&lt;/b&gt;。" in rendered["html"]
+    assert (
+        "第一条限制。<br>第二条限制 &lt;b&gt;不是HTML&lt;/b&gt;。"
+        in rendered["html"]
+    )
     assert "段落首行不是另一个标题。<br>第二行仍属正文。" in rendered["html"]
     assert "<h2" in rendered["html"] and "font-size:27px" in rendered["html"]
     assert "<b>不是HTML</b>" not in rendered["html"]

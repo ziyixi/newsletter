@@ -19,17 +19,35 @@ from newsletter.errors import EditorError
 from newsletter.settings import Settings
 from newsletter.types import Payload
 from newsletter.usage import UsageRecord, summarize_usage, usage_scope
-from newsletter.workflow.story_editor import COMPONENTS, story_review_schema, story_writer_schema
+from newsletter.workflow.story_editor import (
+    COMPONENTS,
+    story_review_schema,
+    story_writer_schema,
+)
 
 
 def smoke_cases() -> list[tuple[str, Payload, Payload]]:
-    empty: Payload = {"content": None, "signal": None, "supplemental_packets": []}
+    empty: Payload = {
+        "content": None,
+        "signal": None,
+        "supplemental_packets": [],
+    }
     cases: list[tuple[str, Payload, Payload]] = [
-        ("brief", story_writer_schema("brief", story_id="schema-acceptance"), empty),
-        ("deep", story_writer_schema("deep", story_id="schema-acceptance"), empty),
+        (
+            "brief",
+            story_writer_schema("brief", story_id="schema-acceptance"),
+            empty,
+        ),
+        (
+            "deep",
+            story_writer_schema("deep", story_id="schema-acceptance"),
+            empty,
+        ),
         (
             "brief_repair",
-            story_writer_schema("brief", repair=True, story_id="schema-acceptance"),
+            story_writer_schema(
+                "brief", repair=True, story_id="schema-acceptance"
+            ),
             empty,
         ),
     ]
@@ -40,7 +58,11 @@ def smoke_cases() -> list[tuple[str, Payload, Payload]]:
             {
                 "prior_withdrawal": None,
                 "assessments": [
-                    {"component": component, "status": "not_present", "findings": []}
+                    {
+                        "component": component,
+                        "status": "not_present",
+                        "findings": [],
+                    }
                     for component in COMPONENTS
                 ],
                 "issues": [],
@@ -54,8 +76,12 @@ async def check_schemas(editor: CodexEditor) -> Payload:
     records: dict[str, UsageRecord] = {}
     checked = []
     for name, schema, expected in smoke_cases():
-        with tempfile.TemporaryDirectory(prefix="newsletter-schema-smoke-") as temporary:
-            with usage_scope(lambda record: records.__setitem__(record["id"], record), name):
+        with tempfile.TemporaryDirectory(
+            prefix="newsletter-schema-smoke-"
+        ) as temporary:
+            with usage_scope(
+                lambda record: records.__setitem__(record["id"], record), name
+            ):
                 text, opened, searched = await editor.execute(
                     "Schema compatibility diagnostic only. Return this exact empty envelope: "
                     + canonical_json(expected),
@@ -65,7 +91,9 @@ async def check_schemas(editor: CodexEditor) -> Payload:
                     Path(temporary).resolve(),
                 )
             try:
-                accepted = json.loads(text) == expected and not opened and not searched
+                accepted = (
+                    json.loads(text) == expected and not opened and not searched
+                )
             except (TypeError, ValueError):
                 accepted = False
             if not accepted:
@@ -84,12 +112,16 @@ def main() -> None:
     parser.add_argument("--allow-model-calls", action="store_true")
     args = parser.parse_args()
     if not args.allow_model_calls:
-        parser.error("Explicit --allow-model-calls is required; this uses model allowance.")
+        parser.error(
+            "Explicit --allow-model-calls is required; this uses model allowance."
+        )
     try:
         settings = Settings.from_env()
         if settings.codex_home is None or not settings.model.strip():
             raise EditorError("configuration")
-        editor = CodexEditor(settings.codex_home, settings.model, timeout_seconds=90)
+        editor = CodexEditor(
+            settings.codex_home, settings.model, timeout_seconds=90
+        )
         print(canonical_json(asyncio.run(check_schemas(editor))))
     except EditorError as error:
         raise SystemExit(

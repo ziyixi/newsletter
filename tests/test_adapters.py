@@ -75,7 +75,9 @@ def forbid_network(monkeypatch):
     async def forbidden(*args, **kwargs):
         pytest.fail("An adapter test attempted real network access")
 
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", forbidden)
+    monkeypatch.setattr(
+        httpx.AsyncHTTPTransport, "handle_async_request", forbidden
+    )
 
 
 async def test_disabled_notion_does_nothing(packet):
@@ -88,7 +90,10 @@ async def test_fake_notion_is_complete_stable_and_local(tmp_path, packet):
     await adapter.project(packet)
     files = list(tmp_path.glob("*.json"))
     assert len(files) == 1
-    assert json.loads(files[0].read_text()) == {"simulated": True, "packet": packet}
+    assert json.loads(files[0].read_text()) == {
+        "simulated": True,
+        "packet": packet,
+    }
     assert not list(tmp_path.glob(".pending-*"))
 
 
@@ -111,10 +116,17 @@ async def test_fake_mail_has_cid_png_and_exact_frozen_parts(tmp_path, edition):
     assert result["delivery_state"] == "simulated"
     assert message["Subject"] == edition["draft"]["subject"]
     assert message["X-Newsletter-Simulated"] == "true"
-    assert message.get_body(preferencelist=("plain",)).get_content().strip() == "冻结的正文"
+    assert (
+        message.get_body(preferencelist=("plain",)).get_content().strip()
+        == "冻结的正文"
+    )
     html = message.get_body(preferencelist=("html",)).get_content().strip()
     assert html == edition["rendered"]["html"]
-    images = [part for part in message.walk() if part.get_content_type() == "image/png"]
+    images = [
+        part
+        for part in message.walk()
+        if part.get_content_type() == "image/png"
+    ]
     assert images[0]["Content-ID"] == "<newsletter-chart>"
     assert images[0].get_payload(decode=True) == PNG
     assert await adapter.send(edition, "same/key") == result
@@ -137,7 +149,9 @@ async def test_fake_mail_without_chart(tmp_path, edition):
     message = BytesParser(policy=policy.default).parsebytes(
         next(tmp_path.glob("*.eml")).read_bytes()
     )
-    assert not any(part.get_content_type() == "image/png" for part in message.walk())
+    assert not any(
+        part.get_content_type() == "image/png" for part in message.walk()
+    )
 
 
 async def test_resend_request_is_frozen_with_configured_recipient(edition):
@@ -171,7 +185,10 @@ async def test_resend_request_is_frozen_with_configured_recipient(edition):
         transport=httpx.MockTransport(handler),
     )
     result = await adapter.send(edition, "edition/1")
-    assert result == {"delivery_state": "provider_accepted", "provider_message_id": "mail-123"}
+    assert result == {
+        "delivery_state": "provider_accepted",
+        "provider_message_id": "mail-123",
+    }
     assert len(calls) == 1
 
 
@@ -216,7 +233,9 @@ async def test_mutated_frozen_payload_never_dispatches(edition, field, value):
         (302, True),
     ],
 )
-async def test_mail_http_outcomes_no_retry_or_secret_echo(edition, status, ambiguous):
+async def test_mail_http_outcomes_no_retry_or_secret_echo(
+    edition, status, ambiguous
+):
     calls = []
 
     def handler(request):
@@ -236,8 +255,12 @@ async def test_mail_http_outcomes_no_retry_or_secret_echo(edition, status, ambig
     with pytest.raises(AdapterError) as caught:
         await adapter.send(edition, "key")
     assert caught.value.ambiguous is ambiguous
-    assert caught.value.code == ("MAIL_UNKNOWN" if ambiguous else "MAIL_REJECTED")
-    assert "secret" not in str(caught.value) and "fake-key" not in str(caught.value)
+    assert caught.value.code == (
+        "MAIL_UNKNOWN" if ambiguous else "MAIL_REJECTED"
+    )
+    assert "secret" not in str(caught.value) and "fake-key" not in str(
+        caught.value
+    )
     assert len(calls) == 1
 
 
@@ -264,7 +287,9 @@ async def test_invalid_mail_success_is_unknown(edition, response):
     assert caught.value.ambiguous
 
 
-@pytest.mark.parametrize("error_type", [httpx.ReadTimeout, httpx.ConnectError, httpx.WriteError])
+@pytest.mark.parametrize(
+    "error_type", [httpx.ReadTimeout, httpx.ConnectError, httpx.WriteError]
+)
 async def test_mail_transport_error_is_unknown_no_retry(edition, error_type):
     calls = []
 
@@ -285,14 +310,21 @@ async def test_mail_transport_error_is_unknown_no_retry(edition, error_type):
 
 
 @pytest.mark.parametrize(
-    "recipient", ["a@example.org,b@example.org", "missing-at", "a@example.org\nBcc: b@example.org"]
+    "recipient",
+    [
+        "a@example.org,b@example.org",
+        "missing-at",
+        "a@example.org\nBcc: b@example.org",
+    ],
 )
 def test_mail_configuration_requires_one_safe_recipient(recipient):
     with pytest.raises(AdapterError, match="INVALID_MAIL_CONFIGURATION"):
         Resend("fake-key", "sender@example.org", recipient)
 
 
-async def test_notion_single_request_stable_property_id_and_bounded_projection(packet):
+async def test_notion_single_request_stable_property_id_and_bounded_projection(
+    packet,
+):
     packet["content"]["body"] = "研究😀" * 6000
     calls = []
 
@@ -302,7 +334,10 @@ async def test_notion_single_request_stable_property_id_and_bounded_projection(p
         assert str(request.url) == "https://api.notion.com/v1/pages"
         assert request.headers["Notion-Version"] == "2026-03-11"
         body = json.loads(request.content)
-        assert body["parent"] == {"type": "data_source_id", "data_source_id": DATA_SOURCE}
+        assert body["parent"] == {
+            "type": "data_source_id",
+            "data_source_id": DATA_SOURCE,
+        }
         assert list(body["properties"]) == ["title"]
         assert len(body["children"]) == 3
         projected = json.dumps(body, ensure_ascii=False)
@@ -312,23 +347,36 @@ async def test_notion_single_request_stable_property_id_and_bounded_projection(p
             rich = child["paragraph"]["rich_text"]
             assert len(rich) <= 100
             assert all(
-                len(item["text"]["content"].encode("utf-16-le")) // 2 <= 2000 for item in rich
+                len(item["text"]["content"].encode("utf-16-le")) // 2 <= 2000
+                for item in rich
             )
-        return httpx.Response(200, json={"object": "page", "id": "notion-page-1"})
+        return httpx.Response(
+            200, json={"object": "page", "id": "notion-page-1"}
+        )
 
-    await Notion("fake-token", DATA_SOURCE, transport=httpx.MockTransport(handler)).project(packet)
+    await Notion(
+        "fake-token", DATA_SOURCE, transport=httpx.MockTransport(handler)
+    ).project(packet)
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("status,ambiguous", [(400, False), (403, False), (429, True), (503, True)])
-async def test_notion_failure_is_safe_and_single_attempt(packet, status, ambiguous):
+@pytest.mark.parametrize(
+    "status,ambiguous", [(400, False), (403, False), (429, True), (503, True)]
+)
+async def test_notion_failure_is_safe_and_single_attempt(
+    packet, status, ambiguous
+):
     calls = []
 
     def handler(request):
         calls.append(request)
-        return httpx.Response(status, json={"message": "fake-token private content"})
+        return httpx.Response(
+            status, json={"message": "fake-token private content"}
+        )
 
-    adapter = Notion("fake-token", DATA_SOURCE, transport=httpx.MockTransport(handler))
+    adapter = Notion(
+        "fake-token", DATA_SOURCE, transport=httpx.MockTransport(handler)
+    )
     with pytest.raises(AdapterError) as caught:
         await adapter.project(packet)
     assert caught.value.ambiguous is ambiguous
@@ -342,12 +390,16 @@ async def test_notion_timeout_or_wrong_object_must_not_look_successful(packet):
 
     for handler in [
         timeout,
-        lambda request: httpx.Response(200, json={"id": "1", "object": "other"}),
+        lambda request: httpx.Response(
+            200, json={"id": "1", "object": "other"}
+        ),
     ]:
         with pytest.raises(AdapterError, match="NOTION_UNKNOWN") as caught:
-            await Notion("fake-token", DATA_SOURCE, transport=httpx.MockTransport(handler)).project(
-                packet
-            )
+            await Notion(
+                "fake-token",
+                DATA_SOURCE,
+                transport=httpx.MockTransport(handler),
+            ).project(packet)
         assert caught.value.ambiguous
 
 
@@ -357,7 +409,10 @@ def test_invalid_notion_configuration_is_local():
 
 
 async def test_adapters_do_not_mutate_inputs(tmp_path, edition, packet):
-    original_edition, original_packet = copy.deepcopy(edition), copy.deepcopy(packet)
+    original_edition, original_packet = (
+        copy.deepcopy(edition),
+        copy.deepcopy(packet),
+    )
     await FakeMail(tmp_path).send(edition, "immutable")
     await FakeNotion(tmp_path).project(packet)
     assert edition == original_edition
@@ -371,4 +426,6 @@ async def test_cid_in_plain_prose_does_not_require_chart(tmp_path, edition):
         "chart_png": "",
     }
     edition["rendered"]["render_hash"] = content_hash(edition["rendered"])
-    assert (await FakeMail(tmp_path).send(edition, "prose"))["delivery_state"] == "simulated"
+    assert (await FakeMail(tmp_path).send(edition, "prose"))[
+        "delivery_state"
+    ] == "simulated"

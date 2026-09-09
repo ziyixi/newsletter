@@ -34,7 +34,9 @@ def forbid_network(monkeypatch):
     async def forbidden(*args, **kwargs):
         pytest.fail("Reader acceptance attempted real network access")
 
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", forbidden)
+    monkeypatch.setattr(
+        httpx.AsyncHTTPTransport, "handle_async_request", forbidden
+    )
 
 
 @pytest.mark.parametrize("chart_status", ["approved", "blocked", "not_present"])
@@ -49,7 +51,9 @@ async def test_degraded_publication_preserves_topic_identity_and_chart_audit_in_
         story_fixtures.reply(story_fixtures.review(chart=chart_status)),
     ]
     science_result = await rig.run(mode="deep")
-    assert len(rig.calls) == 2  # A rejected optional chart cannot trigger body repair.
+    assert (
+        len(rig.calls) == 2
+    )  # A rejected optional chart cannot trigger body repair.
 
     tasks = [task(1), task(2, id="story-a"), task(3), task(4)]
     values = [
@@ -110,7 +114,11 @@ async def test_degraded_publication_preserves_topic_identity_and_chart_audit_in_
             for value in repository.results("reader-release")
             if value["story_id"] == "story-a"
         )
-        audit = next(item for item in saved["assessments"] if item["component"] == "chart")
+        audit = next(
+            item
+            for item in saved["assessments"]
+            if item["component"] == "chart"
+        )
         assert audit["status"] == chart_status
         if chart_status == "blocked":
             assert audit["findings"] == ["fixture finding"]
@@ -154,11 +162,19 @@ async def test_degraded_publication_preserves_topic_identity_and_chart_audit_in_
     assert "今日简讯" not in rendered["html"]
     assert "另有 1 个入选选题暂未刊出" in rendered["text"]
     for output in (rendered["html"], rendered["text"]):
-        assert output.index("TODOFY / 与你有关") > output.index(sections[-1]["heading"])
-        assert output.index("TODOFY / 与你有关") > output.index("https://example.org/research/3")
+        assert output.index("TODOFY / 与你有关") > output.index(
+            sections[-1]["heading"]
+        )
+        assert output.index("TODOFY / 与你有关") > output.index(
+            "https://example.org/research/3"
+        )
         if chart_status == "approved":
-            assert output.index("TODOFY / 与你有关") > output.index(proposed_chart["question"])
-        assert output.index(personal["items"][-1]["detail"]) < output.index("MOCK · 用量")
+            assert output.index("TODOFY / 与你有关") > output.index(
+                proposed_chart["question"]
+            )
+        assert output.index(personal["items"][-1]["detail"]) < output.index(
+            "MOCK · 用量"
+        )
     public_html = rendered["html"].split("TODOFY / 与你有关", 1)[0]
     assert personal["items"][0]["detail"] not in public_html
 
@@ -179,8 +195,14 @@ async def test_degraded_publication_preserves_topic_identity_and_chart_audit_in_
     # MIME uses CRLF transport line endings; no text or inline styling may change.
     for subtype, field in (("html", "html"), ("plain", "text")):
         decoded = message.get_body(preferencelist=(subtype,)).get_content()
-        assert decoded.replace("\r\n", "\n").rstrip("\n") == rendered[field].rstrip("\n")
-    images = [part for part in message.walk() if part.get_content_type() == "image/png"]
+        assert decoded.replace("\r\n", "\n").rstrip("\n") == rendered[
+            field
+        ].rstrip("\n")
+    images = [
+        part
+        for part in message.walk()
+        if part.get_content_type() == "image/png"
+    ]
     parsed = ParsedEmail(rendered["html"])
     if chart_status == "approved":
         assert built["draft"]["chart"] == proposed_chart
@@ -208,7 +230,16 @@ def test_wide_reader_layout_has_utf8_headroom_and_disjoint_partial_usage():
     """Representative HTML size guard, not a promise about every Gmail client."""
     draft = deepcopy(SAMPLE_DRAFT)
     draft["title"] = draft["subject"] = "八题离线验收样张，不是真实新闻"
-    kinds = ["ai_ml", "science", "economy", "technology", "health", "world", "feature", "context"]
+    kinds = [
+        "ai_ml",
+        "science",
+        "economy",
+        "technology",
+        "health",
+        "world",
+        "feature",
+        "context",
+    ]
     draft["sections"] = [
         {
             "kind": kind,
@@ -231,18 +262,28 @@ def test_wide_reader_layout_has_utf8_headroom_and_disjoint_partial_usage():
     # Exercise production footer formatting without sending or claiming these
     # synthetic source/usage values came from a real account.
     packets[0]["is_fixture"] = False
-    usage = summarize_usage(record_one(notification(6_000_000, 90_000, cached=5_000_000)))
+    usage = summarize_usage(
+        record_one(notification(6_000_000, 90_000, cached=5_000_000))
+    )
     usage["partial"] = True
     rendered = render_edition(
         draft, packets, DAY, personal_digest=unavailable_digest(), usage=usage
     )
     html_bytes = len(rendered["html"].encode("utf-8"))
-    assert html_bytes < 90 * 1024, f"Representative email HTML grew to {html_bytes} UTF-8 bytes"
-    assert html_bytes > len(rendered["html"])  # Count bytes, not Chinese characters.
-    assert "data:image/png;base64," not in rendered["html"]  # CID data isn't inlined into HTML.
+    assert html_bytes < 90 * 1024, (
+        f"Representative email HTML grew to {html_bytes} UTF-8 bytes"
+    )
+    assert html_bytes > len(
+        rendered["html"]
+    )  # Count bytes, not Chinese characters.
+    assert (
+        "data:image/png;base64," not in rendered["html"]
+    )  # CID data isn't inlined into HTML.
     assert rendered["html"].count('class="story-panel"') == 8
     for output in (rendered["html"], rendered["text"]):
-        assert "非缓存输入 1,000,000 · 缓存输入 5,000,000 · 输出 90,000" in output
+        assert (
+            "非缓存输入 1,000,000 · 缓存输入 5,000,000 · 输出 90,000" in output
+        )
         assert "6,090,000 tokens" in output and "11,090,000" not in output
         assert "部分用量，未含未返回用量的调用" in output
         assert "Todofy/Gemini 用量未计入" in output

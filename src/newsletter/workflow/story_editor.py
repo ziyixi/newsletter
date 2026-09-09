@@ -102,24 +102,40 @@ def _output_reason(error: BaseException) -> str:
 
 def body_content(content: Payload) -> Payload:
     """The indivisible reviewed body: title, paragraphs and limitations together."""
-    return {key: deepcopy(value) for key, value in content.items() if key not in OPTIONAL}
+    return {
+        key: deepcopy(value)
+        for key, value in content.items()
+        if key not in OPTIONAL
+    }
 
 
-def component_content(content: Payload | None, signal: Payload | None, name: str) -> Payload | None:
+def component_content(
+    content: Payload | None, signal: Payload | None, name: str
+) -> Payload | None:
     if name == "signal":
         return signal
     if content is None:
         return None
     if name == "body":
         return body_content(content)
-    return cast(Payload | None, content.get("recommended_reading" if name == "reading" else name))
+    return cast(
+        Payload | None,
+        content.get("recommended_reading" if name == "reading" else name),
+    )
 
 
 def component_citations(component: Payload, name: str) -> list[str]:
     if name == "reading":
-        return [component["citation"], *component.get("supporting_citations", [])]
+        return [
+            component["citation"],
+            *component.get("supporting_citations", []),
+        ]
     children = component.get("points" if name == "chart" else "paragraphs", [])
-    return list(dict.fromkeys(ref for child in children for ref in child.get("citations", [])))
+    return list(
+        dict.fromkeys(
+            ref for child in children for ref in child.get("citations", [])
+        )
+    )
 
 
 def _strict(properties: Payload) -> Payload:
@@ -134,13 +150,19 @@ def _strict(properties: Payload) -> Payload:
 def _bounded_packet_schema() -> Payload:
     schema = packet_body_schema()
     props = schema["properties"]
-    props["title"].update(minLength=1, maxLength=300, pattern=r"^[^\u0000-\u001f\u007f]*$")
+    props["title"].update(
+        minLength=1, maxLength=300, pattern=r"^[^\u0000-\u001f\u007f]*$"
+    )
     props["body"].update(minLength=1, maxLength=65536)
     props["tags"].update(maxItems=32)
-    props["tags"]["items"].update(minLength=1, maxLength=64, pattern=r"^[^\u0000-\u001f\u007f]*$")
+    props["tags"]["items"].update(
+        minLength=1, maxLength=64, pattern=r"^[^\u0000-\u001f\u007f]*$"
+    )
     props["sources"].update(minItems=1, maxItems=32)
     source = props["sources"]["items"]["properties"]
-    source["title"].update(minLength=1, maxLength=500, pattern=r"^[^\u0000-\u001f\u007f]*$")
+    source["title"].update(
+        minLength=1, maxLength=500, pattern=r"^[^\u0000-\u001f\u007f]*$"
+    )
     source["url"].update(minLength=1, maxLength=2048)
     source["excerpt"].update(maxLength=20000)
     source["published_at"].update(maxLength=40)
@@ -164,7 +186,9 @@ def story_writer_schema(
     for name, maximum in (("title", 300), ("limitations", 4000)):
         props[name].update(maxLength=maximum)
     props["title"].update(minLength=1, pattern=r"^[^\u0000-\u001f\u007f]*$")
-    props["paragraphs"].update(minItems=1, maxItems=2 if mode == "brief" else 16)
+    props["paragraphs"].update(
+        minItems=1, maxItems=2 if mode == "brief" else 16
+    )
     alternatives = []
     for packet in packets:
         source_ids = [
@@ -187,11 +211,15 @@ def story_writer_schema(
     }
     paragraph = props["paragraphs"]["items"]["properties"]
     paragraph["text"].update(minLength=1, maxLength=8000)
-    paragraph["citations"].update(minItems=1, maxItems=32, items=deepcopy(citation))
+    paragraph["citations"].update(
+        minItems=1, maxItems=32, items=deepcopy(citation)
+    )
     reading = props["recommended_reading"]["properties"]
     reading["citation"] = deepcopy(citation)
     reading["reason"].update(minLength=1, maxLength=1000)
-    reading["supporting_citations"].update(maxItems=31, items=deepcopy(citation))
+    reading["supporting_citations"].update(
+        maxItems=31, items=deepcopy(citation)
+    )
     chart = props["chart"]["properties"]
     for name in ("question", "metric", "unit", "period", "caption", "alt_text"):
         chart[name].update(minLength=1, maxLength=1000)
@@ -199,7 +227,9 @@ def story_writer_schema(
     chart["points"].update(minItems=1, maxItems=32)
     for variant in chart["points"]["items"]["anyOf"]:
         point = variant["properties"]
-        point["label"].update(minLength=1, maxLength=120, pattern=r"^[^\u0000-\u001f\u007f]*$")
+        point["label"].update(
+            minLength=1, maxLength=120, pattern=r"^[^\u0000-\u001f\u007f]*$"
+        )
         point["citations"].update(maxItems=32, items=deepcopy(citation))
         if "decimal_value" in point:
             point["citations"]["minItems"] = 1
@@ -211,7 +241,9 @@ def story_writer_schema(
         else:
             point["missing_reason"].update(minLength=1, maxLength=500)
     for name in OPTIONAL:
-        story["properties"][name] = {"anyOf": [story["properties"][name], {"type": "null"}]}
+        story["properties"][name] = {
+            "anyOf": [story["properties"][name], {"type": "null"}]
+        }
     signal = deepcopy(story)
     signal["properties"]["paragraphs"].update(maxItems=1)
     for name in OPTIONAL:
@@ -227,7 +259,10 @@ def story_writer_schema(
                 "maxItems": 6,
                 "items": _strict(
                     {
-                        "id": {"type": "string", "enum": [f"supplement-{i}" for i in range(1, 7)]},
+                        "id": {
+                            "type": "string",
+                            "enum": [f"supplement-{i}" for i in range(1, 7)],
+                        },
                         "content": _bounded_packet_schema(),
                     }
                 ),
@@ -238,20 +273,35 @@ def story_writer_schema(
 
 def story_review_schema() -> Payload:
     component = {"type": "string", "enum": list(COMPONENTS)}
-    strings = {"type": "array", "maxItems": 16, "items": {"type": "string", "maxLength": 2000}}
+    strings = {
+        "type": "array",
+        "maxItems": 16,
+        "items": {"type": "string", "maxLength": 2000},
+    }
     return _strict(
         {
             "prior_withdrawal": {
                 "anyOf": [
                     _strict(
                         {
-                            "target_body_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                            "target_body_hash": {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                            },
                             "affected_signal_hash": {
                                 "type": "string",
                                 "pattern": "^(?:[0-9a-f]{64})?$",
                             },
-                            "claim": {"type": "string", "minLength": 12, "maxLength": 2000},
-                            "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+                            "claim": {
+                                "type": "string",
+                                "minLength": 12,
+                                "maxLength": 2000,
+                            },
+                            "reason": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000,
+                            },
                             "evidence": {
                                 "type": "array",
                                 "minItems": 1,
@@ -289,7 +339,12 @@ def story_review_schema() -> Payload:
                         "evidence": strings,
                         "action": {
                             "type": "string",
-                            "enum": ["correct", "remove", "clarify", "research"],
+                            "enum": [
+                                "correct",
+                                "remove",
+                                "clarify",
+                                "research",
+                            ],
                         },
                     }
                 ),
@@ -299,7 +354,11 @@ def story_review_schema() -> Payload:
 
 
 def _packet_sources(packets: list[Payload]) -> dict[str, Payload]:
-    return {f"{p['id']}/{s['id']}": s for p in packets for s in p["content"]["sources"]}
+    return {
+        f"{p['id']}/{s['id']}": s
+        for p in packets
+        for s in p["content"]["sources"]
+    }
 
 
 def _draft(content: Payload) -> Payload:
@@ -320,7 +379,9 @@ def _draft(content: Payload) -> Payload:
     }
 
 
-def _validate_content(value: Payload, packets: list[Payload], story_id: str, limit: int) -> Payload:
+def _validate_content(
+    value: Payload, packets: list[Payload], story_id: str, limit: int
+) -> Payload:
     content = to_dict(parse_message(value, pb.StoryContent))
     if content["story_id"] != story_id:
         raise StoryOutputError("story_id_mismatch")
@@ -332,7 +393,9 @@ def _validate_content(value: Payload, packets: list[Payload], story_id: str, lim
     known = _packet_sources(packets)
     for name in ("body", "reading", "chart"):
         if component := component_content(content, None, name):
-            if any(ref not in known for ref in component_citations(component, name)):
+            if any(
+                ref not in known for ref in component_citations(component, name)
+            ):
                 raise EditorError("invalid_output")
     return content
 
@@ -346,7 +409,9 @@ def _rewrite_citations(content: Payload, remap: dict[str, str]) -> None:
 
     for paragraph in content.get("paragraphs", []):
         paragraph["citations"] = list(
-            dict.fromkeys(rewrite(ref) for ref in paragraph.get("citations", []))
+            dict.fromkeys(
+                rewrite(ref) for ref in paragraph.get("citations", [])
+            )
         )
     if reading := content.get("recommended_reading"):
         reading["citation"] = rewrite(reading["citation"])
@@ -360,7 +425,9 @@ def _rewrite_citations(content: Payload, remap: dict[str, str]) -> None:
     if chart := content.get("chart"):
         for point in chart.get("points", []):
             point["citations"] = list(
-                dict.fromkeys(rewrite(ref) for ref in point.get("citations", []))
+                dict.fromkeys(
+                    rewrite(ref) for ref in point.get("citations", [])
+                )
             )
 
 
@@ -372,15 +439,25 @@ def _supplements(
     result, remap = deepcopy(packets), {}
     seen = {packet["id"] for packet in packets}
     for supplement in values:
-        if not isinstance(supplement, dict) or set(supplement) != {"id", "content"}:
+        if not isinstance(supplement, dict) or set(supplement) != {
+            "id",
+            "content",
+        }:
             raise StoryOutputError("supplemental_packet_envelope_invalid")
         old_id = supplement["id"]
-        if not isinstance(old_id, str) or not _SUPPLEMENT.fullmatch(old_id) or old_id in seen:
+        if (
+            not isinstance(old_id, str)
+            or not _SUPPLEMENT.fullmatch(old_id)
+            or old_id in seen
+        ):
             raise StoryOutputError("supplemental_packet_id_invalid")
         seen.add(old_id)
         body = supplement["content"]
         validate_packet_body(body)
-        if any(urldefrag(source["url"])[0] not in opened for source in body["sources"]):
+        if any(
+            urldefrag(source["url"])[0] not in opened
+            for source in body["sources"]
+        ):
             raise StoryOutputError("supplemental_source_open_not_observed")
         new_id = str(uuid4())
         remap[old_id] = new_id
@@ -390,7 +467,9 @@ def _supplements(
                 "workflow_id": "story-research",
                 "producer_id": "codex-story-editor",
                 "content_hash": content_hash(body),
-                "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "created_at": datetime.now(UTC)
+                .isoformat()
+                .replace("+00:00", "Z"),
                 "is_fixture": is_fixture,
                 "content": deepcopy(body),
             }
@@ -478,7 +557,9 @@ class StoryEditor:
         # propagate, never masquerade as an optional model outage.
         self._checkpoint(result, on_checkpoint)
         repair_content = (
-            initial["content"] if initial["content"] is not None else initial.get("repair_content")
+            initial["content"]
+            if initial["content"] is not None
+            else initial.get("repair_content")
         )
         if result["content"] is None and repair_content is not None:
             repair_context = {
@@ -493,7 +574,11 @@ class StoryEditor:
             stage = "repair_writer"
             try:
                 repaired, repair_job = await self._write(
-                    repair_context, result["packets"], policy, workspace, is_fixture
+                    repair_context,
+                    result["packets"],
+                    policy,
+                    workspace,
+                    is_fixture,
                 )
                 result["packets"] = repaired["packets"]
                 stage = "repair_review"
@@ -512,7 +597,9 @@ class StoryEditor:
         return result
 
     @staticmethod
-    def _checkpoint(result: Payload, callback: Callable[[Payload], None] | None) -> None:
+    def _checkpoint(
+        result: Payload, callback: Callable[[Payload], None] | None
+    ) -> None:
         result["provenance"] = {"packets_hash": content_hash(result["packets"])}
         if callback is not None and (
             result["content"] is not None
@@ -522,7 +609,9 @@ class StoryEditor:
             callback(deepcopy(result))
 
     @staticmethod
-    def _unavailable(result: Payload, exc: EditorError | ContractError, stage: str) -> Payload:
+    def _unavailable(
+        result: Payload, exc: EditorError | ContractError, stage: str
+    ) -> Payload:
         if isinstance(exc, EditorError) and exc.code in {
             "authentication",
             "configuration",
@@ -594,11 +683,16 @@ class StoryEditor:
             ),
         }
         job = str(uuid4())
-        path = prepare_workspace(workspace / f"writer-{job}", context["issue_date"])
+        path = prepare_workspace(
+            workspace / f"writer-{job}", context["issue_date"]
+        )
         text, opened, _ = await self.editor.execute(
             canonical_json(prompt),
             story_writer_schema(
-                context["mode"], repair=repair, story_id=context["story_id"], packets=packets
+                context["mode"],
+                repair=repair,
+                story_id=context["story_id"],
+                packets=packets,
             ),
             policy.get("editorial.md", ""),
             path,
@@ -621,7 +715,9 @@ class StoryEditor:
             "repair_content": None,
             "repair_component": "body",
         }
-        if (context["mode"] == "deep" or repair) and value["signal"] is not None:
+        if (context["mode"] == "deep" or repair) and value[
+            "signal"
+        ] is not None:
             raise StoryOutputError("signal_not_allowed_in_deep_or_repair")
         for name in ("content", "signal"):
             raw = value[name]
@@ -633,10 +729,20 @@ class StoryEditor:
                 raw = deepcopy(raw)
                 optional = {key: raw.pop(key) for key in OPTIONAL if key in raw}
                 _rewrite_citations(raw, remap)
-                limit = 1 if name == "signal" else 2 if context["mode"] == "brief" else 16
-                content = _validate_content(raw, all_packets, context["story_id"], limit)
+                limit = (
+                    1
+                    if name == "signal"
+                    else 2
+                    if context["mode"] == "brief"
+                    else 16
+                )
+                content = _validate_content(
+                    raw, all_packets, context["story_id"], limit
+                )
                 if name == "signal" and any(optional.values()):
-                    raise StoryOutputError("signal_contains_optional_components")
+                    raise StoryOutputError(
+                        "signal_contains_optional_components"
+                    )
                 for key, candidate in optional.items():
                     if candidate is None:
                         continue
@@ -645,29 +751,54 @@ class StoryEditor:
                         _rewrite_citations(rewritten, remap)
                         candidate = rewritten[key]
                         _validate_content(
-                            {**content, key: candidate}, all_packets, context["story_id"], limit
+                            {**content, key: candidate},
+                            all_packets,
+                            context["story_id"],
+                            limit,
                         )
                         content[key] = candidate
-                    except (EditorError, ContractError, KeyError, TypeError, AttributeError) as exc:
+                    except (
+                        EditorError,
+                        ContractError,
+                        KeyError,
+                        TypeError,
+                        AttributeError,
+                    ) as exc:
                         output["issues"].append(
                             self._format_issue(
-                                "reading" if key == "recommended_reading" else key, repair, exc
+                                "reading"
+                                if key == "recommended_reading"
+                                else key,
+                                repair,
+                                exc,
                             )
                         )
                 output[name] = content
-            except (EditorError, ContractError, KeyError, TypeError, AttributeError) as exc:
+            except (
+                EditorError,
+                ContractError,
+                KeyError,
+                TypeError,
+                AttributeError,
+            ) as exc:
                 output["issues"].append(
-                    self._format_issue("body" if name == "content" else name, repair, exc)
+                    self._format_issue(
+                        "body" if name == "content" else name, repair, exc
+                    )
                 )
                 # This remains model-owned, unverified input for the one bounded
                 # repair. Never put raw invalid text in publication/checkpoints.
                 if output["repair_content"] is None:
                     output["repair_content"] = deepcopy(raw)
-                    output["repair_component"] = "body" if name == "content" else "signal"
+                    output["repair_component"] = (
+                        "body" if name == "content" else "signal"
+                    )
         return output, job
 
     @staticmethod
-    def _format_issue(component: str, repair: bool, error: BaseException) -> Payload:
+    def _format_issue(
+        component: str, repair: bool, error: BaseException
+    ) -> Payload:
         return {
             "round": "repair" if repair else "initial",
             "component": component,
@@ -691,16 +822,28 @@ class StoryEditor:
         sources = _packet_sources(value["packets"])
         approval_sources = ApprovalSources(
             components={
-                name: [sources[ref]["url"] for ref in component_citations(component, name)]
+                name: [
+                    sources[ref]["url"]
+                    for ref in component_citations(component, name)
+                ]
                 for name in COMPONENTS
-                if (component := component_content(value["content"], value["signal"], name))
+                if (
+                    component := component_content(
+                        value["content"], value["signal"], name
+                    )
+                )
                 is not None
             },
-            evidence={reference: source["url"] for reference, source in sources.items()}
+            evidence={
+                reference: source["url"]
+                for reference, source in sources.items()
+            }
             if prior
             else {},
         )
-        path = prepare_workspace(workspace / f"reviewer-{job}", context["issue_date"])
+        path = prepare_workspace(
+            workspace / f"reviewer-{job}", context["issue_date"]
+        )
         text, opened, searched = await self.editor.execute(
             canonical_json(
                 {
@@ -717,9 +860,13 @@ class StoryEditor:
                         else {}
                     ),
                     "packets_untrusted": value["packets"],
-                    "available_citations": list(_packet_sources(value["packets"])),
+                    "available_citations": list(
+                        _packet_sources(value["packets"])
+                    ),
                     "prior_verified_brief_untrusted": prior,
-                    "prior_body_hash": content_hash(body_content(prior["content"]))
+                    "prior_body_hash": content_hash(
+                        body_content(prior["content"])
+                    )
                     if prior
                     else "",
                     "prior_signal_hash": content_hash(prior["signal"])
@@ -759,13 +906,16 @@ class StoryEditor:
                 or record["component"] not in COMPONENTS
                 or record["component"] in seen
                 or not isinstance(record["status"], str)
-                or record["status"] not in {"approved", "blocked", "not_present"}
+                or record["status"]
+                not in {"approved", "blocked", "not_present"}
                 or not self._strings(record["findings"])
             ):
                 raise EditorError("invalid_output")
             name = record["component"]
             seen.add(name)
-            component = component_content(value["content"], value["signal"], name)
+            component = component_content(
+                value["content"], value["signal"], name
+            )
             status, findings = record["status"], list(record["findings"])
             if component is None:
                 status = "not_present"
@@ -774,9 +924,15 @@ class StoryEditor:
                 findings.append("Review omitted a present component.")
             if component is not None and status == "approved":
                 refs = component_citations(component, name)
-                required_urls = {urldefrag(sources[ref]["url"])[0] for ref in refs}
+                required_urls = {
+                    urldefrag(sources[ref]["url"])[0] for ref in refs
+                }
                 missing_urls = sorted(required_urls - opened)
-                metadata_refs = [ref for ref in refs if sources[ref]["access_scope"] == "metadata"]
+                metadata_refs = [
+                    ref
+                    for ref in refs
+                    if sources[ref]["access_scope"] == "metadata"
+                ]
                 checks: list[tuple[str, list[str], str]] = []
                 if not searched:
                     checks.append(
@@ -788,18 +944,30 @@ class StoryEditor:
                     )
                 if not required_urls:
                     checks.append(
-                        ("missing_review_citations: 此组件没有可核对的引用来源。", [], "research")
+                        (
+                            "missing_review_citations: 此组件没有可核对的引用来源。",
+                            [],
+                            "research",
+                        )
                     )
                 if missing_urls:
                     missing_refs = [
-                        ref for ref in refs if urldefrag(sources[ref]["url"])[0] not in opened
+                        ref
+                        for ref in refs
+                        if urldefrag(sources[ref]["url"])[0] not in opened
                     ]
                     details = [
-                        url if len(url) <= 1800 else "URL过长，请按引用ID读取材料中完整source.url"
+                        url
+                        if len(url) <= 1800
+                        else "URL过长，请按引用ID读取材料中完整source.url"
                         for url in missing_urls[:4]
                     ]
                     checks.extend(
-                        ("missing_review_open_url: " + url, missing_refs[:16], "research")
+                        (
+                            "missing_review_open_url: " + url,
+                            missing_refs[:16],
+                            "research",
+                        )
                         for url in details
                     )
                     if len(missing_urls) > 4:
@@ -824,7 +992,10 @@ class StoryEditor:
                     not searched
                     or not required_urls
                     or not required_urls.issubset(opened)
-                    or any(sources[ref]["access_scope"] == "metadata" for ref in refs)
+                    or any(
+                        sources[ref]["access_scope"] == "metadata"
+                        for ref in refs
+                    )
                 ):
                     status = "blocked"
                     findings.extend(message for message, _, _ in checks)
@@ -834,11 +1005,18 @@ class StoryEditor:
                             "component": name,
                             "claim": "",
                             "reason": "; ".join(
-                                dict.fromkeys(message.split(":", 1)[0] for message, _, _ in checks)
+                                dict.fromkeys(
+                                    message.split(":", 1)[0]
+                                    for message, _, _ in checks
+                                )
                             )
                             + "。详见本组件findings中的精确URL和引用IDs。",
                             "evidence": list(
-                                dict.fromkeys(ref for _, evidence, _ in checks for ref in evidence)
+                                dict.fromkeys(
+                                    ref
+                                    for _, evidence, _ in checks
+                                    for ref in evidence
+                                )
                             )[:16],
                             "action": "remove" if metadata_refs else "research",
                         }
@@ -849,7 +1027,9 @@ class StoryEditor:
                     "component": name,
                     "status": status,
                     "findings": findings,
-                    "content_hash": content_hash(component) if component is not None else "",
+                    "content_hash": content_hash(component)
+                    if component is not None
+                    else "",
                     "searched": searched,
                     "opened": bool(opened),
                     "opened_urls": sorted(opened),
@@ -860,11 +1040,13 @@ class StoryEditor:
         for issue in issues:
             if (
                 not isinstance(issue, dict)
-                or set(issue) != {"component", "claim", "reason", "evidence", "action"}
+                or set(issue)
+                != {"component", "claim", "reason", "evidence", "action"}
                 or not isinstance(issue["component"], str)
                 or issue["component"] not in COMPONENTS
                 or not isinstance(issue["action"], str)
-                or issue["action"] not in {"correct", "remove", "clarify", "research"}
+                or issue["action"]
+                not in {"correct", "remove", "clarify", "research"}
                 or not all(
                     isinstance(issue[name], str) and len(issue[name]) <= 2000
                     for name in ("claim", "reason")
@@ -884,7 +1066,9 @@ class StoryEditor:
                         "Component still has an unresolved factual issue."
                     )
         if withdrawal := review.get("prior_withdrawal"):
-            verified = self._withdrawal(withdrawal, prior, sources, job, opened, searched)
+            verified = self._withdrawal(
+                withdrawal, prior, sources, job, opened, searched
+            )
             if verified:
                 output["withdrawals"].append(verified)
             else:
@@ -930,14 +1114,23 @@ class StoryEditor:
                     }
                 ],
             }
-        return await self._review(value, writer_job, round_name, context, policy, workspace)
+        return await self._review(
+            value, writer_job, round_name, context, policy, workspace
+        )
 
     @staticmethod
     def _reviewable_prior(context: Payload, round_name: str) -> Payload | None:
-        from newsletter.workflow.publication import PublicationError, validate_result
+        from newsletter.workflow.publication import (
+            PublicationError,
+            validate_result,
+        )
 
         prior = context.get("prior_verified_brief_untrusted")
-        if context["mode"] != "deep" or round_name != "initial" or not isinstance(prior, dict):
+        if (
+            context["mode"] != "deep"
+            or round_name != "initial"
+            or not isinstance(prior, dict)
+        ):
             return None
         try:
             validate_result(prior)
@@ -966,7 +1159,13 @@ class StoryEditor:
             or not opened
             or not isinstance(value, dict)
             or set(value)
-            != {"target_body_hash", "affected_signal_hash", "claim", "reason", "evidence"}
+            != {
+                "target_body_hash",
+                "affected_signal_hash",
+                "claim",
+                "reason",
+                "evidence",
+            }
         ):
             return None
         body_hash = content_hash(body_content(prior["content"]))
@@ -975,21 +1174,32 @@ class StoryEditor:
             value["target_body_hash"] != body_hash
             or not isinstance(claim, str)
             or not 12 <= len(claim) <= 2000
-            or not any(claim in paragraph["text"] for paragraph in prior["content"]["paragraphs"])
+            or not any(
+                claim in paragraph["text"]
+                for paragraph in prior["content"]["paragraphs"]
+            )
             or not isinstance(reason, str)
             or not reason.strip()
             or len(reason) > 2000
             or not StoryEditor._strings(refs)
             or not refs
             or len(set(refs)) != len(refs)
-            or any(ref not in sources or sources[ref]["access_scope"] == "metadata" for ref in refs)
-            or any(urldefrag(sources[ref]["url"])[0] not in opened for ref in refs)
+            or any(
+                ref not in sources or sources[ref]["access_scope"] == "metadata"
+                for ref in refs
+            )
+            or any(
+                urldefrag(sources[ref]["url"])[0] not in opened for ref in refs
+            )
         ):
             return None
         signal_hash = value["affected_signal_hash"]
         if not isinstance(signal_hash, str) or (
             signal_hash
-            and (prior["signal"] is None or signal_hash != content_hash(prior["signal"]))
+            and (
+                prior["signal"] is None
+                or signal_hash != content_hash(prior["signal"])
+            )
         ):
             return None
         writer = next(
@@ -1029,16 +1239,27 @@ class StoryEditor:
 
     @staticmethod
     def _approved_signal(value: Payload, review: Payload) -> Payload | None:
-        approved = {a["component"] for a in review["assessments"] if a["status"] == "approved"}
+        approved = {
+            a["component"]
+            for a in review["assessments"]
+            if a["status"] == "approved"
+        }
         return deepcopy(value["signal"]) if "signal" in approved else None
 
     @staticmethod
     def _approved_content(value: Payload, review: Payload) -> Payload | None:
-        approved = {a["component"] for a in review["assessments"] if a["status"] == "approved"}
+        approved = {
+            a["component"]
+            for a in review["assessments"]
+            if a["status"] == "approved"
+        }
         if "body" not in approved:
             return None
         content = deepcopy(value["content"])
-        for component, field in (("reading", "recommended_reading"), ("chart", "chart")):
+        for component, field in (
+            ("reading", "recommended_reading"),
+            ("chart", "chart"),
+        ):
             if component not in approved:
                 content.pop(field, None)
         return cast(Payload, content)

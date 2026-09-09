@@ -31,13 +31,21 @@ def test_public_wheel_contains_generated_code_types_and_traceable_provenance():
     assert manifest["package_version"] == version("ziyixi-protos")
     installed = distribution("ziyixi-protos")
     member = "ziyixi_protos/newsletter/editorial_pb2.py"
-    assert Path(pb.__file__).resolve() == Path(installed.locate_file(member)).resolve()
+    assert (
+        Path(pb.__file__).resolve()
+        == Path(installed.locate_file(member)).resolve()
+    )
     startup.check_proto_dependency()
 
 
 def test_generated_module_identity_supports_normal_python_serialization():
-    assert pb.StartRunRequest.__module__ == "ziyixi_protos.newsletter.editorial_pb2"
-    value = pb.StartRunRequest(request_key="synthetic-job", issue_date="2026-09-05")
+    assert (
+        pb.StartRunRequest.__module__
+        == "ziyixi_protos.newsletter.editorial_pb2"
+    )
+    value = pb.StartRunRequest(
+        request_key="synthetic-job", issue_date="2026-09-05"
+    )
     assert pickle.loads(pickle.dumps(value)) == value
     assert pb.DESCRIPTOR.name == "ziyixi_protos/newsletter/editorial.proto"
     assert pb.DESCRIPTOR.package == "newsletter.v1"
@@ -53,7 +61,9 @@ def copied_package(tmp_path, monkeypatch):
         startup,
         "files",
         lambda package: (
-            tmp_path if package == "ziyixi_protos.newsletter" else actual_files(package)
+            tmp_path
+            if package == "ziyixi_protos.newsletter"
+            else actual_files(package)
         ),
     )
     return tmp_path
@@ -63,7 +73,9 @@ def copied_package(tmp_path, monkeypatch):
 def test_tampered_dependency_resources_are_rejected(copied_package, name):
     path = copied_package / name
     path.write_bytes(path.read_bytes() + b"\n# synthetic tampering\n")
-    with pytest.raises(startup.PreflightError, match="^PROTO_INTEGRITY_FAILED$"):
+    with pytest.raises(
+        startup.PreflightError, match="^PROTO_INTEGRITY_FAILED$"
+    ):
         startup.check_proto_dependency()
 
 
@@ -71,7 +83,11 @@ def test_tampered_dependency_resources_are_rejected(copied_package, name):
     ("field", "bad", "code"),
     [
         ("descriptor_sha256", "0" * 64, "PROTO_INTEGRITY_FAILED"),
-        ("source_repository", "https://example.org/not-the-source", "PROTO_SOURCE_INVALID"),
+        (
+            "source_repository",
+            "https://example.org/not-the-source",
+            "PROTO_SOURCE_INVALID",
+        ),
         ("source_path", "newsletter/editorial.proto", "PROTO_SOURCE_INVALID"),
         ("source_commit", "g" * 40, "PROTO_SOURCE_INVALID"),
         ("source_commit", "", "PROTO_SOURCE_INVALID"),
@@ -80,7 +96,9 @@ def test_tampered_dependency_resources_are_rejected(copied_package, name):
         ("package_version", "0.0.0", "PROTO_VERSION_MISMATCH"),
     ],
 )
-def test_dependency_metadata_mismatch_fails_closed(copied_package, field, bad, code):
+def test_dependency_metadata_mismatch_fails_closed(
+    copied_package, field, bad, code
+):
     path = copied_package / "provenance.json"
     manifest = json.loads(path.read_text())
     manifest[field] = bad
@@ -96,7 +114,9 @@ def test_non_object_manifest_is_not_accepted(copied_package):
         startup.check_proto_dependency()
 
 
-def test_shadow_module_is_not_mistaken_for_installed_distribution(tmp_path, monkeypatch):
+def test_shadow_module_is_not_mistaken_for_installed_distribution(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(pb, "__file__", str(tmp_path / "editorial_pb2.py"))
     with pytest.raises(startup.PreflightError, match="^PROTO_SOURCE_INVALID$"):
         startup.check_proto_dependency()

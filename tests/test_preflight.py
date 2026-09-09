@@ -29,7 +29,9 @@ def settings(tmp_path):
 def live(settings, tmp_path):
     home = tmp_path / "isolated-auth"
     home.mkdir()
-    return replace(settings, mode="live", editor_backend="codex", codex_home=home)
+    return replace(
+        settings, mode="live", editor_backend="codex", codex_home=home
+    )
 
 
 @pytest.fixture
@@ -62,7 +64,9 @@ def sdk(monkeypatch, live):
             assert refresh_token is True
             state.requests.append("account/read")
             return SimpleNamespace(
-                account=SimpleNamespace(root=SimpleNamespace(type=state.account_type))
+                account=SimpleNamespace(
+                    root=SimpleNamespace(type=state.account_type)
+                )
             )
 
         async def request(self, method, params, *, response_model):
@@ -82,7 +86,9 @@ def sdk(monkeypatch, live):
                                         "enabled": state.skills_enabled,
                                         "description": "fixture",
                                     }
-                                    for path in sorted(skill_paths(live.codex_home))
+                                    for path in sorted(
+                                        skill_paths(live.codex_home)
+                                    )
                                 ],
                             }
                         ]
@@ -91,9 +97,13 @@ def sdk(monkeypatch, live):
             assert method == "model/list"
             assert params["includeHidden"] is True
             if "cursor" not in params:
-                return response_model.model_validate({"data": [], "nextCursor": "second-page"})
+                return response_model.model_validate(
+                    {"data": [], "nextCursor": "second-page"}
+                )
             assert params["cursor"] == "second-page"
-            return SimpleNamespace(data=[SimpleNamespace(model=state.model)], next_cursor=None)
+            return SimpleNamespace(
+                data=[SimpleNamespace(model=state.model)], next_cursor=None
+            )
 
         async def close(self):
             state.closed = True
@@ -107,11 +117,15 @@ def sdk(monkeypatch, live):
         state.requests.append("host/help")
 
     monkeypatch.setattr(startup, "_host_executable", host_fixture)
-    monkeypatch.setattr(startup, "_runtime_files", lambda: (Path("codex"), Path("host")))
+    monkeypatch.setattr(
+        startup, "_runtime_files", lambda: (Path("codex"), Path("host"))
+    )
     return module, state
 
 
-async def test_mock_checks_storage_real_package_resources_without_provider_calls(settings):
+async def test_mock_checks_storage_real_package_resources_without_provider_calls(
+    settings,
+):
     with pytest.MonkeyPatch.context() as patch:
 
         def unexpected(*args, **kwargs):
@@ -167,7 +181,9 @@ async def test_existing_database_is_checked_without_changing_records(settings):
         store.close()
 
 
-async def test_live_checks_managed_auth_disabled_skills_and_paginated_models(live, sdk):
+async def test_live_checks_managed_auth_disabled_skills_and_paginated_models(
+    live, sdk
+):
     module, state = sdk
     report = await startup.preflight(live, sdk=module)
     assert state.requests == [
@@ -192,7 +208,9 @@ async def test_live_checks_managed_auth_disabled_skills_and_paginated_models(liv
         ("fail", True, "CODEX_CHECK_FAILED"),
     ],
 )
-async def test_codex_startup_failures_are_closed_and_secret_free(live, sdk, field, value, code):
+async def test_codex_startup_failures_are_closed_and_secret_free(
+    live, sdk, field, value, code
+):
     module, state = sdk
     setattr(state, field, value)
     with pytest.raises(startup.PreflightError) as error:
@@ -244,7 +262,9 @@ def notion_response(settings):
     return {
         "object": "data_source",
         "id": settings.notion_data_source_id,
-        "properties": {"Renamed column": {"id": "title", "type": "title", "title": {}}},
+        "properties": {
+            "Renamed column": {"id": "title", "type": "title", "title": {}}
+        },
     }
 
 
@@ -273,7 +293,11 @@ def dual_notion_response(settings, kind):
         if spec.type in {"select", "multi_select"}:
             detail = {"options": [{"name": name} for name in spec.options]}
         elif spec.type == "relation":
-            detail = {"data_source_id": target, "type": "single_property", "single_property": {}}
+            detail = {
+                "data_source_id": target,
+                "type": "single_property",
+                "single_property": {},
+            }
         properties[spec.name if key != "title" else "My renamed title"] = {
             "id": "title" if key == "title" else kind + "_" + key,
             "type": spec.type,
@@ -296,11 +320,16 @@ async def test_dual_notion_validates_both_schemas_read_only(dual_notion, sdk):
         calls.append(request)
         assert request.method == "GET"
         assert request.url.host == "api.notion.com"
-        assert request.headers["authorization"] == "Bearer " + dual_notion.notion_token
+        assert (
+            request.headers["authorization"]
+            == "Bearer " + dual_notion.notion_token
+        )
         assert request.headers["notion-version"] == "2026-03-11"
         kind = (
             "material"
-            if request.url.path.endswith(dual_notion.notion_materials_data_source_id)
+            if request.url.path.endswith(
+                dual_notion.notion_materials_data_source_id
+            )
             else "edition"
         )
         return httpx.Response(200, json=dual_notion_response(dual_notion, kind))
@@ -315,7 +344,10 @@ async def test_dual_notion_validates_both_schemas_read_only(dual_notion, sdk):
     assert "notion_dual_data_sources_and_managed_schema" in report.checks
     assert "notion_data_source_read_and_title_schema" not in report.checks
     assert any("Update content" in item for item in report.limitations)
-    assert any("no page or column was created or changed" in item for item in report.limitations)
+    assert any(
+        "no page or column was created or changed" in item
+        for item in report.limitations
+    )
     assert "synthetic" not in repr(report)
 
 
@@ -328,7 +360,9 @@ async def test_dual_notion_validates_both_schemas_read_only(dual_notion, sdk):
         ("wrong-id", "NOTION_SCHEMA_INVALID"),
     ],
 )
-async def test_dual_notion_missing_or_wrong_schema_never_auto_migrates(dual_notion, change, code):
+async def test_dual_notion_missing_or_wrong_schema_never_auto_migrates(
+    dual_notion, change, code
+):
     calls = []
 
     def handler(request):
@@ -336,7 +370,9 @@ async def test_dual_notion_missing_or_wrong_schema_never_auto_migrates(dual_noti
         assert request.method == "GET"
         kind = (
             "material"
-            if request.url.path.endswith(dual_notion.notion_materials_data_source_id)
+            if request.url.path.endswith(
+                dual_notion.notion_materials_data_source_id
+            )
             else "edition"
         )
         value = dual_notion_response(dual_notion, kind)
@@ -347,9 +383,9 @@ async def test_dual_notion_missing_or_wrong_schema_never_auto_migrates(dual_noti
             elif change == "type":
                 props[SCHEMAS[kind]["overview"].name]["type"] = "number"
             elif change == "relation":
-                props[SCHEMAS[kind]["material_ids"].name]["relation"]["data_source_id"] = (
-                    dual_notion.notion_editions_data_source_id
-                )
+                props[SCHEMAS[kind]["material_ids"].name]["relation"][
+                    "data_source_id"
+                ] = dual_notion.notion_editions_data_source_id
             else:
                 value["id"] = dual_notion.notion_materials_data_source_id
         return httpx.Response(200, json=value)
@@ -374,7 +410,9 @@ async def test_dual_notion_transient_failures_degrade_without_legacy_gates(
             await asyncio.Event().wait()
         if failure == "network":
             raise httpx.ConnectError("private-provider-detail", request=request)
-        return httpx.Response(failure, json={"message": "private-provider-detail"})
+        return httpx.Response(
+            failure, json={"message": "private-provider-detail"}
+        )
 
     report = await startup.preflight(
         dual_notion, sdk=module, http_transport=httpx.MockTransport(handler)
@@ -395,7 +433,9 @@ async def test_dual_notion_transient_failures_degrade_without_legacy_gates(
         (302, "NOTION_UNAVAILABLE"),
     ],
 )
-async def test_dual_notion_auth_and_target_failures_stop_startup(dual_notion, sdk, status, code):
+async def test_dual_notion_auth_and_target_failures_stop_startup(
+    dual_notion, sdk, status, code
+):
     module, _ = sdk
     calls = []
 
@@ -415,8 +455,12 @@ async def test_dual_notion_auth_and_target_failures_stop_startup(dual_notion, sd
     assert "private" not in repr(error.value)
 
 
-@pytest.mark.parametrize("failure", ["oversize", "invalid-json", "wrong-content-type"])
-async def test_dual_notion_invalid_response_is_a_hard_failure(dual_notion, monkeypatch, failure):
+@pytest.mark.parametrize(
+    "failure", ["oversize", "invalid-json", "wrong-content-type"]
+)
+async def test_dual_notion_invalid_response_is_a_hard_failure(
+    dual_notion, monkeypatch, failure
+):
     from newsletter import notion_api
 
     monkeypatch.setattr(notion_api, "MAX_RESPONSE_BYTES", 64)
@@ -427,16 +471,24 @@ async def test_dual_notion_invalid_response_is_a_hard_failure(dual_notion, monke
             return httpx.Response(200, json={"private": "x" * 100})
         if failure == "invalid-json":
             return httpx.Response(
-                200, content="upstream-private-body", headers={"Content-Type": "application/json"}
+                200,
+                content="upstream-private-body",
+                headers={"Content-Type": "application/json"},
             )
-        return httpx.Response(200, content="{}", headers={"Content-Type": "text/html"})
+        return httpx.Response(
+            200, content="{}", headers={"Content-Type": "text/html"}
+        )
 
-    with pytest.raises(startup.PreflightError, match="NOTION_INVALID_RESPONSE") as error:
+    with pytest.raises(
+        startup.PreflightError, match="NOTION_INVALID_RESPONSE"
+    ) as error:
         await startup._check_notion(dual_notion, httpx.MockTransport(handler))
     assert "private" not in repr(error.value)
 
 
-async def test_provider_probes_only_get_schema_and_public_health(providers, sdk):
+async def test_provider_probes_only_get_schema_and_public_health(
+    providers, sdk
+):
     module, _ = sdk
     requests = []
 
@@ -444,13 +496,24 @@ async def test_provider_probes_only_get_schema_and_public_health(providers, sdk)
         requests.append(request)
         assert request.method == "GET"
         if request.url.host == "api.notion.com":
-            assert request.url.path == "/v1/data_sources/" + providers.notion_data_source_id
+            assert (
+                request.url.path
+                == "/v1/data_sources/" + providers.notion_data_source_id
+            )
             assert request.headers["notion-version"] == "2026-03-11"
-            assert request.headers["authorization"] == "Bearer " + providers.notion_token
+            assert (
+                request.headers["authorization"]
+                == "Bearer " + providers.notion_token
+            )
             return httpx.Response(200, json=notion_response(providers))
-        assert request.url.host == "todofy.example.org" and request.url.path == "/health"
+        assert (
+            request.url.host == "todofy.example.org"
+            and request.url.path == "/health"
+        )
         assert "authorization" not in request.headers
-        return httpx.Response(200, json={"service": "todofy", "status": "healthy"})
+        return httpx.Response(
+            200, json={"service": "todofy", "status": "healthy"}
+        )
 
     report = await startup.preflight(
         providers, sdk=module, http_transport=httpx.MockTransport(handler)
@@ -474,24 +537,32 @@ async def test_provider_probes_only_get_schema_and_public_health(providers, sdk)
         (200, [], "NOTION_INVALID_RESPONSE"),
     ],
 )
-async def test_notion_refuses_auth_redirect_and_wrong_schema(providers, sdk, status, body, code):
+async def test_notion_refuses_auth_redirect_and_wrong_schema(
+    providers, sdk, status, body, code
+):
     module, _ = sdk
     calls = []
 
     def handler(request):
         calls.append(request)
         return httpx.Response(
-            status, json=body, headers={"Location": "https://elsewhere.example.org"}
+            status,
+            json=body,
+            headers={"Location": "https://elsewhere.example.org"},
         )
 
     with pytest.raises(startup.PreflightError) as error:
-        await startup.preflight(providers, sdk=module, http_transport=httpx.MockTransport(handler))
+        await startup.preflight(
+            providers, sdk=module, http_transport=httpx.MockTransport(handler)
+        )
     assert error.value.code == code
     assert len(calls) == 1
 
 
 @pytest.mark.parametrize("change", ["wrong-id", "missing-title", "trashed"])
-async def test_notion_requires_exact_target_and_title_schema(providers, sdk, change):
+async def test_notion_requires_exact_target_and_title_schema(
+    providers, sdk, change
+):
     module, _ = sdk
     value = notion_response(providers)
     if change == "wrong-id":
@@ -504,11 +575,15 @@ async def test_notion_requires_exact_target_and_title_schema(providers, sdk, cha
         await startup.preflight(
             providers,
             sdk=module,
-            http_transport=httpx.MockTransport(lambda _: httpx.Response(200, json=value)),
+            http_transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, json=value)
+            ),
         )
 
 
-async def test_todofy_health_failure_does_not_try_generating_endpoint(providers, sdk):
+async def test_todofy_health_failure_does_not_try_generating_endpoint(
+    providers, sdk
+):
     module, _ = sdk
     settings = replace(providers, notion_backend="disabled")
     requests = []
@@ -516,14 +591,20 @@ async def test_todofy_health_failure_does_not_try_generating_endpoint(providers,
     def handler(request):
         requests.append(request)
         assert request.url.path == "/health"
-        return httpx.Response(200, json={"service": "todofy", "status": "unhealthy"})
+        return httpx.Response(
+            200, json={"service": "todofy", "status": "unhealthy"}
+        )
 
     with pytest.raises(startup.PreflightError, match="TODOFY_UNHEALTHY"):
-        await startup.preflight(settings, sdk=module, http_transport=httpx.MockTransport(handler))
+        await startup.preflight(
+            settings, sdk=module, http_transport=httpx.MockTransport(handler)
+        )
     assert len(requests) == 1
 
 
-async def test_mail_header_injection_fails_before_any_email_request(providers, sdk):
+async def test_mail_header_injection_fails_before_any_email_request(
+    providers, sdk
+):
     module, _ = sdk
     settings = replace(
         providers,
@@ -549,8 +630,12 @@ def test_runtime_version_mismatch_fails_closed(monkeypatch):
         startup._runtime_files()
 
 
-@pytest.mark.parametrize("failure", ["oversize", "invalid-json", "wrong-content-type"])
-async def test_provider_response_limits_and_timeout_are_safe(providers, sdk, monkeypatch, failure):
+@pytest.mark.parametrize(
+    "failure", ["oversize", "invalid-json", "wrong-content-type"]
+)
+async def test_provider_response_limits_and_timeout_are_safe(
+    providers, sdk, monkeypatch, failure
+):
     module, _ = sdk
     monkeypatch.setattr(startup, "MAX_RESPONSE_BYTES", 64)
     monkeypatch.setattr(startup, "HTTP_TIMEOUT", 0.01)
@@ -560,12 +645,16 @@ async def test_provider_response_limits_and_timeout_are_safe(providers, sdk, mon
             return httpx.Response(200, json={"secret": "x" * 100})
         if failure == "invalid-json":
             return httpx.Response(
-                200, content="not-json-private-body", headers={"Content-Type": "application/json"}
+                200,
+                content="not-json-private-body",
+                headers={"Content-Type": "application/json"},
             )
         return httpx.Response(200, text="private-error-html")
 
     with pytest.raises(startup.PreflightError) as error:
-        await startup.preflight(providers, sdk=module, http_transport=httpx.MockTransport(handler))
+        await startup.preflight(
+            providers, sdk=module, http_transport=httpx.MockTransport(handler)
+        )
     assert error.value.code == "NOTION_INVALID_RESPONSE"
     assert "private" not in str(error.value)
 
@@ -577,7 +666,12 @@ async def test_optional_provider_transient_failure_is_degraded_not_a_startup_blo
 ):
     module, _ = sdk
     settings = replace(
-        providers, **{"todofy_backend" if provider == "notion" else "notion_backend": "disabled"}
+        providers,
+        **{
+            "todofy_backend"
+            if provider == "notion"
+            else "notion_backend": "disabled"
+        },
     )
     monkeypatch.setattr(startup, "HTTP_TIMEOUT", 0.01)
     calls = []
@@ -588,7 +682,9 @@ async def test_optional_provider_transient_failure_is_degraded_not_a_startup_blo
             await asyncio.Event().wait()
         if failure == "network":
             raise httpx.ConnectError("private-provider-detail", request=request)
-        return httpx.Response(failure, json={"message": "private-provider-detail"})
+        return httpx.Response(
+            failure, json={"message": "private-provider-detail"}
+        )
 
     report = await startup.preflight(
         settings, sdk=module, http_transport=httpx.MockTransport(handler)
@@ -602,32 +698,48 @@ async def test_optional_provider_transient_failure_is_degraded_not_a_startup_blo
 
 
 @pytest.mark.parametrize("status", [401, 403, 404, 302])
-async def test_todofy_auth_or_target_errors_remain_hard_failures(providers, sdk, status):
+async def test_todofy_auth_or_target_errors_remain_hard_failures(
+    providers, sdk, status
+):
     module, _ = sdk
     settings = replace(providers, notion_backend="disabled")
     with pytest.raises(startup.PreflightError):
         await startup.preflight(
             settings,
             sdk=module,
-            http_transport=httpx.MockTransport(lambda _: httpx.Response(status)),
+            http_transport=httpx.MockTransport(
+                lambda _: httpx.Response(status)
+            ),
         )
 
 
 async def test_modified_proto_fails_before_any_provider(settings, monkeypatch):
-    monkeypatch.setattr(startup.pb, "DESCRIPTOR", SimpleNamespace(serialized_pb=b"modified-proto"))
+    monkeypatch.setattr(
+        startup.pb,
+        "DESCRIPTOR",
+        SimpleNamespace(serialized_pb=b"modified-proto"),
+    )
     with pytest.raises(startup.PreflightError, match="PROTO_INTEGRITY_FAILED"):
         await startup.preflight(settings)
 
 
-async def test_dependency_version_drift_fails_before_any_provider(settings, monkeypatch):
+async def test_dependency_version_drift_fails_before_any_provider(
+    settings, monkeypatch
+):
     monkeypatch.setattr(startup, "version", lambda _: "0.0.0")
-    with pytest.raises(startup.PreflightError, match="DEPENDENCY_VERSION_MISMATCH"):
+    with pytest.raises(
+        startup.PreflightError, match="DEPENDENCY_VERSION_MISMATCH"
+    ):
         await startup.preflight(settings)
 
 
-async def test_font_with_only_missing_glyph_boxes_is_rejected(settings, monkeypatch):
+async def test_font_with_only_missing_glyph_boxes_is_rejected(
+    settings, monkeypatch
+):
     monkeypatch.setattr(
-        startup, "load_font", lambda _: SimpleNamespace(getmask=lambda _: b"same-box")
+        startup,
+        "load_font",
+        lambda _: SimpleNamespace(getmask=lambda _: b"same-box"),
     )
     with pytest.raises(startup.PreflightError, match="CJK_FONT_UNAVAILABLE"):
         await startup.preflight(settings)
@@ -636,5 +748,7 @@ async def test_font_with_only_missing_glyph_boxes_is_rejected(settings, monkeypa
 def test_nonexecutable_runtime_fails_closed(monkeypatch):
     pytest.importorskip("codex_cli_bin")
     monkeypatch.setattr(startup.os, "access", lambda *_: False)
-    with pytest.raises(startup.PreflightError, match="CODEX_EXECUTABLE_UNAVAILABLE"):
+    with pytest.raises(
+        startup.PreflightError, match="CODEX_EXECUTABLE_UNAVAILABLE"
+    ):
         startup._runtime_files()

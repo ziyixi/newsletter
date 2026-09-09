@@ -22,7 +22,11 @@ CANDIDATE_RESEARCH_FIELDS = (
     "contribution",
     "source_basis",
 )
-CANDIDATE_FIELDS = (*CANDIDATE_LEGACY_FIELDS, *CANDIDATE_RESEARCH_FIELDS, "evidence_urls")
+CANDIDATE_FIELDS = (
+    *CANDIDATE_LEGACY_FIELDS,
+    *CANDIDATE_RESEARCH_FIELDS,
+    "evidence_urls",
+)
 MAX_EVIDENCE_URLS = 4
 TASK_FIELDS = (
     "id",
@@ -45,8 +49,16 @@ def object_schema(properties: Payload) -> Payload:
     }
 
 
-def discovery_schema(max_candidates: int = 5, *, classified: bool = False) -> Payload:
-    optional_text = {"doi", "version", "event_key", "published_at", *CANDIDATE_RESEARCH_FIELDS}
+def discovery_schema(
+    max_candidates: int = 5, *, classified: bool = False
+) -> Payload:
+    optional_text = {
+        "doi",
+        "version",
+        "event_key",
+        "published_at",
+        *CANDIDATE_RESEARCH_FIELDS,
+    }
     props: Payload = {
         key: {
             "type": "string",
@@ -66,9 +78,14 @@ def discovery_schema(max_candidates: int = 5, *, classified: bool = False) -> Pa
     props["why_now"]["maxLength"] = 1000
     # Shape only: the parser still checks calendar validity and the issue date.
     # Unknown publication dates are deliberately allowed to remain empty.
-    props["published_at"].update(maxLength=10, pattern=r"^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})?$")
+    props["published_at"].update(
+        maxLength=10, pattern=r"^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})?$"
+    )
     if classified:
-        props["editorial_kind"] = {"type": "string", "enum": list(EDITORIAL_KINDS)}
+        props["editorial_kind"] = {
+            "type": "string",
+            "enum": list(EDITORIAL_KINDS),
+        }
         props["change_basis"] = {"type": "string", "maxLength": 1200}
     return object_schema(
         {
@@ -110,11 +127,18 @@ def planning_schema(
         }
     )
     if classified:
-        task["properties"]["editorial_kind"] = {"type": "string", "enum": list(EDITORIAL_KINDS)}
+        task["properties"]["editorial_kind"] = {
+            "type": "string",
+            "enum": list(EDITORIAL_KINDS),
+        }
         task["required"].append("editorial_kind")
     return object_schema(
         {
-            "research_tasks": {"type": "array", "maxItems": max_tasks, "items": task},
+            "research_tasks": {
+                "type": "array",
+                "maxItems": max_tasks,
+                "items": task,
+            },
             "note": {"type": "string", "maxLength": 2000},
         }
     )

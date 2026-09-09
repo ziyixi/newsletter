@@ -9,7 +9,12 @@ from newsletter import settings
 
 FIELDS = (
     ("NEWSLETTER_JOB_TIMEOUT_SECONDS", "job_timeout_seconds", float, 900.0),
-    ("NEWSLETTER_COLLECTION_TIMEOUT_SECONDS", "collection_timeout_seconds", float, 600.0),
+    (
+        "NEWSLETTER_COLLECTION_TIMEOUT_SECONDS",
+        "collection_timeout_seconds",
+        float,
+        600.0,
+    ),
     ("NEWSLETTER_TODOFY_TOP", "todofy_top", int, 5),
 )
 

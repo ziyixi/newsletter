@@ -18,7 +18,9 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--uv", default="uv", help="uv executable (default: PATH)")
+    parser.add_argument(
+        "--uv", default="uv", help="uv executable (default: PATH)"
+    )
     parser.add_argument("--dist", type=Path, default=Path(".artifacts/dist"))
     args = parser.parse_args()
     uv = shutil.which(args.uv)
@@ -28,14 +30,18 @@ def main() -> None:
     dist = args.dist.resolve()
     wheels = sorted(dist.glob("personal_newsletter-*.whl"))
     if len(wheels) != 1:
-        parser.error("Build exactly one current wheel in --dist before this check")
+        parser.error(
+            "Build exactly one current wheel in --dist before this check"
+        )
     # Fail on stale artifacts as well as missing package data. Nothing is extracted.
     with zipfile.ZipFile(wheels[0]) as wheel:
         if any(
             name.startswith(("newsletter/generated/", "ziyixi_protos/"))
             for name in wheel.namelist()
         ):
-            parser.error("Newsletter wheel must depend on, not vendor, the public proto package")
+            parser.error(
+                "Newsletter wheel must depend on, not vendor, the public proto package"
+            )
         for source in (root / "src" / "newsletter").rglob("*"):
             if source.is_file() and source.suffix in {
                 ".py",
@@ -56,15 +62,30 @@ def main() -> None:
         prefix = names[0].split("/")[0]
         for name in ("uv.lock", ".python-version", "MANIFEST.in"):
             member_file = sdist.extractfile(prefix + "/" + name)
-            if member_file is None or member_file.read() != (root / name).read_bytes():
-                parser.error(f"Source distribution is stale: {name}; rebuild first")
+            if (
+                member_file is None
+                or member_file.read() != (root / name).read_bytes()
+            ):
+                parser.error(
+                    f"Source distribution is stale: {name}; rebuild first"
+                )
         if any(
-            "/tests/" in name or "/.env" in name or name.endswith("/auth.json") for name in names
+            "/tests/" in name or "/.env" in name or name.endswith("/auth.json")
+            for name in names
         ):
-            parser.error("Source distribution contains unexpected local/test files")
+            parser.error(
+                "Source distribution contains unexpected local/test files"
+            )
     env = {
         key: os.environ[key]
-        for key in ("PATH", "HOME", "TMPDIR", "LANG", "UV_CACHE_DIR", "UV_OFFLINE")
+        for key in (
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "LANG",
+            "UV_CACHE_DIR",
+            "UV_OFFLINE",
+        )
         if key in os.environ
     }
     env["UV_PYTHON_DOWNLOADS"] = "never"
@@ -72,7 +93,9 @@ def main() -> None:
     def run(*command: str, cwd: Path) -> None:
         subprocess.run(command, cwd=cwd, env=env, check=True, timeout=180)
 
-    with tempfile.TemporaryDirectory(prefix="newsletter-wheel-smoke-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="newsletter-wheel-smoke-"
+    ) as directory:
         temporary = Path(directory).resolve()
         requirements = temporary / "requirements.txt"
         run(
@@ -89,7 +112,14 @@ def main() -> None:
             cwd=root,
         )
         environment = temporary / "venv"
-        run(uv, "venv", "--python", sys.executable, str(environment), cwd=temporary)
+        run(
+            uv,
+            "venv",
+            "--python",
+            sys.executable,
+            str(environment),
+            cwd=temporary,
+        )
         python = str(environment / "bin" / "python")
         run(
             uv,

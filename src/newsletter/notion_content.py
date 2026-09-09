@@ -71,10 +71,20 @@ _DIRECTIONS = {
     "07-search-ads-recs": "技术",
     "08-llm-architectures": "AI/ML",
 }
-_ACCESS = {"metadata": "元数据", "abstract": "摘要", "full_text": "全文", "dataset": "数据集"}
+_ACCESS = {
+    "metadata": "元数据",
+    "abstract": "摘要",
+    "full_text": "全文",
+    "dataset": "数据集",
+}
 _PROGRESS = {"候选", "已研究", "继续跟进", "已刊出"}
 _EDITION_TYPES = {"日常", "测试", "修订"}
-_DISPOSITIONS = {"deep": "深读", "brief": "简讯", "watch": "继续观察", "deferred": "暂缓刊出"}
+_DISPOSITIONS = {
+    "deep": "深读",
+    "brief": "简讯",
+    "watch": "继续观察",
+    "deferred": "暂缓刊出",
+}
 _DELIVERY = {
     "not_requested": "未发送",
     "submitting": "发送中",
@@ -140,7 +150,11 @@ def _select(value: str) -> Payload:
 
 
 def _multi(values: list[str]) -> Payload:
-    return {"multi_select": [{"name": value} for value in dict.fromkeys(values) if value]}
+    return {
+        "multi_select": [
+            {"name": value} for value in dict.fromkeys(values) if value
+        ]
+    }
 
 
 def _date(value: str) -> Payload:
@@ -152,7 +166,11 @@ def _date(value: str) -> Payload:
 def _blocks(value: str, kind: str = "paragraph") -> list[Payload]:
     rich = _rich(value)
     return [
-        {"object": "block", "type": kind, kind: {"rich_text": rich[offset : offset + 100]}}
+        {
+            "object": "block",
+            "type": kind,
+            kind: {"rich_text": rich[offset : offset + 100]},
+        }
         for offset in range(0, len(rich), _RICH_TEXT_ITEMS)
     ]
 
@@ -164,13 +182,20 @@ def _linked_blocks(label: str, url: str, suffix: str = "") -> list[Payload]:
         return _blocks(f"{label}\n{url}{suffix}")
     rich = _rich(label, url=url) + _rich(suffix)
     return [
-        {"object": "block", "type": "paragraph", "paragraph": {"rich_text": rich[i : i + 100]}}
+        {
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {"rich_text": rich[i : i + 100]},
+        }
         for i in range(0, len(rich), _RICH_TEXT_ITEMS)
     ]
 
 
 def _projection(
-    key: str, properties: Payload, blocks: list[Payload], chart_png: bytes | None = None
+    key: str,
+    properties: Payload,
+    blocks: list[Payload],
+    chart_png: bytes | None = None,
 ) -> Projection:
     if not key or not isinstance(key, str):
         raise ValueError("Notion projection requires a stable key")
@@ -178,7 +203,9 @@ def _projection(
         {
             "format": _CONTENT_VERSION,
             "blocks": blocks,
-            "chart_sha256": hashlib.sha256(chart_png).hexdigest() if chart_png else "",
+            "chart_sha256": hashlib.sha256(chart_png).hexdigest()
+            if chart_png
+            else "",
         }
     )
     properties.update(
@@ -198,7 +225,11 @@ def _material_type(candidate: Payload) -> str:
         return "预印本"
     if "技术报告" in status or "technical report" in status:
         return "技术报告"
-    if urlsplit(candidate["url"]).hostname in {"arxiv.org", "www.arxiv.org", "export.arxiv.org"}:
+    if urlsplit(candidate["url"]).hostname in {
+        "arxiv.org",
+        "www.arxiv.org",
+        "export.arxiv.org",
+    }:
         return "预印本"
     return "未分类"
 
@@ -211,7 +242,15 @@ def _source_identities(value: Payload) -> set[str]:
         if key.startswith(("doi:", "arxiv:"))
         or key.startswith("url:")
         and urlsplit(key[4:]).path.rstrip("/")
-        not in {"", "/news", "/research", "/publications", "/papers", "/blog", "/index.html"}
+        not in {
+            "",
+            "/news",
+            "/research",
+            "/publications",
+            "/papers",
+            "/blog",
+            "/index.html",
+        }
     }
 
 
@@ -247,7 +286,11 @@ def material_projection(
     candidate = to_dict(parse_message(candidate, pb.Candidate))
     validate_issue_date(first_seen)
     validate_public_url(candidate["url"])
-    if progress not in _PROGRESS or type(fixture) is not bool or not isinstance(run_id, str):
+    if (
+        progress not in _PROGRESS
+        or type(fixture) is not bool
+        or not isinstance(run_id, str)
+    ):
         raise ValueError("Invalid material projection metadata")
     direction = candidate["direction"]
     scope = candidate["access_scope"]
@@ -257,7 +300,9 @@ def material_projection(
         "category": _select(_DIRECTIONS.get(direction, "")),
         "topics": _multi([]),  # There is no Candidate topic taxonomy to infer.
         "material_type": _select(_material_type(candidate)),
-        "value": _text_property(candidate["contribution"] or candidate["why_now"]),
+        "value": _text_property(
+            candidate["contribution"] or candidate["why_now"]
+        ),
         "url": {
             "url": candidate["url"]
             if len(candidate["url"].encode("utf-16-le")) // 2 <= 2000
@@ -270,7 +315,9 @@ def material_projection(
         "affiliations": _text_property(candidate["affiliations"]),
         "venue": _text_property(candidate["venue"]),
         "publication_status": _text_property(candidate["publication_status"]),
-        "access_scope": _select({"abstract": "摘要", "full_text": "全文"}.get(scope, "仅线索")),
+        "access_scope": _select(
+            {"abstract": "摘要", "full_text": "全文"}.get(scope, "仅线索")
+        ),
         "direction": _multi([direction]),
         "version": _text_property(candidate["version"]),
     }
@@ -285,7 +332,9 @@ def material_projection(
     blocks += _blocks("发现来源", "heading_3")
     blocks += _linked_blocks(candidate["title"], candidate["url"])
     blocks += _blocks(
-        "发现记录的访问范围：" + _ACCESS.get(scope, "未知") + "；发现线索不等于独立事实核验。"
+        "发现记录的访问范围："
+        + _ACCESS.get(scope, "未知")
+        + "；发现线索不等于独立事实核验。"
     )
     for url in dict.fromkeys(candidate["evidence_urls"]):
         if url != candidate["url"]:
@@ -299,15 +348,23 @@ def material_projection(
         packets[packet["id"]] = packet
     if packets:
         blocks += _blocks("关联研究记录", "heading_2")
-        blocks += _blocks("以下记录可能综合多个来源，不代表该候选的全部主张都已独立核实。")
+        blocks += _blocks(
+            "以下记录可能综合多个来源，不代表该候选的全部主张都已独立核实。"
+        )
     for packet in sorted(packets.values(), key=lambda value: value["id"]):
         content = packet["content"]
-        blocks += _blocks(content["title"], "heading_3") + _blocks(content["body"])
+        blocks += _blocks(content["title"], "heading_3") + _blocks(
+            content["body"]
+        )
         for source in content["sources"]:
             blocks += _source_blocks(source)
             blocks += _blocks(source["excerpt"])
-    properties["fixture"] = {"checkbox": fixture or any(p["is_fixture"] for p in packets.values())}
-    properties["access_scope"] = _select(_research_access(candidate, list(packets.values())))
+    properties["fixture"] = {
+        "checkbox": fixture or any(p["is_fixture"] for p in packets.values())
+    }
+    properties["access_scope"] = _select(
+        _research_access(candidate, list(packets.values()))
+    )
     return _projection(key, properties, blocks)
 
 
@@ -326,7 +383,9 @@ def _chart_bytes(edition: Payload, chart: Payload | None) -> bytes | None:
         raise ValueError("Frozen chart has no structured chart content")
     try:
         data = (
-            base64.b64decode(encoded, validate=True) if isinstance(encoded, str) else bytes(encoded)
+            base64.b64decode(encoded, validate=True)
+            if isinstance(encoded, str)
+            else bytes(encoded)
         )
     except (ValueError, TypeError, binascii.Error):
         raise ValueError("Invalid frozen chart encoding") from None
@@ -353,7 +412,9 @@ def edition_projection(
         raise ValueError("Private archive consent must be explicit")
     validate_issue_date(edition["issue_date"])
     draft = to_dict(parse_message(edition["draft"], pb.Draft))
-    frozen_packets = [to_dict(parse_message(packet, pb.Packet)) for packet in packets or []]
+    frozen_packets = [
+        to_dict(parse_message(packet, pb.Packet)) for packet in packets or []
+    ]
     validate_draft(draft, frozen_packets)
     fixture = bool(
         edition.get("is_fixture", False)
@@ -380,13 +441,17 @@ def edition_projection(
             marks.append(f"[{references[value]}]")
         return "".join(marks)
 
-    blocks = _blocks(draft["title"], "heading_1") + _blocks(draft["introduction"])
+    blocks = _blocks(draft["title"], "heading_1") + _blocks(
+        draft["introduction"]
+    )
     if draft["subject"] != draft["title"]:
         blocks[1:1] = _blocks("邮件主题：" + draft["subject"])
     if fixture:
         blocks = _blocks("试刊样张 · 模拟材料，非真实新闻。") + blocks
     for section in draft["sections"]:
-        blocks += _blocks(_KINDS[section["kind"]] + "｜" + section["heading"], "heading_2")
+        blocks += _blocks(
+            _KINDS[section["kind"]] + "｜" + section["heading"], "heading_2"
+        )
         for paragraph in section["paragraphs"]:
             blocks += _blocks(paragraph["text"] + cite(paragraph["citations"]))
         if section["limitations"]:
@@ -394,7 +459,9 @@ def edition_projection(
     chart = draft.get("chart")
     chart_png = _chart_bytes(edition, chart)
     if chart:
-        blocks += _blocks("一图看懂 / 数据视角｜" + chart["question"], "heading_2")
+        blocks += _blocks(
+            "一图看懂 / 数据视角｜" + chart["question"], "heading_2"
+        )
         blocks += _blocks(chart["caption"])
         if chart_png:
             blocks.append(
@@ -404,24 +471,35 @@ def edition_projection(
                     CHART_PLACEHOLDER: {"caption": _rich(chart["alt_text"])},
                 }
             )
-        blocks += _blocks(chart_metadata(chart)) + _blocks("图表说明：" + chart["alt_text"])
+        blocks += _blocks(chart_metadata(chart)) + _blocks(
+            "图表说明：" + chart["alt_text"]
+        )
         blocks += _blocks(
             "缺失值断线，不作零值处理。"
             if chart["kind"] == "line"
             else "条形以零为基线；缺失不代表零。"
         )
         for point in chart["points"]:
-            value = point.get("decimal_value", "缺失（" + point.get("missing_reason", "") + "）")
-            blocks += _blocks(f"{point['label']}：{value}" + cite(point["citations"]))
+            value = point.get(
+                "decimal_value",
+                "缺失（" + point.get("missing_reason", "") + "）",
+            )
+            blocks += _blocks(
+                f"{point['label']}：{value}" + cite(point["citations"])
+            )
         if chart["limitations"]:
             blocks += _blocks("阅读边界：" + chart["limitations"])
     if reading := draft.get("recommended_reading"):
         source = sources[reading["citation"]]
         blocks += _blocks("研究介绍｜" + source["title"], "heading_2")
         blocks += _blocks(reading["reason"])
-        blocks += _source_blocks(source, "原文与方法 " + cite([reading["citation"]]) + " ")
+        blocks += _source_blocks(
+            source, "原文与方法 " + cite([reading["citation"]]) + " "
+        )
         if reading["supporting_citations"]:
-            blocks += _blocks("补充证据：" + cite(reading["supporting_citations"]))
+            blocks += _blocks(
+                "补充证据：" + cite(reading["supporting_citations"])
+            )
     if draft["limitations"]:
         blocks += _blocks("本期说明：" + draft["limitations"])
     if references:
@@ -433,14 +511,17 @@ def edition_projection(
         blocks += _blocks("本期选题记录", "heading_2")
         for story in publication["stories"]:
             blocks += _blocks(
-                story["title"] + "｜" + _DISPOSITIONS[story["disposition"]], "heading_3"
+                story["title"] + "｜" + _DISPOSITIONS[story["disposition"]],
+                "heading_3",
             )
             blocks += _blocks(story["reason"])
     personal = edition.get("personal_digest") if include_personal else None
     if personal is not None:
         validate_personal_digest(personal)
         personal = to_dict(parse_message(personal, pb.PersonalDigest))
-        blocks += _blocks("TODOFY / 与你有关｜" + personal["title"], "heading_2")
+        blocks += _blocks(
+            "TODOFY / 与你有关｜" + personal["title"], "heading_2"
+        )
         blocks += _blocks(personal["summary"])
         meta = []
         if personal["time_window_hours"]:
@@ -453,29 +534,43 @@ def edition_projection(
             blocks += _blocks(item["detail"])
         blocks += _blocks(personal["limitations"])
         blocks += _blocks(
-            " · ".join(filter(None, [personal["source_label"], personal["fetched_at"]]))
+            " · ".join(
+                filter(None, [personal["source_label"], personal["fetched_at"]])
+            )
         )
     usage = normalize_usage_summary(edition.get("usage") or {})
     blocks += _blocks(usage_footer(usage, is_fixture=fixture))
     counts = usage["usage"]
     properties = {
-        "title": _text_property(edition["issue_date"] + "｜" + draft["title"], "title"),
+        "title": _text_property(
+            edition["issue_date"] + "｜" + draft["title"], "title"
+        ),
         "fixture": {"checkbox": fixture},
         "issue_date": _date(edition["issue_date"]),
         "edition_type": _select(edition_type),
         "overview": _text_property(draft["introduction"]),
-        "categories": _multi([_CATEGORIES.get(s["kind"], "") for s in draft["sections"]]),
-        "delivery": _select(_DELIVERY[edition.get("delivery_state", "not_requested")]),
+        "categories": _multi(
+            [_CATEGORIES.get(s["kind"], "") for s in draft["sections"]]
+        ),
+        "delivery": _select(
+            _DELIVERY[edition.get("delivery_state", "not_requested")]
+        ),
         "usage_partial": {"checkbox": usage["partial"]},
         "contains_personal": {"checkbox": personal is not None},
         "edition_id": _text_property(edition["id"]),
         "run_id": _text_property(run_id),
-        "render_hash": _text_property(edition.get("rendered", {}).get("render_hash", "")),
+        "render_hash": _text_property(
+            edition.get("rendered", {}).get("render_hash", "")
+        ),
     }
     properties.update(
         tokens={"number": counts["total_tokens"] if counts else None},
         input_tokens={"number": counts["input_tokens"] if counts else None},
-        cached_tokens={"number": counts["cached_input_tokens"] if counts else None},
+        cached_tokens={
+            "number": counts["cached_input_tokens"] if counts else None
+        },
         output_tokens={"number": counts["output_tokens"] if counts else None},
     )
-    return _projection("edition:" + edition["id"], properties, blocks, chart_png)
+    return _projection(
+        "edition:" + edition["id"], properties, blocks, chart_png
+    )

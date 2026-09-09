@@ -80,7 +80,11 @@ class PublicationError(ValueError):
 
 def body_content(content: Mapping[str, Any]) -> Payload:
     """The exact body reviewed independently of removable reading/chart extras."""
-    return {key: value for key, value in content.items() if key not in _OPTIONAL_COMPONENTS}
+    return {
+        key: value
+        for key, value in content.items()
+        if key not in _OPTIONAL_COMPONENTS
+    }
 
 
 def _identifier(value: object) -> None:
@@ -92,10 +96,17 @@ def _task(task: Payload) -> None:
     try:
         parse_message(task, pb.ResearchTask)
         _identifier(task.get("id"))
-        if type(task.get("priority")) is not int or not 1 <= task["priority"] <= 100:
+        if (
+            type(task.get("priority")) is not int
+            or not 1 <= task["priority"] <= 100
+        ):
             raise PublicationError()
         ids = task.get("candidate_ids")
-        if not isinstance(ids, list) or len(ids) > 32 or len(set(ids)) != len(ids):
+        if (
+            not isinstance(ids, list)
+            or len(ids) > 32
+            or len(set(ids)) != len(ids)
+        ):
             raise PublicationError()
         for value in ids:
             _identifier(value)
@@ -104,7 +115,10 @@ def _task(task: Payload) -> None:
                 raise PublicationError()
         if not task["question"].strip():
             raise PublicationError()
-        if not isinstance(task.get("source_urls"), list) or len(task["source_urls"]) > 32:
+        if (
+            not isinstance(task.get("source_urls"), list)
+            or len(task["source_urls"]) > 32
+        ):
             raise PublicationError()
         for url in task["source_urls"]:
             validate_public_url(url)
@@ -120,7 +134,9 @@ def _citations(value: object) -> set[str]:
         for name, child in value.items():
             if name == "citation" and isinstance(child, str):
                 result.add(child)
-            elif name in {"citations", "supporting_citations"} and isinstance(child, list):
+            elif name in {"citations", "supporting_citations"} and isinstance(
+                child, list
+            ):
                 result.update(item for item in child if isinstance(item, str))
             else:
                 result.update(_citations(child))
@@ -130,10 +146,13 @@ def _citations(value: object) -> set[str]:
     return result
 
 
-def _receipt(component: str, value: Payload, result: Payload, sources: Payload) -> None:
+def _receipt(
+    component: str, value: Payload, result: Payload, sources: Payload
+) -> None:
     references = _citations(value)
     if not references or any(
-        ref not in sources or sources[ref]["access_scope"] == "metadata" for ref in references
+        ref not in sources or sources[ref]["access_scope"] == "metadata"
+        for ref in references
     ):
         raise PublicationError()
     urls = {urldefrag(sources[ref]["url"])[0] for ref in references}
@@ -157,7 +176,10 @@ def _receipt(component: str, value: Payload, result: Payload, sources: Payload) 
             for issue in result["issues"]
         ):
             continue
-        writer, reviewer = assessment.get("writer_job_id"), assessment.get("reviewer_job_id")
+        writer, reviewer = (
+            assessment.get("writer_job_id"),
+            assessment.get("reviewer_job_id"),
+        )
         if (
             not isinstance(writer, str)
             or not isinstance(reviewer, str)
@@ -211,7 +233,10 @@ def _validate_withdrawals(result: Payload, sources: Payload) -> None:
             or not isinstance(item["content_hash"], str)
             or not _HASH.fullmatch(item["content_hash"])
             or not isinstance(item["affected_signal_hash"], str)
-            or (item["affected_signal_hash"] and not _HASH.fullmatch(item["affected_signal_hash"]))
+            or (
+                item["affected_signal_hash"]
+                and not _HASH.fullmatch(item["affected_signal_hash"])
+            )
             or not isinstance(item["claim"], str)
             or not 12 <= len(item["claim"].strip()) <= 2000
             or not isinstance(item["reason"], str)
@@ -242,7 +267,8 @@ def _validate_withdrawals(result: Payload, sources: Payload) -> None:
             or len(opened) > 256
             or any(not isinstance(url, str) for url in opened)
             or any(
-                ref not in sources or sources[ref]["access_scope"] == "metadata" for ref in evidence
+                ref not in sources or sources[ref]["access_scope"] == "metadata"
+                for ref in evidence
             )
         ):
             raise PublicationError()
@@ -252,21 +278,29 @@ def _validate_withdrawals(result: Payload, sources: Payload) -> None:
             raise PublicationError()
 
 
-def _withdrawn(results: Sequence[Payload]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+def _withdrawn(
+    results: Sequence[Payload],
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """A fresh evidence-backed correction invalidates only exact old components."""
     bodies: dict[str, set[str]] = {}
     signals: dict[str, set[str]] = {}
     prior_bodies: dict[tuple[str, str], list[Payload]] = {}
     for prior in results:
         if prior["mode"] == "brief" and prior["content"] is not None:
-            key = (prior["story_id"], content_hash(body_content(prior["content"])))
+            key = (
+                prior["story_id"],
+                content_hash(body_content(prior["content"])),
+            )
             prior_bodies.setdefault(key, []).append(prior)
     for result in results:
         for item in result.get("withdrawals", []):
-            for prior in prior_bodies.get((item["story_id"], item["content_hash"]), []):
+            for prior in prior_bodies.get(
+                (item["story_id"], item["content_hash"]), []
+            ):
                 content = prior["content"]
                 if not any(
-                    item["claim"] in paragraph["text"] for paragraph in content["paragraphs"]
+                    item["claim"] in paragraph["text"]
+                    for paragraph in content["paragraphs"]
                 ) or not any(
                     isinstance(assessment, dict)
                     and assessment.get("component") == "body"
@@ -278,16 +312,23 @@ def _withdrawn(results: Sequence[Payload]) -> tuple[dict[str, set[str]], dict[st
                     continue
                 signal = prior["signal"]
                 if item["affected_signal_hash"] and (
-                    signal is None or content_hash(signal) != item["affected_signal_hash"]
+                    signal is None
+                    or content_hash(signal) != item["affected_signal_hash"]
                 ):
                     continue
-                bodies.setdefault(item["story_id"], set()).add(item["content_hash"])
+                bodies.setdefault(item["story_id"], set()).add(
+                    item["content_hash"]
+                )
                 if item["affected_signal_hash"]:
-                    signals.setdefault(item["story_id"], set()).add(item["affected_signal_hash"])
+                    signals.setdefault(item["story_id"], set()).add(
+                        item["affected_signal_hash"]
+                    )
     return bodies, signals
 
 
-def _available(result: Payload, field: str, withdrawn: dict[str, set[str]]) -> bool:
+def _available(
+    result: Payload, field: str, withdrawn: dict[str, set[str]]
+) -> bool:
     content = result[field]
     return content is not None and content_hash(
         body_content(content) if field == "content" else content
@@ -346,7 +387,10 @@ def validate_result(result: Payload) -> None:
             if content["story_id"] != result["story_id"]:
                 raise PublicationError()
             validate_draft(_single_draft(content), packets)
-            if any(not paragraph["citations"] for paragraph in content["paragraphs"]):
+            if any(
+                not paragraph["citations"]
+                for paragraph in content["paragraphs"]
+            ):
                 raise PublicationError()
             if name == "signal":
                 if any(key in content for key in _OPTIONAL_COMPONENTS):
@@ -354,12 +398,22 @@ def validate_result(result: Payload) -> None:
                 _receipt("signal", content, result, sources)
             else:
                 _receipt("body", body_content(content), result, sources)
-                for field, component in (("recommended_reading", "reading"), ("chart", "chart")):
+                for field, component in (
+                    ("recommended_reading", "reading"),
+                    ("chart", "chart"),
+                ):
                     if field in content:
                         _receipt(component, content[field], result, sources)
     except PublicationError:
         raise
-    except (ValueError, TypeError, KeyError, RecursionError, OverflowError, AttributeError):
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        RecursionError,
+        OverflowError,
+        AttributeError,
+    ):
         raise PublicationError() from None
 
 
@@ -444,9 +498,14 @@ def assemble(
         if task["id"] in by_task:
             raise PublicationError()
         by_task[task["id"]] = {}
-    ordered = sorted(enumerate(tasks), key=lambda item: (item[1]["priority"], item[0]))
+    ordered = sorted(
+        enumerate(tasks), key=lambda item: (item[1]["priority"], item[0])
+    )
     for result in results:
-        if not isinstance(result, dict) or result.get("story_id") not in by_task:
+        if (
+            not isinstance(result, dict)
+            or result.get("story_id") not in by_task
+        ):
             raise PublicationError()
         story_id = result["story_id"]
         try:
@@ -493,9 +552,15 @@ def assemble(
             if _available(result, "signal", withdrawn_signals)
         )
         admitted: Payload | None = None
-        capacity = feature_count >= max_features and any(result["content"] for result in deeps)
+        capacity = feature_count >= max_features and any(
+            result["content"] for result in deeps
+        )
         for disposition, content, result in options:
-            choice = {"disposition": disposition, "content": content, "result": result}
+            choice = {
+                "disposition": disposition,
+                "content": content,
+                "result": result,
+            }
             try:
                 candidate_choices = [*choices, choice]
                 packets = _merge_packets(candidate_choices)
@@ -548,10 +613,14 @@ def assemble(
             f"本期采用已完成独立核验的内容；另有 {deferred} 个入选选题暂未刊出，已保留继续跟进。"
         )
     elif reason != "completed":
-        draft["introduction"] = "本期采用已完成独立核验的内容；尚未完成的深入调查继续跟进。"
+        draft["introduction"] = (
+            "本期采用已完成独立核验的内容；尚未完成的深入调查继续跟进。"
+        )
     validate_draft(draft, packets)
     summary = {
-        "mode": "complete" if not deferred and reason == "completed" else "partial",
+        "mode": "complete"
+        if not deferred and reason == "completed"
+        else "partial",
         "reason": reason,
         "stories": coverage,
     }
@@ -591,7 +660,9 @@ class PublicationRepository:
                     created_at TEXT NOT NULL);
             """)
 
-    def save_plan(self, run_id: str, issue_date: str, tasks: Sequence[Payload]) -> list[Payload]:
+    def save_plan(
+        self, run_id: str, issue_date: str, tasks: Sequence[Payload]
+    ) -> list[Payload]:
         """Remember every selected topic even if no model attempt ever completes."""
         _identifier(run_id)
         validate_issue_date(issue_date)
@@ -607,21 +678,29 @@ class PublicationRepository:
         digest = content_hash({"issue_date": issue_date, "tasks": list(tasks)})
         with self.store.transaction():
             previous = self.store.db.execute(
-                "SELECT digest,tasks FROM publication_plans WHERE run_id=?", (run_id,)
+                "SELECT digest,tasks FROM publication_plans WHERE run_id=?",
+                (run_id,),
             ).fetchone()
             if previous:
                 if previous["digest"] != digest:
-                    raise StoreError("conflict", "Frozen publication plan cannot change")
+                    raise StoreError(
+                        "conflict", "Frozen publication plan cannot change"
+                    )
                 return json.loads(previous["tasks"])
             by_id = {task["id"]: canonical_json(task) for task in tasks}
             rows = self.store.db.execute(
-                "SELECT story_id,issue_date,task FROM publication_units WHERE run_id=?", (run_id,)
+                "SELECT story_id,issue_date,task FROM publication_units WHERE run_id=?",
+                (run_id,),
             ).fetchall()
             if any(
-                row["issue_date"] != issue_date or by_id.get(row["story_id"]) != row["task"]
+                row["issue_date"] != issue_date
+                or by_id.get(row["story_id"]) != row["task"]
                 for row in rows
             ):
-                raise StoreError("conflict", "Publication plan conflicts with existing results")
+                raise StoreError(
+                    "conflict",
+                    "Publication plan conflicts with existing results",
+                )
             self.store.db.execute(
                 "INSERT INTO publication_plans VALUES(?,?,?,?,?)",
                 (run_id, issue_date, body, digest, now()),
@@ -629,16 +708,28 @@ class PublicationRepository:
         return json.loads(body)
 
     def save(
-        self, run_id: str, task: Payload, mode: str, result: Payload, *, issue_date: str
+        self,
+        run_id: str,
+        task: Payload,
+        mode: str,
+        result: Payload,
+        *,
+        issue_date: str,
     ) -> Payload:
         _identifier(run_id)
         _task(task)
         validate_issue_date(issue_date)
         validate_result(result)
-        if mode not in _MODES or result["mode"] != mode or result["story_id"] != task["id"]:
+        if (
+            mode not in _MODES
+            or result["mode"] != mode
+            or result["story_id"] != task["id"]
+        ):
             raise PublicationError()
         body, task_body = canonical_json(result), canonical_json(task)
-        digest = content_hash({"issue_date": issue_date, "task": task, "result": result})
+        digest = content_hash(
+            {"issue_date": issue_date, "task": task, "result": result}
+        )
         with self.store.transaction():
             row = self.store.db.execute(
                 "SELECT digest,body FROM publication_units "
@@ -650,14 +741,21 @@ class PublicationRepository:
             if self.store.db.execute(
                 "SELECT 1 FROM publication_snapshots WHERE run_id=?", (run_id,)
             ).fetchone():
-                raise StoreError("conflict", "Published content snapshot is already frozen")
+                raise StoreError(
+                    "conflict", "Published content snapshot is already frozen"
+                )
             plan = self.store.db.execute(
-                "SELECT issue_date,tasks FROM publication_plans WHERE run_id=?", (run_id,)
+                "SELECT issue_date,tasks FROM publication_plans WHERE run_id=?",
+                (run_id,),
             ).fetchone()
             if plan is not None and (
-                plan["issue_date"] != issue_date or task not in json.loads(plan["tasks"])
+                plan["issue_date"] != issue_date
+                or task not in json.loads(plan["tasks"])
             ):
-                raise StoreError("conflict", "Result is not part of the frozen publication plan")
+                raise StoreError(
+                    "conflict",
+                    "Result is not part of the frozen publication plan",
+                )
             siblings = self.store.db.execute(
                 "SELECT story_id,issue_date,task,mode FROM publication_units WHERE run_id=?",
                 (run_id,),
@@ -667,17 +765,34 @@ class PublicationRepository:
                 or (row["story_id"] == task["id"] and row["task"] != task_body)
                 for row in siblings
             ):
-                raise StoreError("conflict", "Publication task identity cannot change")
-            if len({row["story_id"] for row in siblings} | {task["id"]}) > MAX_STORIES:
+                raise StoreError(
+                    "conflict", "Publication task identity cannot change"
+                )
+            if (
+                len({row["story_id"] for row in siblings} | {task["id"]})
+                > MAX_STORIES
+            ):
                 raise PublicationError("publication_capacity")
             if (
-                sum(row["story_id"] == task["id"] and row["mode"] == mode for row in siblings)
+                sum(
+                    row["story_id"] == task["id"] and row["mode"] == mode
+                    for row in siblings
+                )
                 >= MAX_VERSIONS
             ):
                 raise PublicationError("publication_capacity")
             self.store.db.execute(
                 "INSERT INTO publication_units VALUES(?,?,?,?,?,?,?,?)",
-                (run_id, task["id"], mode, issue_date, task_body, body, digest, now()),
+                (
+                    run_id,
+                    task["id"],
+                    mode,
+                    issue_date,
+                    task_body,
+                    body,
+                    digest,
+                    now(),
+                ),
             )
         return json.loads(body)
 
@@ -694,11 +809,14 @@ class PublicationRepository:
         _identifier(run_id)
         with self.store.lock:
             rows = self.store.db.execute(
-                "SELECT body FROM publication_units WHERE run_id=? ORDER BY rowid", (run_id,)
+                "SELECT body FROM publication_units WHERE run_id=? ORDER BY rowid",
+                (run_id,),
             ).fetchall()
         return [json.loads(row["body"]) for row in rows]
 
-    def best_result(self, run_id: str, story_id: str, mode: str = "brief") -> Payload | None:
+    def best_result(
+        self, run_id: str, story_id: str, mode: str = "brief"
+    ) -> Payload | None:
         """Prefer an approved complete body over a signal or a later failed job."""
         _identifier(story_id)
         if mode not in _MODES:
@@ -735,28 +853,42 @@ class PublicationRepository:
         _identifier(run_id)
         with self.store.lock:
             row = self.store.db.execute(
-                "SELECT body FROM publication_snapshots WHERE run_id=?", (run_id,)
+                "SELECT body FROM publication_snapshots WHERE run_id=?",
+                (run_id,),
             ).fetchone()
         return json.loads(row["body"]) if row else None
 
     def record_publication(
-        self, run_id: str, issue_date: str, tasks: Sequence[Payload], assembled: Payload
+        self,
+        run_id: str,
+        issue_date: str,
+        tasks: Sequence[Payload],
+        assembled: Payload,
     ) -> Payload:
         """Freeze only a reconstruction from our own immutable accepted receipts."""
         _identifier(run_id)
         validate_issue_date(issue_date)
         self.save_plan(run_id, issue_date, tasks)
         body, task_body = canonical_json(assembled), canonical_json(list(tasks))
-        digest = content_hash({"issue_date": issue_date, "tasks": list(tasks), "result": assembled})
+        digest = content_hash(
+            {
+                "issue_date": issue_date,
+                "tasks": list(tasks),
+                "result": assembled,
+            }
+        )
         if len(body.encode()) > MAX_MESSAGE_BYTES:
             raise PublicationError("publication_capacity")
         with self.store.transaction():
             row = self.store.db.execute(
-                "SELECT digest,body FROM publication_snapshots WHERE run_id=?", (run_id,)
+                "SELECT digest,body FROM publication_snapshots WHERE run_id=?",
+                (run_id,),
             ).fetchone()
             if row is not None:
                 if row["digest"] != digest:
-                    raise StoreError("conflict", "Frozen publication snapshot cannot change")
+                    raise StoreError(
+                        "conflict", "Frozen publication snapshot cannot change"
+                    )
                 # A persisted layout is authoritative across renderer/assembler
                 # upgrades. Verify its exact receipt, not today's layout rules;
                 # otherwise a restart could rewrite or reject an older issue.
@@ -782,7 +914,9 @@ class PublicationRepository:
             )
         return json.loads(body)
 
-    def pending_history(self, issue_date: str, limit: int = 30) -> list[Payload]:
+    def pending_history(
+        self, issue_date: str, limit: int = 30
+    ) -> list[Payload]:
         """Carry unresolved selected topics forward without recycling published claims.
 
         A later publication of the same story/candidate supersedes its earlier
@@ -808,9 +942,14 @@ class PublicationRepository:
         pending = []
         for row in rows:
             delivery = (
-                json.loads(row["edition"])["delivery_state"] if row["edition"] else "not_requested"
+                json.loads(row["edition"])["delivery_state"]
+                if row["edition"]
+                else "not_requested"
             )
-            accepted = bool(row["attempted"]) and delivery in {"provider_accepted", "simulated"}
+            accepted = bool(row["attempted"]) and delivery in {
+                "provider_accepted",
+                "simulated",
+            }
             tasks = {task["id"]: task for task in json.loads(row["tasks"])}
             stories = (
                 json.loads(row["body"])["coverage"]["stories"]

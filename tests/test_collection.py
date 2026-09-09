@@ -14,7 +14,10 @@ from newsletter.collection.collector import (
     parse_research,
     research_schema,
 )
-from newsletter.collection.instructions import InstructionError, load_instructions
+from newsletter.collection.instructions import (
+    InstructionError,
+    load_instructions,
+)
 from newsletter.editor import EditorError
 from newsletter.preflight import PreflightError
 from newsletter.settings import Settings
@@ -28,7 +31,9 @@ def settings(tmp_path):
     instructions = tmp_path / "instructions"
     instructions.mkdir()
     (instructions / "ai-ml.md").write_text("Collect credible ML evidence.")
-    (instructions / "science.md").write_text("Collect a different science paper.")
+    (instructions / "science.md").write_text(
+        "Collect a different science paper."
+    )
     return Settings(
         data_dir=tmp_path / "data",
         instructions_dir=instructions,
@@ -55,13 +60,19 @@ def drain(client):
     pytest.fail("queue did not drain")
 
 
-def test_trigger_runs_snapshot_collection_notion_editor_preview_without_send(settings):
+def test_trigger_runs_snapshot_collection_notion_editor_preview_without_send(
+    settings,
+):
     collector = CountingCollector()
-    with TestClient(create_app(settings, collector=collector, start_worker=False)) as client:
+    with TestClient(
+        create_app(settings, collector=collector, start_worker=False)
+    ) as client:
         assert client.post("/v1/runs", json=REQUEST).status_code == 401
         assert (
             client.post(
-                "/v1/runs", json=REQUEST, headers={"Authorization": "Bearer " + "i" * 32}
+                "/v1/runs",
+                json=REQUEST,
+                headers={"Authorization": "Bearer " + "i" * 32},
             ).status_code
             == 401
         )
@@ -70,7 +81,9 @@ def test_trigger_runs_snapshot_collection_notion_editor_preview_without_send(set
         run = first.json()
         assert run["state"] == "queued" and len(run["directions"]) == 2
         assert not collector.seen
-        (settings.instructions_dir / "ai-ml.md").write_text("CHANGED after accepting trigger")
+        (settings.instructions_dir / "ai-ml.md").write_text(
+            "CHANGED after accepting trigger"
+        )
         assert client.post("/v1/runs", json=REQUEST, headers=AUTH).json() == run
         drain(client)
         result = client.get("/v1/runs/" + run["id"], headers=AUTH).json()
@@ -78,19 +91,32 @@ def test_trigger_runs_snapshot_collection_notion_editor_preview_without_send(set
         assert collector.seen[0].text == "Collect credible ML evidence."
         assert len(collector.seen) == 2
         assert all(d["state"] == "collected" for d in result["directions"])
-        edition = client.get("/v1/editions/" + result["edition_id"], headers=AUTH).json()
-        assert edition["state"] == "ready" and edition["delivery_state"] == "not_requested"
+        edition = client.get(
+            "/v1/editions/" + result["edition_id"], headers=AUTH
+        ).json()
+        assert (
+            edition["state"] == "ready"
+            and edition["delivery_state"] == "not_requested"
+        )
         assert len(list((settings.data_dir / "notion").glob("*.json"))) == 2
         assert not list(settings.data_dir.rglob("*.eml"))
         assert (
             client.post(
-                "/v1/runs", json={**REQUEST, "issue_date": "2026-09-06"}, headers=AUTH
+                "/v1/runs",
+                json={**REQUEST, "issue_date": "2026-09-06"},
+                headers=AUTH,
             ).status_code
             == 409
         )
-    with TestClient(create_app(settings, collector=collector, start_worker=False)) as client:
-        assert client.get("/v1/runs/" + run["id"], headers=AUTH).json() == result
-        assert client.post("/v1/runs", json=REQUEST, headers=AUTH).json() == result
+    with TestClient(
+        create_app(settings, collector=collector, start_worker=False)
+    ) as client:
+        assert (
+            client.get("/v1/runs/" + run["id"], headers=AUTH).json() == result
+        )
+        assert (
+            client.post("/v1/runs", json=REQUEST, headers=AUTH).json() == result
+        )
         drain(client)
         assert len(collector.seen) == 2
 
@@ -105,10 +131,14 @@ def test_new_trigger_rescans_but_retries_do_not_require_current_files(settings):
         assert len(first["directions"]) == 2 and len(second["directions"]) == 1
         assert first["instructions_hash"] != second["instructions_hash"]
         (settings.instructions_dir / "ai-ml.md").unlink()
-        assert client.post("/v1/runs", json=REQUEST, headers=AUTH).json() == first
+        assert (
+            client.post("/v1/runs", json=REQUEST, headers=AUTH).json() == first
+        )
         assert (
             client.post(
-                "/v1/runs", json={**REQUEST, "request_key": "empty"}, headers=AUTH
+                "/v1/runs",
+                json={**REQUEST, "request_key": "empty"},
+                headers=AUTH,
             ).status_code
             == 503
         )
@@ -125,7 +155,9 @@ def test_new_trigger_rescans_but_retries_do_not_require_current_files(settings):
 )
 def test_trigger_rejects_invalid_or_extra_fields(settings, bad):
     with TestClient(create_app(settings, start_worker=False)) as client:
-        assert client.post("/v1/runs", json=bad, headers=AUTH).status_code == 400
+        assert (
+            client.post("/v1/runs", json=bad, headers=AUTH).status_code == 400
+        )
 
 
 def test_failed_notion_does_not_start_editor_or_retry(settings):
@@ -142,13 +174,16 @@ def test_failed_notion_does_not_start_editor_or_retry(settings):
 
     notion = FailingNotion()
     with TestClient(
-        create_app(settings, notion=notion, editor=NeverEditor(), start_worker=False)
+        create_app(
+            settings, notion=notion, editor=NeverEditor(), start_worker=False
+        )
     ) as client:
         run = client.post("/v1/runs", json=REQUEST, headers=AUTH).json()
         drain(client)
         result = client.get("/v1/runs/" + run["id"], headers=AUTH).json()
         assert (
-            result["state"] == "blocked" and result["error_code"] == "notion_projection_unconfirmed"
+            result["state"] == "blocked"
+            and result["error_code"] == "notion_projection_unconfirmed"
         )
         calls = notion.calls
         drain(client)
@@ -160,7 +195,9 @@ def test_honest_no_findings_is_not_a_fake_edition(settings):
         async def collect(self, *args):
             return ResearchResult([], "No sufficient source evidence found.")
 
-    with TestClient(create_app(settings, collector=EmptyCollector(), start_worker=False)) as client:
+    with TestClient(
+        create_app(settings, collector=EmptyCollector(), start_worker=False)
+    ) as client:
         run = client.post("/v1/runs", json=REQUEST, headers=AUTH).json()
         drain(client)
         result = client.get("/v1/runs/" + run["id"], headers=AUTH).json()
@@ -170,19 +207,26 @@ def test_honest_no_findings_is_not_a_fake_edition(settings):
 
 def test_collecting_run_is_not_replayed_after_crash(settings):
     collector = CountingCollector()
-    with TestClient(create_app(settings, collector=collector, start_worker=False)) as client:
+    with TestClient(
+        create_app(settings, collector=collector, start_worker=False)
+    ) as client:
         run = client.post("/v1/runs", json=REQUEST, headers=AUTH).json()
         client.app.state.runs.claim()
-    with TestClient(create_app(settings, collector=collector, start_worker=False)) as client:
+    with TestClient(
+        create_app(settings, collector=collector, start_worker=False)
+    ) as client:
         recovered = client.get("/v1/runs/" + run["id"], headers=AUTH).json()
         assert (
-            recovered["state"] == "failed" and recovered["error_code"] == "collection_interrupted"
+            recovered["state"] == "failed"
+            and recovered["error_code"] == "collection_interrupted"
         )
         drain(client)
         assert not collector.seen
 
 
-def test_startup_fails_before_any_worker_or_health_is_served(settings, monkeypatch):
+def test_startup_fails_before_any_worker_or_health_is_served(
+    settings, monkeypatch
+):
     async def unavailable(*args, **kwargs):
         raise PreflightError("CODEX_CHATGPT_AUTH_REQUIRED")
 
@@ -200,7 +244,8 @@ def test_bad_instructions_fail_startup(settings):
 
 
 @pytest.mark.parametrize(
-    "kind", ["empty", "oversize", "invalid_utf8", "symlink", "directory", "bad_name"]
+    "kind",
+    ["empty", "oversize", "invalid_utf8", "symlink", "directory", "bad_name"],
 )
 def test_instruction_loader_rejects_unsafe_files(tmp_path, kind):
     folder = tmp_path / "directions"
@@ -260,7 +305,12 @@ def research_payload():
 
 def test_research_requires_exact_opened_source_and_search():
     text = json.dumps(research_payload())
-    assert len(parse_research(text, {"https://example.com/original"}, True).packets) == 1
+    assert (
+        len(
+            parse_research(text, {"https://example.com/original"}, True).packets
+        )
+        == 1
+    )
     for urls, searched in [
         ({"https://example.com/canonical"}, True),
         (set(), True),
@@ -269,7 +319,11 @@ def test_research_requires_exact_opened_source_and_search():
         with pytest.raises(EditorError):
             parse_research(text, urls, searched)
     empty = json.dumps(
-        {"state": "no_findings", "note": "Search yielded insufficient evidence.", "packets": []}
+        {
+            "state": "no_findings",
+            "note": "Search yielded insufficient evidence.",
+            "packets": [],
+        }
     )
     assert parse_research(empty, set(), True).packets == []
     with pytest.raises(EditorError):
@@ -280,7 +334,9 @@ def test_research_schema_uses_public_packet_and_source_enum():
     schema = research_schema()
     packet = schema["properties"]["packets"]["items"]
     assert set(packet["properties"]) == {"title", "body", "sources", "tags"}
-    assert packet["properties"]["sources"]["items"]["properties"]["access_scope"]["enum"] == [
+    assert packet["properties"]["sources"]["items"]["properties"][
+        "access_scope"
+    ]["enum"] == [
         "metadata",
         "abstract",
         "full_text",
@@ -293,10 +349,15 @@ def test_queue_capacity_and_no_implicit_job_on_startup(settings):
         create_app(replace(settings, max_pending_jobs=1), start_worker=False)
     ) as client:
         assert client.app.state.runs.claim() is None
-        assert client.post("/v1/runs", json=REQUEST, headers=AUTH).status_code == 202
+        assert (
+            client.post("/v1/runs", json=REQUEST, headers=AUTH).status_code
+            == 202
+        )
         assert (
             client.post(
-                "/v1/runs", json={**REQUEST, "request_key": "extra"}, headers=AUTH
+                "/v1/runs",
+                json={**REQUEST, "request_key": "extra"},
+                headers=AUTH,
             ).status_code
             == 429
         )

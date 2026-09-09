@@ -108,7 +108,9 @@ def test_reject_missing_baseline_without_silent_packaged_fallback(tmp_path):
         load_active(tmp_path)
 
 
-def test_failed_validation_and_failed_activation_keep_old_release(tmp_path, baseline, monkeypatch):
+def test_failed_validation_and_failed_activation_keep_old_release(
+    tmp_path, baseline, monkeypatch
+):
     install_snapshot(tmp_path, baseline)
     newer = build_snapshot(baseline["files"], "b" * 40)
     invalid = copy.deepcopy(newer)
@@ -126,10 +128,15 @@ def test_failed_validation_and_failed_activation_keep_old_release(tmp_path, base
     with pytest.raises(OSError):
         install_snapshot(tmp_path, newer)
     assert load_active(tmp_path) == baseline
-    assert read_snapshot(tmp_path / "releases" / newer["digest"] / "bundle.json") == newer
+    assert (
+        read_snapshot(tmp_path / "releases" / newer["digest"] / "bundle.json")
+        == newer
+    )
 
 
-def test_same_version_is_no_write_and_returns_owned_copy(tmp_path, baseline, monkeypatch):
+def test_same_version_is_no_write_and_returns_owned_copy(
+    tmp_path, baseline, monkeypatch
+):
     install_snapshot(tmp_path, baseline)
 
     def fail(*args):
@@ -142,7 +149,9 @@ def test_same_version_is_no_write_and_returns_owned_copy(tmp_path, baseline, mon
     assert load_active(tmp_path) == baseline
 
 
-@pytest.mark.parametrize("target", ["root", "releases", "release", "bundle", "pointer"])
+@pytest.mark.parametrize(
+    "target", ["root", "releases", "release", "bundle", "pointer"]
+)
 def test_symlink_state_is_never_followed(tmp_path, baseline, target):
     root = tmp_path / "config"
     install_snapshot(root, baseline)
@@ -169,7 +178,9 @@ def test_duplicate_json_key_cannot_hide_modified_provenance(tmp_path, baseline):
         read_snapshot(path)
 
 
-def test_frozen_run_keeps_whole_config_a_while_next_run_gets_b(tmp_path, baseline):
+def test_frozen_run_keeps_whole_config_a_while_next_run_gets_b(
+    tmp_path, baseline
+):
     root = tmp_path / "config"
     install_snapshot(root, baseline)
     store = Store(tmp_path / "state.sqlite3", "mock")
@@ -184,21 +195,29 @@ def test_frozen_run_keeps_whole_config_a_while_next_run_gets_b(tmp_path, baselin
         instructions, snapshot = freeze_workflow(settings, state, "2026-09-08")
         assert snapshot["inputs"]["content_config"] == baseline
         runs = RunRepository(store)
-        request = {"request_key": "config-isolation", "issue_date": "2026-09-08"}
+        request = {
+            "request_key": "config-isolation",
+            "issue_date": "2026-09-08",
+        }
         run = runs.start(request, instructions, workflow_snapshot=snapshot)
         files = dict(baseline["files"])
         files["discovery/02-science.md"] += "\nNew configuration direction."
         files["policy/editorial.md"] += "\nNew edition policy."
-        files["templates/edition.html.j2"] = files["templates/edition.html.j2"].replace(
-            "THE DAILY BRIEF", "NEXT DAILY BRIEF"
-        )
+        files["templates/edition.html.j2"] = files[
+            "templates/edition.html.j2"
+        ].replace("THE DAILY BRIEF", "NEXT DAILY BRIEF")
         newer = build_snapshot(files, "b" * 40)
         install_snapshot(root, newer)
-        next_instructions, next_snapshot = freeze_workflow(settings, state, "2026-09-09")
+        next_instructions, next_snapshot = freeze_workflow(
+            settings, state, "2026-09-09"
+        )
         assert next_snapshot["inputs"]["content_config"] == newer
         assert next_instructions != instructions
         assert runs.workflow_snapshot(run["id"]) == snapshot
-        assert runs.start(request, instructions, workflow_snapshot=snapshot)["id"] == run["id"]
+        assert (
+            runs.start(request, instructions, workflow_snapshot=snapshot)["id"]
+            == run["id"]
+        )
         assert runs.workflow_snapshot(run["id"]) == snapshot
         assert set(snapshot["inputs"]["content_config"]) == {
             "schema_version",
@@ -211,20 +230,28 @@ def test_frozen_run_keeps_whole_config_a_while_next_run_gets_b(tmp_path, baselin
         store.close()
 
 
-def test_no_config_remains_legacy_and_settings_reads_only_directory(tmp_path, monkeypatch):
-    monkeypatch.setenv("NEWSLETTER_CONTENT_CONFIG_DIR", str(tmp_path / "config"))
+def test_no_config_remains_legacy_and_settings_reads_only_directory(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv(
+        "NEWSLETTER_CONTENT_CONFIG_DIR", str(tmp_path / "config")
+    )
     assert Settings.from_env().content_config_dir == tmp_path / "config"
     with pytest.raises(ValueError, match="requires NEWSLETTER_WORKFLOW=dag"):
         Settings(content_config_dir=tmp_path).validate()
     store = Store(tmp_path / "state.sqlite3", "mock")
     try:
-        _, snapshot = freeze_workflow(Settings(), WorkflowState(store), "2026-09-08")
+        _, snapshot = freeze_workflow(
+            Settings(), WorkflowState(store), "2026-09-08"
+        )
         assert "content_config" not in snapshot["inputs"]
     finally:
         store.close()
 
 
-def test_offline_cli_build_and_validate_do_not_touch_business_state(tmp_path, baseline, capsys):
+def test_offline_cli_build_and_validate_do_not_touch_business_state(
+    tmp_path, baseline, capsys
+):
     source = tmp_path / "source"
     for name, value in baseline["files"].items():
         path = source / name

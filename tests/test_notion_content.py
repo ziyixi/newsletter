@@ -43,7 +43,10 @@ def candidate(**changes):
         "publication_status": "已发表",
         "contribution": "Tests a specific previous assumption, not a new product name.",
         "source_basis": "The synthetic primary abstract identifies the work.",
-        "evidence_urls": ["https://example.org/paper", "https://example.org/authors"],
+        "evidence_urls": [
+            "https://example.org/paper",
+            "https://example.org/authors",
+        ],
     }
     return {**value, **changes}
 
@@ -75,7 +78,9 @@ def edition(**changes):
             "state": "current",
             "title": "私人事件",
             "summary": "PRIVATE SUMMARY",
-            "items": [{"rank": 1, "title": "PRIVATE TASK", "detail": "PRIVATE DETAIL"}],
+            "items": [
+                {"rank": 1, "title": "PRIVATE TASK", "detail": "PRIVATE DETAIL"}
+            ],
             "task_count": 7,
             "time_window_hours": 24,
             "fetched_at": "2026-09-07T15:00:00Z",
@@ -115,14 +120,20 @@ def edition(**changes):
 
 def block_text(blocks):
     return "\n".join(
-        "".join(item["text"]["content"] for item in block[block["type"]].get("rich_text", []))
+        "".join(
+            item["text"]["content"]
+            for item in block[block["type"]].get("rich_text", [])
+        )
         for block in blocks
     )
 
 
 def property_text(projection, name):
     prop = projection.properties[name]
-    return "".join(item["text"]["content"] for item in prop.get("rich_text", prop.get("title", [])))
+    return "".join(
+        item["text"]["content"]
+        for item in prop.get("rich_text", prop.get("title", []))
+    )
 
 
 def project_material(value=None, **kwargs):
@@ -145,7 +156,9 @@ def test_material_properties_are_typed_and_metadata_is_not_repeated_in_prose():
     assert property_text(result, "authors") == source["authors"]
     assert property_text(result, "affiliations") == source["affiliations"]
     assert result.properties["category"] == {"select": {"name": "AI/ML"}}
-    assert result.properties["direction"] == {"multi_select": [{"name": "01-ai-ml"}]}
+    assert result.properties["direction"] == {
+        "multi_select": [{"name": "01-ai-ml"}]
+    }
     assert result.properties["first_seen"] == {"date": {"start": DAY}}
     assert result.properties["access_scope"] == {"select": {"name": "摘要"}}
     assert result.properties["material_type"] == {"select": {"name": "论文"}}
@@ -165,18 +178,28 @@ def test_material_properties_are_typed_and_metadata_is_not_repeated_in_prose():
 
 
 def test_material_never_infers_authors_from_associated_multisource_research():
-    source = candidate(authors="", affiliations="", venue="", publication_status="")
+    source = candidate(
+        authors="", affiliations="", venue="", publication_status=""
+    )
     research = packet()
     research["content"]["body"] = (
         "An unrelated source mentions Famous Author from Famous Institute."
     )
-    result = project_material(source, evidence=[research, copy.deepcopy(research)])
-    assert property_text(result, "authors") == property_text(result, "affiliations") == ""
+    result = project_material(
+        source, evidence=[research, copy.deepcopy(research)]
+    )
+    assert (
+        property_text(result, "authors")
+        == property_text(result, "affiliations")
+        == ""
+    )
     assert result.properties["material_type"] == {"select": {"name": "未分类"}}
     text = block_text(result.blocks)
     assert text.count(research["content"]["body"]) == 1
     assert "不代表该候选的全部主张都已独立核实" in text
-    assert all(source["excerpt"] in text for source in research["content"]["sources"])
+    assert all(
+        source["excerpt"] in text for source in research["content"]["sources"]
+    )
 
 
 def test_legacy_candidate_unknown_fields_stay_empty():
@@ -210,7 +233,9 @@ def test_material_determinism_and_property_only_progress_updates():
     source, evidence = candidate(), [packet("packet-b"), packet("packet-a")]
     before = copy.deepcopy((source, evidence))
     first = project_material(source, evidence=evidence)
-    second = project_material(source, evidence=list(reversed(evidence)), progress="已刊出")
+    second = project_material(
+        source, evidence=list(reversed(evidence)), progress="已刊出"
+    )
     assert first.blocks == second.blocks and first.digest == second.digest
     assert first.properties["progress"] != second.properties["progress"]
     assert (source, evidence) == before
@@ -222,7 +247,12 @@ def test_material_determinism_and_property_only_progress_updates():
 
 @pytest.mark.parametrize(
     "scope,label",
-    [("metadata", "仅线索"), ("abstract", "摘要"), ("full_text", "全文"), ("dataset", "仅线索")],
+    [
+        ("metadata", "仅线索"),
+        ("abstract", "摘要"),
+        ("full_text", "全文"),
+        ("dataset", "仅线索"),
+    ],
 )
 def test_access_scope_does_not_upgrade_a_dataset_to_full_text(scope, label):
     result = project_material(candidate(access_scope=scope))
@@ -240,7 +270,9 @@ def test_access_scope_does_not_upgrade_a_dataset_to_full_text(scope, label):
         ("尚未接收", "https://openreview.net/forum?id=synthetic", "未分类"),
     ],
 )
-def test_material_type_does_not_treat_doi_or_openreview_as_acceptance(status, url, kind):
+def test_material_type_does_not_treat_doi_or_openreview_as_acceptance(
+    status, url, kind
+):
     result = project_material(candidate(publication_status=status, url=url))
     assert result.properties["material_type"] == {"select": {"name": kind}}
 
@@ -254,7 +286,10 @@ def test_material_evidence_is_complete_above_old_6000_character_limit():
     for block in result.blocks:
         rich = block[block["type"]]["rich_text"]
         assert len(rich) <= 100
-        assert all(len(item["text"]["content"].encode("utf-16-le")) // 2 <= 2000 for item in rich)
+        assert all(
+            len(item["text"]["content"].encode("utf-16-le")) // 2 <= 2000
+            for item in rich
+        )
 
 
 def test_text_chunking_preserves_astral_unicode_whitespace_and_literal_markup():
@@ -265,7 +300,9 @@ def test_text_chunking_preserves_astral_unicode_whitespace_and_literal_markup():
     assert len(blocks) > 1
     assert (
         "".join(
-            item["text"]["content"] for block in blocks for item in block["paragraph"]["rich_text"]
+            item["text"]["content"]
+            for block in blocks
+            for item in block["paragraph"]["rich_text"]
         )
         == value
     )
@@ -283,7 +320,15 @@ def test_edition_preserves_sections_reading_chart_context_sources_and_pending_to
         assert section["heading"] in text
         assert all(p["text"] in text for p in section["paragraphs"])
         assert section["limitations"] in text
-    for field in ("question", "caption", "alt_text", "metric", "unit", "period", "limitations"):
+    for field in (
+        "question",
+        "caption",
+        "alt_text",
+        "metric",
+        "unit",
+        "period",
+        "limitations",
+    ):
         assert value["draft"]["chart"][field] in text
     assert "另一组：缺失（尚未公布）" in text
     assert value["draft"]["recommended_reading"]["reason"] in text
@@ -314,7 +359,9 @@ def test_private_default_excludes_even_frozen_email_text_and_does_not_parse_priv
 
 
 def test_explicit_private_archive_is_complete_and_after_public_sources():
-    result = edition_projection(edition(), packets=[packet()], include_personal=True)
+    result = edition_projection(
+        edition(), packets=[packet()], include_personal=True
+    )
     text = block_text(result.blocks)
     for value in (
         "PRIVATE SUMMARY",
@@ -327,15 +374,23 @@ def test_explicit_private_archive_is_complete_and_after_public_sources():
         "2026-09-07T15:00:00Z",
     ):
         assert value in text
-    assert text.index("来源与核对") < text.index("TODOFY / 与你有关") < text.index("Codex 已记录")
+    assert (
+        text.index("来源与核对")
+        < text.index("TODOFY / 与你有关")
+        < text.index("Codex 已记录")
+    )
     assert "PRIVATE RENDERED BODY" not in text
     assert result.properties["contains_personal"] == {"checkbox": True}
     with pytest.raises(ValueError, match="explicit"):
-        edition_projection(edition(), packets=[packet()], include_personal="true")
+        edition_projection(
+            edition(), packets=[packet()], include_personal="true"
+        )
 
 
 def test_property_only_delivery_updates_never_change_frozen_body_digest():
-    first = edition_projection(edition(), packets=[packet()], include_personal=True)
+    first = edition_projection(
+        edition(), packets=[packet()], include_personal=True
+    )
     second = edition_projection(
         edition(
             delivery_state="provider_accepted",
@@ -356,7 +411,12 @@ def test_property_only_delivery_updates_never_change_frozen_body_digest():
 
 def test_partial_and_absent_usage_are_not_fabricated_zeroes():
     partial = edition(
-        usage={"usage": None, "partial": True, "invocations": 2, "missing_invocations": 2}
+        usage={
+            "usage": None,
+            "partial": True,
+            "invocations": 2,
+            "missing_invocations": 2,
+        }
     )
     for value in (partial, edition(usage=None)):
         result = edition_projection(value, packets=[packet()])
@@ -374,7 +434,9 @@ def test_missing_chart_png_keeps_every_chart_explanation_without_fake_image():
     assert value["draft"]["chart"]["alt_text"] in block_text(result.blocks)
 
 
-@pytest.mark.parametrize("encoded", ["not base64", base64.b64encode(b"not PNG").decode()])
+@pytest.mark.parametrize(
+    "encoded", ["not base64", base64.b64encode(b"not PNG").decode()]
+)
 def test_corrupt_frozen_png_is_rejected_not_silently_replaced(encoded):
     value = edition()
     value["rendered"]["chart_png"] = encoded
@@ -386,7 +448,9 @@ def test_missing_or_unresolved_sources_fail_instead_of_archiving_broken_citation
     with pytest.raises(ValueError):
         edition_projection(edition())
     value = edition()
-    value["draft"]["sections"][0]["paragraphs"][0]["citations"] = ["missing/source"]
+    value["draft"]["sections"][0]["paragraphs"][0]["citations"] = [
+        "missing/source"
+    ]
     with pytest.raises(ValueError):
         edition_projection(value, packets=[packet()])
 
@@ -398,7 +462,10 @@ def test_more_than_one_hundred_blocks_remain_available_for_transport_batching():
             "kind": "science",
             "heading": f"Synthetic section {i}",
             "paragraphs": [
-                {"text": f"Synthetic paragraph {i}-{j}", "citations": ["sample-packet/survey"]}
+                {
+                    "text": f"Synthetic paragraph {i}-{j}",
+                    "citations": ["sample-packet/survey"],
+                }
                 for j in range(16)
             ],
             "limitations": "Synthetic boundary",
@@ -413,7 +480,9 @@ def test_more_than_one_hundred_blocks_remain_available_for_transport_batching():
 def test_projection_is_deterministic_and_never_mutates_frozen_inputs():
     value, evidence = edition(), [packet()]
     before = copy.deepcopy((value, evidence))
-    first = edition_projection(value, packets=evidence, run_id="run-test", include_personal=True)
+    first = edition_projection(
+        value, packets=evidence, run_id="run-test", include_personal=True
+    )
     assert first == edition_projection(
         value, packets=evidence, run_id="run-test", include_personal=True
     )
@@ -422,7 +491,10 @@ def test_projection_is_deterministic_and_never_mutates_frozen_inputs():
     revised = copy.deepcopy(value)
     revised["draft"]["introduction"] += " A corrected synthetic introduction."
     assert (
-        edition_projection(revised, packets=evidence, include_personal=True).digest != first.digest
+        edition_projection(
+            revised, packets=evidence, include_personal=True
+        ).digest
+        != first.digest
     )
 
 
@@ -435,13 +507,17 @@ def test_same_date_distinct_editions_and_explicit_revision_type_keep_separate_id
     assert second.properties["edition_type"] == {"select": {"name": "修订"}}
     assert first.properties["issue_date"] == second.properties["issue_date"]
     with pytest.raises(ValueError, match="edition type"):
-        edition_projection(edition(), packets=[packet()], edition_type="unknown")
+        edition_projection(
+            edition(), packets=[packet()], edition_type="unknown"
+        )
 
 
 def test_fixture_material_cannot_be_hidden_by_a_false_caller_flag():
     evidence = packet()
     evidence["is_fixture"] = True
-    assert project_material(evidence=[evidence]).properties["fixture"] == {"checkbox": True}
+    assert project_material(evidence=[evidence]).properties["fixture"] == {
+        "checkbox": True
+    }
     result = edition_projection(edition(), packets=[evidence])
     assert result.properties["fixture"] == {"checkbox": True}
     assert result.properties["edition_type"] == {"select": {"name": "测试"}}
@@ -462,8 +538,16 @@ def test_invalid_property_date_fails_before_transport_would_create_a_page():
 @pytest.mark.parametrize(
     "candidate_url,doi,source_url",
     [
-        ("https://example.org/paper", "10.1234/synthetic", "https://doi.org/10.1234/synthetic"),
-        ("https://arxiv.org/abs/2609.12345", "", "https://arxiv.org/pdf/2609.12345v2"),
+        (
+            "https://example.org/paper",
+            "10.1234/synthetic",
+            "https://doi.org/10.1234/synthetic",
+        ),
+        (
+            "https://arxiv.org/abs/2609.12345",
+            "",
+            "https://arxiv.org/pdf/2609.12345v2",
+        ),
         ("https://example.org/paper", "", "https://example.org/paper"),
     ],
 )
@@ -472,7 +556,9 @@ def test_exact_research_source_identity_upgrades_read_column_but_keeps_discovery
 ):
     lead = candidate(url=candidate_url, doi=doi, access_scope="abstract")
     research = packet()
-    research["content"]["sources"][0].update(url=source_url, access_scope="full_text")
+    research["content"]["sources"][0].update(
+        url=source_url, access_scope="full_text"
+    )
     result = project_material(lead, evidence=[research])
     assert result.properties["access_scope"] == {"select": {"name": "全文"}}
     assert "发现记录的访问范围：摘要" in block_text(result.blocks)
@@ -482,10 +568,15 @@ def test_exact_research_source_identity_upgrades_read_column_but_keeps_discovery
 
 
 @pytest.mark.parametrize(
-    "source_url", ["https://example.org/unrelated-paper", "https://example.org/news"]
+    "source_url",
+    ["https://example.org/unrelated-paper", "https://example.org/news"],
 )
-def test_unrelated_full_text_or_shared_landing_page_cannot_upgrade_candidate(source_url):
-    lead = candidate(url="https://example.org/news", doi="", access_scope="metadata")
+def test_unrelated_full_text_or_shared_landing_page_cannot_upgrade_candidate(
+    source_url,
+):
+    lead = candidate(
+        url="https://example.org/news", doi="", access_scope="metadata"
+    )
     research = packet()
     research["content"]["sources"] = [
         {
@@ -512,7 +603,9 @@ def test_read_scope_uses_highest_exact_match_without_dataset_upgrade_or_downgrad
 ):
     lead = candidate(access_scope=discovered_scope)
     research = packet()
-    research["content"]["sources"][0].update(url=lead["url"], access_scope=read_scope)
+    research["content"]["sources"][0].update(
+        url=lead["url"], access_scope=read_scope
+    )
     # The other source is full_text, but concerns a different work.
     result = project_material(lead, evidence=[research])
     assert result.properties["access_scope"] == {"select": {"name": expected}}

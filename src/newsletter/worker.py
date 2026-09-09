@@ -77,9 +77,14 @@ class Worker:
             ).fetchone():
                 return None
             row = self.store.db.execute(
-                "SELECT inputs FROM workflow_runs WHERE id=?", (binding["run_id"],)
+                "SELECT inputs FROM workflow_runs WHERE id=?",
+                (binding["run_id"],),
             ).fetchone()
-        return template_from_inputs(json.loads(row[0])) if row is not None else None
+        return (
+            template_from_inputs(json.loads(row[0]))
+            if row is not None
+            else None
+        )
 
     async def step(self) -> bool:
         if self.pipeline and self.pipeline.advance():
@@ -94,14 +99,20 @@ class Worker:
                 return True
         # V2 projects immutable DAG material/edition snapshots independently.
         # Preserve legacy receipts instead of marking unperformed writes done.
-        packet = None if self.skip_packet_projection else self.store.claim_projection()
+        packet = (
+            None
+            if self.skip_packet_projection
+            else self.store.claim_projection()
+        )
         if packet:
             try:
                 async with asyncio.timeout(35):
                     await self.notion.project(packet)
                 self.store.projection_result(packet["id"], "done")
             except AdapterError as exc:
-                self.store.projection_result(packet["id"], "unknown" if exc.ambiguous else "failed")
+                self.store.projection_result(
+                    packet["id"], "unknown" if exc.ambiguous else "failed"
+                )
             except BaseException as exc:
                 self.store.projection_result(packet["id"], "unknown")
                 if isinstance(exc, asyncio.CancelledError):
@@ -109,7 +120,9 @@ class Worker:
             return True
         return await self.pipeline.collect_next() if self.pipeline else False
 
-    async def prepare(self, edition: EditionRecord, packets: list[Payload]) -> None:
+    async def prepare(
+        self, edition: EditionRecord, packets: list[Payload]
+    ) -> None:
         from newsletter.contracts import canonical_json
 
         try:
@@ -133,7 +146,9 @@ class Worker:
                     frozen = binding["result"]
                     result = EditorResult(frozen["draft"], frozen["review"])
                 else:
-                    with usage_scope(self.workflow_state.usage_sink(scope_id), "editor"):
+                    with usage_scope(
+                        self.workflow_state.usage_sink(scope_id), "editor"
+                    ):
                         result = await self.editor.prepare(
                             packets, edition["issue_date"], workspace
                         )
@@ -153,8 +168,13 @@ class Worker:
                 # Shape and citation validation do not certify factual truth.
                 validate_draft(result.draft, all_packets)
                 draft = to_dict(parse_message(result.draft, pb.Draft))
-                review = cast(ReviewResult, to_dict(parse_message(result.review, pb.Review)))
-                if len(review["findings"]) > 32 or any(len(f) > 4000 for f in review["findings"]):
+                review = cast(
+                    ReviewResult,
+                    to_dict(parse_message(result.review, pb.Review)),
+                )
+                if len(review["findings"]) > 32 or any(
+                    len(f) > 4000 for f in review["findings"]
+                ):
                     raise EditorError("invalid_output")
                 self.store.save_supplements(edition["id"], supplements)
                 if not review["passed"]:
@@ -178,11 +198,15 @@ class Worker:
                 # A restarted local rendering tail need not regenerate an already
                 # completed private Todofy summary. This data never enters a model.
                 validate_personal_digest(edition["personal_digest"])
-                personal = to_dict(parse_message(edition["personal_digest"], pb.PersonalDigest))
+                personal = to_dict(
+                    parse_message(edition["personal_digest"], pb.PersonalDigest)
+                )
             else:
                 personal = await self.personal_digest(edition)
             usage = self.workflow_state.usage(scope_id)
-            self.store.finish(edition["id"], personal_digest=personal, usage=usage)
+            self.store.finish(
+                edition["id"], personal_digest=personal, usage=usage
+            )
             rendered = await asyncio.to_thread(
                 render_edition,
                 draft,
@@ -194,22 +218,41 @@ class Worker:
                 template_source=self.frozen_template(binding),
             )
             # Freeze precisely the serialized representation returned to the client.
-            rendered = cast(RenderResult, to_dict(parse_message(rendered, pb.RenderedEdition)))
+            rendered = cast(
+                RenderResult,
+                to_dict(parse_message(rendered, pb.RenderedEdition)),
+            )
             self.store.finish(
-                edition["id"], state="ready", draft=draft, review=review, rendered=rendered
+                edition["id"],
+                state="ready",
+                draft=draft,
+                review=review,
+                rendered=rendered,
             )
         except asyncio.CancelledError:
             self.store.interrupt_preparation(edition["id"])
             raise
         except TimeoutError:
-            self.store.finish(edition["id"], state="failed", error_code="editor_timeout")
+            self.store.finish(
+                edition["id"], state="failed", error_code="editor_timeout"
+            )
         except OSError:
-            self.store.finish(edition["id"], state="failed", error_code="editor_workspace_error")
+            self.store.finish(
+                edition["id"],
+                state="failed",
+                error_code="editor_workspace_error",
+            )
         except EditorError as exc:
-            self.store.finish(edition["id"], state="failed", error_code=exc.code)
+            self.store.finish(
+                edition["id"], state="failed", error_code=exc.code
+            )
         except Exception:
             # Do not expose provider bodies, source excerpts, tokens, or local paths.
-            self.store.finish(edition["id"], state="failed", error_code="editor_invalid_result")
+            self.store.finish(
+                edition["id"],
+                state="failed",
+                error_code="editor_invalid_result",
+            )
 
     async def run(self) -> None:
         while True:

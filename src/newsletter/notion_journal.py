@@ -31,7 +31,9 @@ def material_aliases(candidate: Payload) -> list[str]:
         keys = {key for key in keys if not key.startswith("event:")}
     if not strong:
         for key in list(keys):
-            if key.startswith("url:") and urlsplit(key[4:]).path.rstrip("/") in {
+            if key.startswith("url:") and urlsplit(key[4:]).path.rstrip(
+                "/"
+            ) in {
                 "",
                 "/news",
                 "/research",
@@ -40,7 +42,11 @@ def material_aliases(candidate: Payload) -> list[str]:
                 "/blog",
             }:
                 keys.remove(key)
-                event = str(candidate.get("event_key") or candidate.get("published_at") or "")
+                event = str(
+                    candidate.get("event_key")
+                    or candidate.get("published_at")
+                    or ""
+                )
                 if event:
                     keys.add(key + "#event:" + event.casefold())
     if not keys:
@@ -92,7 +98,10 @@ class NotionJournal:
             """)
         with store.transaction():
             if "upload_at" not in {
-                row["name"] for row in store.db.execute("PRAGMA table_info(notion_versions)")
+                row["name"]
+                for row in store.db.execute(
+                    "PRAGMA table_info(notion_versions)"
+                )
             }:
                 store.db.execute(
                     "ALTER TABLE notion_versions ADD COLUMN upload_at REAL NOT NULL DEFAULT 0"
@@ -102,20 +111,27 @@ class NotionJournal:
                 "SELECT value FROM metadata WHERE key='notion_v2_destination'"
             ).fetchone()
             if old and old[0] != digest:
-                raise ValueError("Notion destination/privacy changed; explicit migration required")
+                raise ValueError(
+                    "Notion destination/privacy changed; explicit migration required"
+                )
             store.db.execute(
-                "INSERT OR IGNORE INTO metadata VALUES ('notion_v2_destination',?)", (digest,)
+                "INSERT OR IGNORE INTO metadata VALUES ('notion_v2_destination',?)",
+                (digest,),
             )
             # A crash after dispatch but before acknowledgement is an unknown
             # external result, not permission to repeat the mutation.
             store.db.execute(
                 "UPDATE notion_entities SET create_state='unknown' WHERE create_state='creating'"
             )
-            store.db.execute("UPDATE notion_versions SET state='unknown' WHERE state='appending'")
+            store.db.execute(
+                "UPDATE notion_versions SET state='unknown' WHERE state='appending'"
+            )
 
     def rows(self, sql: str, args: tuple[Any, ...] = ()) -> list[Payload]:
         with self.store.lock:
-            return [dict(row) for row in self.store.db.execute(sql, args).fetchall()]
+            return [
+                dict(row) for row in self.store.db.execute(sql, args).fetchall()
+            ]
 
     def execute(self, sql: str, args: tuple[Any, ...] = ()) -> None:
         with self.store.transaction():
@@ -123,7 +139,10 @@ class NotionJournal:
 
     def exists(self, table: str) -> bool:
         return bool(
-            self.rows("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,))
+            self.rows(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            )
         )
 
     def identity(self, candidate: Payload) -> tuple[str, list[str]]:
@@ -149,15 +168,25 @@ class NotionJournal:
             }
             for prefix in ("doi:", "arxiv:"):
                 incoming = {key for key in aliases if key.startswith(prefix)}
-                previous = {key for key in existing_aliases if key.startswith(prefix)}
+                previous = {
+                    key for key in existing_aliases if key.startswith(prefix)
+                }
                 if incoming and previous and incoming.isdisjoint(previous):
                     raise ValueError("notion_material_identity_conflict")
-        return (next(iter(found)) if found else "material:v1:" + content_hash(aliases[0]), aliases)
+        return (
+            next(iter(found))
+            if found
+            else "material:v1:" + content_hash(aliases[0]),
+            aliases,
+        )
 
-    def enqueue(self, kind: str, projection: Projection, aliases: Sequence[str] = ()) -> None:
+    def enqueue(
+        self, kind: str, projection: Projection, aliases: Sequence[str] = ()
+    ) -> None:
         with self.store.transaction():
             old = self.store.db.execute(
-                "SELECT kind,properties FROM notion_entities WHERE key=?", (projection.key,)
+                "SELECT kind,properties FROM notion_entities WHERE key=?",
+                (projection.key,),
             ).fetchone()
             if old and old[0] != kind:
                 raise ValueError("notion_entity_kind_conflict")
@@ -179,21 +208,37 @@ class NotionJournal:
                         for source in (previous, properties)
                         for item in source.get(name, {}).get("multi_select", [])
                     }
-                    properties[name] = {"multi_select": [{"name": name} for name in sorted(names)]}
+                    properties[name] = {
+                        "multi_select": [
+                            {"name": name} for name in sorted(names)
+                        ]
+                    }
                 ranks = ["候选", "继续跟进", "已研究", "已刊出"]
                 progress = [
-                    source.get("progress", {}).get("select", {}).get("name", "候选")
+                    source.get("progress", {})
+                    .get("select", {})
+                    .get("name", "候选")
                     for source in (previous, properties)
                 ]
-                properties["progress"] = {"select": {"name": max(progress, key=ranks.index)}}
+                properties["progress"] = {
+                    "select": {"name": max(progress, key=ranks.index)}
+                }
                 properties["fixture"] = {
                     "checkbox": all(
                         source.get("fixture", {}).get("checkbox", False)
                         for source in (previous, properties)
                     )
                 }
-                for name in ("authors", "affiliations", "venue", "publication_status"):
-                    if not properties.get(name, {}).get("rich_text") and name in previous:
+                for name in (
+                    "authors",
+                    "affiliations",
+                    "venue",
+                    "publication_status",
+                ):
+                    if (
+                        not properties.get(name, {}).get("rich_text")
+                        and name in previous
+                    ):
                         properties[name] = previous[name]
             self.store.db.execute(
                 "INSERT INTO notion_entities(key,kind,properties) VALUES(?,?,?) "
@@ -212,12 +257,14 @@ class NotionJournal:
             )
             for alias in aliases:
                 old_alias = self.store.db.execute(
-                    "SELECT entity_key FROM notion_aliases WHERE alias=?", (alias,)
+                    "SELECT entity_key FROM notion_aliases WHERE alias=?",
+                    (alias,),
                 ).fetchone()
                 if old_alias and old_alias[0] != projection.key:
                     raise ValueError("notion_material_identity_conflict")
                 self.store.db.execute(
-                    "INSERT OR IGNORE INTO notion_aliases VALUES (?,?)", (alias, projection.key)
+                    "INSERT OR IGNORE INTO notion_aliases VALUES (?,?)",
+                    (alias, projection.key),
                 )
 
     def imported(self, kind: str, source_id: str, digest: str) -> bool:
@@ -228,7 +275,9 @@ class NotionJournal:
             )
         )
 
-    def mark_import(self, kind: str, source_id: str, digest: str, error: str = "") -> None:
+    def mark_import(
+        self, kind: str, source_id: str, digest: str, error: str = ""
+    ) -> None:
         self.execute(
             "INSERT INTO notion_imports VALUES(?,?,?,?) ON CONFLICT(kind,source_id) "
             "DO UPDATE SET digest=excluded.digest,error=excluded.error",
@@ -239,13 +288,18 @@ class NotionJournal:
         return self.rows("SELECT * FROM notion_entities WHERE key=?", (key,))[0]
 
     def versions(self, key: str) -> list[Payload]:
-        return self.rows("SELECT * FROM notion_versions WHERE entity_key=? ORDER BY seq", (key,))
+        return self.rows(
+            "SELECT * FROM notion_versions WHERE entity_key=? ORDER BY seq",
+            (key,),
+        )
 
     def desired(self, entity: Payload) -> Payload:
         properties = json.loads(entity["properties"])
         edition = entity["kind"] == "edition"
         source, target = (
-            ("edition_key", "material_key") if edition else ("material_key", "edition_key")
+            ("edition_key", "material_key")
+            if edition
+            else ("material_key", "edition_key")
         )
         related = self.rows(
             f"SELECT DISTINCT e.page_id FROM notion_links l JOIN notion_entities e "
@@ -260,7 +314,9 @@ class NotionJournal:
         if not edition and related:
             properties["progress"] = {"select": {"name": "已刊出"}}
         done = all(v["state"] == "done" for v in self.versions(entity["key"]))
-        properties["sync_state"] = {"select": {"name": "已同步" if done else "同步中"}}
+        properties["sync_state"] = {
+            "select": {"name": "已同步" if done else "同步中"}
+        }
         return properties
 
     def retry(self, key: str, code: str) -> None:
@@ -274,7 +330,8 @@ class NotionJournal:
 
     def clear_error(self, key: str) -> None:
         self.execute(
-            "UPDATE notion_entities SET error='',retry_at=0,attempts=0 WHERE key=?", (key,)
+            "UPDATE notion_entities SET error='',retry_at=0,attempts=0 WHERE key=?",
+            (key,),
         )
 
     def summary(self) -> Payload:

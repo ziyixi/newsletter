@@ -50,7 +50,9 @@ class TodofyAdapter(Protocol):
 
 
 def _date(value: str) -> date:
-    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+    if not isinstance(value, str) or not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}", value
+    ):
         raise ValueError("Invalid Todofy issue date")
     try:
         return date.fromisoformat(value)
@@ -58,7 +60,9 @@ def _date(value: str) -> date:
         raise ValueError("Invalid Todofy issue date") from None
 
 
-def _base(state: DigestState, fetched_at: str = "", *, fixture: bool = False) -> Payload:
+def _base(
+    state: DigestState, fetched_at: str = "", *, fixture: bool = False
+) -> Payload:
     return {
         "state": state,
         "title": "你的事件概述",
@@ -73,11 +77,15 @@ def _base(state: DigestState, fetched_at: str = "", *, fixture: bool = False) ->
     }
 
 
-def unavailable_digest(code: str = "todofy_unavailable", fetched_at: str = "") -> Payload:
+def unavailable_digest(
+    code: str = "todofy_unavailable", fetched_at: str = ""
+) -> Payload:
     """Safe failure data: callers must not include raw exceptions or response bodies."""
     if code not in _MESSAGES:
         code = "todofy_unavailable"
-    result = _base("disabled" if code == "todofy_disabled" else "unavailable", fetched_at)
+    result = _base(
+        "disabled" if code == "todofy_disabled" else "unavailable", fetched_at
+    )
     result.update(error_code=code, summary=_MESSAGES[code])
     return result
 
@@ -131,7 +139,9 @@ class FakeTodofy:
         return result
 
 
-def validate_todofy_configuration(base_url: str, username: str, password: str) -> str:
+def validate_todofy_configuration(
+    base_url: str, username: str, password: str
+) -> str:
     """Accept a fixed HTTPS origin only, never a supplied packet URL or redirect."""
     try:
         parsed = urlsplit(base_url)
@@ -185,7 +195,9 @@ def _invalid_constant(_: str) -> None:
 
 
 def _decode(data: bytes, fetched_at: str, mode: str, top: int) -> Payload:
-    body = json.loads(data, object_pairs_hook=_unique_object, parse_constant=_invalid_constant)
+    body = json.loads(
+        data, object_pairs_hook=_unique_object, parse_constant=_invalid_constant
+    )
     if not isinstance(body, dict):
         raise ValueError
     if mode == "recommendation":
@@ -202,7 +214,10 @@ def _decode(data: bytes, fetched_at: str, mode: str, top: int) -> Payload:
         or window != 24
         or not isinstance(summary, str)
         or len(summary) > _MAX_SUMMARY_CHARS
-        or any((ord(char) < 32 and char not in "\n\t\r") or ord(char) == 127 for char in summary)
+        or any(
+            (ord(char) < 32 and char not in "\n\t\r") or ord(char) == 127
+            for char in summary
+        )
         or (count > 0 and not summary.strip())
     ):
         raise ValueError
@@ -223,7 +238,9 @@ def _decode_recommendation(body: Payload, fetched_at: str, top: int) -> Payload:
     tasks, count = body.get("tasks"), body.get("task_count")
     if not isinstance(tasks, list) or len(tasks) > CANDIDATE_LIMIT:
         raise ValueError
-    if "task_count" in body and (type(count) is not int or not 0 <= count <= 1_000_000):
+    if "task_count" in body and (
+        type(count) is not int or not 0 <= count <= 1_000_000
+    ):
         raise ValueError
     if count == 0 and tasks:
         raise ValueError
@@ -245,12 +262,19 @@ def _decode_recommendation(body: Payload, fetched_at: str, top: int) -> Payload:
                 not isinstance(text, str)
                 or not text.strip()
                 or len(text) > limit
-                or any((ord(c) < 32 and c not in "\n\r\t") or ord(c) == 127 for c in text)
+                or any(
+                    (ord(c) < 32 and c not in "\n\r\t") or ord(c) == 127
+                    for c in text
+                )
             ):
                 raise ValueError
         # The loop above validates both values before normalizing them.
         items.append(
-            {"rank": rank, "title": cast(str, title).strip(), "detail": cast(str, detail).strip()}
+            {
+                "rank": rank,
+                "title": cast(str, title).strip(),
+                "detail": cast(str, detail).strip(),
+            }
         )
     selection = select_personal_items(items, top)
     result = _base("current" if items or count else "empty", fetched_at)
@@ -304,7 +328,11 @@ class Todofy:
         clock: Callable[[], datetime] | None = None,
     ):
         origin = validate_todofy_configuration(base_url, username, password)
-        if mode not in {"recommendation", "summary"} or type(top) is not int or not 1 <= top <= 10:
+        if (
+            mode not in {"recommendation", "summary"}
+            or type(top) is not int
+            or not 1 <= top <= 10
+        ):
             raise ValueError("Invalid Todofy endpoint mode or top count")
         if (
             not isinstance(timeout, (int, float))
@@ -331,7 +359,9 @@ class Todofy:
             raise ValueError("Todofy clock must have a timezone")
         fetched_at = instant.astimezone(UTC).isoformat()
         if requested != instant.astimezone(self._zone).date():
-            return unavailable_digest("todofy_historical_unavailable", fetched_at)
+            return unavailable_digest(
+                "todofy_historical_unavailable", fetched_at
+            )
         try:
             async with asyncio.timeout(self._timeout):
                 async with httpx.AsyncClient(
@@ -344,18 +374,28 @@ class Todofy:
                 ) as client:
                     async with client.stream("GET", self._url) as response:
                         if response.status_code in {401, 403}:
-                            return unavailable_digest("todofy_auth_failed", fetched_at)
+                            return unavailable_digest(
+                                "todofy_auth_failed", fetched_at
+                            )
                         if response.status_code != 200:
-                            return unavailable_digest("todofy_unavailable", fetched_at)
+                            return unavailable_digest(
+                                "todofy_unavailable", fetched_at
+                            )
                         if (
-                            response.headers.get("content-type", "").split(";", 1)[0].strip()
+                            response.headers.get("content-type", "")
+                            .split(";", 1)[0]
+                            .strip()
                             != "application/json"
                         ):
-                            return unavailable_digest("todofy_invalid_response", fetched_at)
+                            return unavailable_digest(
+                                "todofy_invalid_response", fetched_at
+                            )
                         content = bytearray()
                         async for chunk in response.aiter_bytes():
                             if len(content) + len(chunk) > _MAX_RESPONSE_BYTES:
-                                return unavailable_digest("todofy_invalid_response", fetched_at)
+                                return unavailable_digest(
+                                    "todofy_invalid_response", fetched_at
+                                )
                             content.extend(chunk)
             result = _decode(bytes(content), fetched_at, self._mode, self._top)
             validate_personal_digest(result)

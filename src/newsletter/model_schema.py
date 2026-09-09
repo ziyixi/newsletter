@@ -45,14 +45,20 @@ def _message_schema(descriptor: Descriptor) -> Payload:
         item: Payload = (
             _message_schema(proto_field.message_type)
             if proto_field.message_type
-            else {"type": "boolean" if proto_field.type == FieldDescriptor.TYPE_BOOL else "string"}
+            else {
+                "type": "boolean"
+                if proto_field.type == FieldDescriptor.TYPE_BOOL
+                else "string"
+            }
         )
         if values := _FIELD_ENUMS.get((descriptor.name, proto_field.name)):
             item["enum"] = list(values)
         if (descriptor.name, proto_field.name) == ("Source", "id"):
             item = _identifier_schema()
         props[proto_field.name] = (
-            {"type": "array", "items": item} if proto_field.is_repeated else item
+            {"type": "array", "items": item}
+            if proto_field.is_repeated
+            else item
         )
     if descriptor.name == "Draft":
         # Structured-output strict mode represents omitted message fields as
@@ -99,7 +105,9 @@ def _draft_schema(packets: Sequence[Payload]) -> Payload:
     alternatives = [
         re.escape(packet["id"])
         + "/(?:"
-        + "|".join(re.escape(source["id"]) for source in packet["content"]["sources"])
+        + "|".join(
+            re.escape(source["id"]) for source in packet["content"]["sources"]
+        )
         + ")"
         for packet in packets
     ]
@@ -113,18 +121,22 @@ def _draft_schema(packets: Sequence[Payload]) -> Payload:
         ),
     }
     props = draft["properties"]
-    props["sections"]["items"]["properties"]["paragraphs"]["items"]["properties"]["citations"][
-        "items"
-    ].update(citation)
-    for point in props["chart"]["anyOf"][0]["properties"]["points"]["items"]["anyOf"]:
+    props["sections"]["items"]["properties"]["paragraphs"]["items"][
+        "properties"
+    ]["citations"]["items"].update(citation)
+    for point in props["chart"]["anyOf"][0]["properties"]["points"]["items"][
+        "anyOf"
+    ]:
         point["properties"]["citations"]["items"].update(citation)
-    props["recommended_reading"]["anyOf"][0]["properties"]["citation"].update(citation)
-    props["recommended_reading"]["anyOf"][0]["properties"]["supporting_citations"]["items"].update(
+    props["recommended_reading"]["anyOf"][0]["properties"]["citation"].update(
         citation
     )
-    props["recommended_reading"]["anyOf"][0]["properties"]["supporting_citations"].update(
-        maxItems=31
-    )
+    props["recommended_reading"]["anyOf"][0]["properties"][
+        "supporting_citations"
+    ]["items"].update(citation)
+    props["recommended_reading"]["anyOf"][0]["properties"][
+        "supporting_citations"
+    ].update(maxItems=31)
     return draft
 
 
@@ -152,7 +164,10 @@ def editor_schema(packets: Sequence[Payload] = ()) -> Payload:
                     "additionalProperties": False,
                     "required": ["id", "content"],
                     "properties": {
-                        "id": {**_identifier_schema(), "enum": list(_SUPPLEMENT_IDS)},
+                        "id": {
+                            **_identifier_schema(),
+                            "enum": list(_SUPPLEMENT_IDS),
+                        },
                         "content": packet_body_schema(),
                     },
                 },
@@ -169,7 +184,11 @@ def research_schema() -> Payload:
         "properties": {
             "state": {"type": "string", "enum": ["collected", "no_findings"]},
             "note": {"type": "string"},
-            "packets": {"type": "array", "maxItems": 2, "items": packet_body_schema()},
+            "packets": {
+                "type": "array",
+                "maxItems": 2,
+                "items": packet_body_schema(),
+            },
         },
     }
 

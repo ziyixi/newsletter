@@ -29,7 +29,9 @@ class RunRepository:
             if row is None:
                 return None
             if row["request_hash"] != content_hash(request):
-                raise StoreError("conflict", "request_key was used for a different run")
+                raise StoreError(
+                    "conflict", "request_key was used for a different run"
+                )
             return json.loads(row["body"])
 
     def start(
@@ -40,7 +42,9 @@ class RunRepository:
         workflow_snapshot: Payload | None = None,
     ) -> Payload:
         with self.store.transaction():
-            return self._start(request, instructions, workflow_snapshot=workflow_snapshot)
+            return self._start(
+                request, instructions, workflow_snapshot=workflow_snapshot
+            )
 
     def _start(
         self,
@@ -101,7 +105,8 @@ class RunRepository:
     def workflow_snapshot(self, run_id: str) -> Payload | None:
         with self.store.lock:
             row = self.store.db.execute(
-                "SELECT body FROM collection_workflow_snapshots WHERE run_id=?", (run_id,)
+                "SELECT body FROM collection_workflow_snapshots WHERE run_id=?",
+                (run_id,),
             ).fetchone()
         return json.loads(row[0]) if row else None
 
@@ -128,14 +133,20 @@ class RunRepository:
             self._write(run)
             return run
 
-    def direction(self, run_id: str, direction_id: str, **fields: object) -> None:
+    def direction(
+        self, run_id: str, direction_id: str, **fields: object
+    ) -> None:
         with self.store.transaction():
             run = self.get(run_id)
-            direction = next(d for d in run["directions"] if d["id"] == direction_id)
+            direction = next(
+                d for d in run["directions"] if d["id"] == direction_id
+            )
             direction.update(fields)
             self._write(run)
 
-    def claim(self, *, resume: bool = False) -> tuple[Payload, list[Instruction]] | None:
+    def claim(
+        self, *, resume: bool = False
+    ) -> tuple[Payload, list[Instruction]] | None:
         with self.store.transaction():
             row = self.store.db.execute(
                 "SELECT body,instructions FROM collection_runs WHERE state IN ('queued','collecting') ORDER BY rowid LIMIT 1"
@@ -147,7 +158,9 @@ class RunRepository:
             run = json.loads(row["body"])
             run["state"] = "collecting"
             self._write(run)
-            return run, [Instruction(**item) for item in json.loads(row["instructions"])]
+            return run, [
+                Instruction(**item) for item in json.loads(row["instructions"])
+            ]
 
     def save_direction(
         self, run_id: str, direction_id: str, requests: list[Payload], note: str
@@ -155,12 +168,17 @@ class RunRepository:
         """Validated materials and their run association commit together or not at all."""
         with self.store.transaction():
             packet_ids = [
-                self.store._put_packet(request, "collector")["id"] for request in requests
+                self.store._put_packet(request, "collector")["id"]
+                for request in requests
             ]
             run = self.get(run_id)
-            direction = next(d for d in run["directions"] if d["id"] == direction_id)
+            direction = next(
+                d for d in run["directions"] if d["id"] == direction_id
+            )
             direction.update(
-                state="collected" if packet_ids else "no_findings", packet_ids=packet_ids, note=note
+                state="collected" if packet_ids else "no_findings",
+                packet_ids=packet_ids,
+                note=note,
             )
             self._write(run)
 

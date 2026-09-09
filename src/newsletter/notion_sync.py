@@ -40,7 +40,9 @@ def _link_signature(url: str | None) -> str | None:
     params = []
     for param in query.split("&"):
         name, equals, value = param.partition("=")
-        params.append(name + equals + re.sub("%3a", ":", value, flags=re.IGNORECASE))
+        params.append(
+            name + equals + re.sub("%3a", ":", value, flags=re.IGNORECASE)
+        )
     return path + query_mark + "&".join(params) + fragment_mark + fragment
 
 
@@ -81,7 +83,9 @@ def block_signature(block: Payload, *, image_name: str = "") -> Payload:
                 raise ValueError("notion_remote_image_conflict")
             result["filename"] = image_name
         elif body.get("type") == "file":
-            result["filename"] = unquote(urlsplit(body["file"]["url"]).path.rsplit("/", 1)[-1])
+            result["filename"] = unquote(
+                urlsplit(body["file"]["url"]).path.rsplit("/", 1)[-1]
+            )
         else:
             raise ValueError("notion_remote_image_conflict")
         result["caption"] = _rich_text(body.get("caption", []))
@@ -105,7 +109,11 @@ def block_signature(block: Payload, *, image_name: str = "") -> Payload:
 
 
 def _image_name(version: Payload) -> str:
-    return "chart-" + hashlib.sha256(base64.b64decode(version["chart"])).hexdigest() + ".png"
+    return (
+        "chart-"
+        + hashlib.sha256(base64.b64decode(version["chart"])).hexdigest()
+        + ".png"
+    )
 
 
 def version_blocks(version: Payload) -> list[Payload]:
@@ -174,7 +182,11 @@ class NotionSync:
         try:
             page_id = await self.api.create(kind, properties)
         except BaseException as exc:
-            state = "unknown" if not isinstance(exc, AdapterError) or exc.ambiguous else "new"
+            state = (
+                "unknown"
+                if not isinstance(exc, AdapterError) or exc.ambiguous
+                else "new"
+            )
             self.journal.execute(
                 "UPDATE notion_entities SET create_state=? WHERE key=?",
                 (state, key),
@@ -185,19 +197,28 @@ class NotionSync:
             (page_id, content_hash(properties), key),
         )
 
-    def _expected_prefix(self, entity: Payload, current: Payload) -> list[Payload]:
+    def _expected_prefix(
+        self, entity: Payload, current: Payload
+    ) -> list[Payload]:
         expected: list[Payload] = []
         for version in self.journal.versions(entity["key"]):
             if version["seq"] > current["seq"]:
                 break
             blocks = version_blocks(version)
-            count = version["offset"] if version["seq"] == current["seq"] else len(blocks)
+            count = (
+                version["offset"]
+                if version["seq"] == current["seq"]
+                else len(blocks)
+            )
             expected.extend(
-                block_signature(block, image_name=_image_name(version)) for block in blocks[:count]
+                block_signature(block, image_name=_image_name(version))
+                for block in blocks[:count]
             )
         return expected
 
-    async def _reconcile_unknown(self, entity: Payload, version: Payload) -> None:
+    async def _reconcile_unknown(
+        self, entity: Payload, version: Payload
+    ) -> None:
         """Acknowledge an uncertain append by reading, never by repeating it."""
         blocks = version_blocks(version)
         prefix = self._expected_prefix(entity, version)
@@ -214,11 +235,18 @@ class NotionSync:
             block_signature(block, image_name=_image_name(version))
             for block in blocks[version["offset"] : offset]
         ]
-        observed = [block_signature(block) for block in await self.api.children(entity["page_id"])]
+        observed = [
+            block_signature(block)
+            for block in await self.api.children(entity["page_id"])
+        ]
         if observed == prefix + pending:
             self.journal.execute(
                 "UPDATE notion_versions SET offset=?,state=?,pending_chunk='',error='' WHERE seq=?",
-                (offset, "done" if offset == len(blocks) else "pending", version["seq"]),
+                (
+                    offset,
+                    "done" if offset == len(blocks) else "pending",
+                    version["seq"],
+                ),
             )
             return
         if observed == prefix:
@@ -232,7 +260,11 @@ class NotionSync:
         upgrade, or a human undoing their edit. Genuine differences remain
         quarantined; duplicate identities and property conflicts aren't reset.
         """
-        versions = [v for v in self.journal.versions(entity["key"]) if v["state"] != "done"]
+        versions = [
+            v
+            for v in self.journal.versions(entity["key"])
+            if v["state"] != "done"
+        ]
         if not entity["page_id"] or not versions:
             raise ValueError("notion_unresolved_projection_conflict")
         version = versions[0]
@@ -241,14 +273,16 @@ class NotionSync:
         elif version["state"] == "pending":
             prefix = self._expected_prefix(entity, version)
             observed = [
-                block_signature(block) for block in await self.api.children(entity["page_id"])
+                block_signature(block)
+                for block in await self.api.children(entity["page_id"])
             ]
             if observed != prefix:
                 raise ValueError("notion_remote_body_conflict")
         else:
             raise ValueError("notion_unresolved_projection_conflict")
         self.journal.execute(
-            "UPDATE notion_entities SET create_state='ready' WHERE key=?", (entity["key"],)
+            "UPDATE notion_entities SET create_state='ready' WHERE key=?",
+            (entity["key"],),
         )
 
     async def _append(self, entity: Payload, version: Payload) -> None:
@@ -264,11 +298,16 @@ class NotionSync:
             version["chart"]
             and version["state"] == "pending"
             and has_unattached_chart
-            and (not version["upload_id"] or time.time() - version["upload_at"] > 3300)
+            and (
+                not version["upload_id"]
+                or time.time() - version["upload_at"] > 3300
+            )
         ):
             # A lost upload alone creates no visible page/content; replacing an
             # unattached expiring upload is safe and is not a repeated append.
-            upload_id = await self.api.upload_png(base64.b64decode(version["chart"], validate=True))
+            upload_id = await self.api.upload_png(
+                base64.b64decode(version["chart"], validate=True)
+            )
             j.execute(
                 "UPDATE notion_versions SET upload_id=?,upload_at=? WHERE seq=?",
                 (upload_id, time.time(), version["seq"]),
@@ -278,20 +317,31 @@ class NotionSync:
         prefix = self._expected_prefix(entity, version)
         chunk = _chunk(blocks, version["offset"])
         expected_chunk = [
-            block_signature(block, image_name=_image_name(version)) for block in chunk
+            block_signature(block, image_name=_image_name(version))
+            for block in chunk
         ]
         if not chunk:
-            j.execute("UPDATE notion_versions SET state='done' WHERE seq=?", (version["seq"],))
+            j.execute(
+                "UPDATE notion_versions SET state='done' WHERE seq=?",
+                (version["seq"],),
+            )
             return
         # Check the existing managed page before each mutation, including after
         # journal restoration. Human edits are never silently deleted/replaced.
-        observed = [block_signature(block) for block in await self.api.children(entity["page_id"])]
+        observed = [
+            block_signature(block)
+            for block in await self.api.children(entity["page_id"])
+        ]
         if observed == prefix + expected_chunk:
             # Recover acknowledgement loss across a restored local checkpoint.
             offset = version["offset"] + len(chunk)
             j.execute(
                 "UPDATE notion_versions SET offset=?,state=? WHERE seq=?",
-                (offset, "done" if offset == len(blocks) else "pending", version["seq"]),
+                (
+                    offset,
+                    "done" if offset == len(blocks) else "pending",
+                    version["seq"],
+                ),
             )
             return
         if observed != prefix:
@@ -303,18 +353,30 @@ class NotionSync:
         try:
             response = await self.api.append(entity["page_id"], chunk)
             acknowledged = [
-                block_signature(block, image_name=_image_name(version)) for block in response
+                block_signature(block, image_name=_image_name(version))
+                for block in response
             ]
             if acknowledged != expected_chunk:
                 raise AdapterError("NOTION_APPEND_UNCONFIRMED", ambiguous=True)
         except BaseException as exc:
-            state = "unknown" if not isinstance(exc, AdapterError) or exc.ambiguous else "pending"
-            j.execute("UPDATE notion_versions SET state=? WHERE seq=?", (state, version["seq"]))
+            state = (
+                "unknown"
+                if not isinstance(exc, AdapterError) or exc.ambiguous
+                else "pending"
+            )
+            j.execute(
+                "UPDATE notion_versions SET state=? WHERE seq=?",
+                (state, version["seq"]),
+            )
             raise
         offset = version["offset"] + len(chunk)
         j.execute(
             "UPDATE notion_versions SET offset=?,state=?,pending_chunk='' WHERE seq=?",
-            (offset, "done" if offset == len(blocks) else "pending", version["seq"]),
+            (
+                offset,
+                "done" if offset == len(blocks) else "pending",
+                version["seq"],
+            ),
         )
 
     async def step(self) -> bool:
@@ -330,7 +392,9 @@ class NotionSync:
                 elif not entity["page_id"]:
                     await self._create(entity)
                 else:
-                    versions = [v for v in j.versions(key) if v["state"] != "done"]
+                    versions = [
+                        v for v in j.versions(key) if v["state"] != "done"
+                    ]
                     if versions:
                         await self._append(entity, versions[0])
                     else:
@@ -339,7 +403,9 @@ class NotionSync:
                             continue
                         # Assignment PATCH is idempotent; an unknown response can
                         # safely reapply exactly the same managed property values.
-                        await self.api.patch(entity["kind"], entity["page_id"], desired)
+                        await self.api.patch(
+                            entity["kind"], entity["page_id"], desired
+                        )
                         j.execute(
                             "UPDATE notion_entities SET applied_hash=? WHERE key=?",
                             (content_hash(desired), key),
@@ -351,9 +417,14 @@ class NotionSync:
                 j.retry(key, exc.code)
                 logger.warning("Notion projection deferred: %s", exc.code)
             except (ValueError, KeyError, TypeError):
-                j.execute("UPDATE notion_entities SET create_state='conflict' WHERE key=?", (key,))
+                j.execute(
+                    "UPDATE notion_entities SET create_state='conflict' WHERE key=?",
+                    (key,),
+                )
                 j.retry(key, "NOTION_PROJECTION_CONFLICT")
-                logger.warning("Notion projection needs inspection: NOTION_PROJECTION_CONFLICT")
+                logger.warning(
+                    "Notion projection needs inspection: NOTION_PROJECTION_CONFLICT"
+                )
             return True
         return False
 
@@ -369,6 +440,8 @@ class NotionSync:
                 raise
             except Exception:
                 # Do not expose source bodies, private events, paths or tokens.
-                logger.exception("Notion background sync failed", exc_info=False)
+                logger.exception(
+                    "Notion background sync failed", exc_info=False
+                )
                 worked = False
             await asyncio.sleep(0.6 if worked else 5)

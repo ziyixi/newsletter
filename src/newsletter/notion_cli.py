@@ -53,9 +53,13 @@ def status(path: Path) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    setup = subparsers.add_parser("setup", help="Read both schemas; --apply adds missing columns")
+    setup = subparsers.add_parser(
+        "setup", help="Read both schemas; --apply adds missing columns"
+    )
     setup.add_argument("--apply", action="store_true")
-    subparsers.add_parser("status", help="Read existing local receipts while service is running")
+    subparsers.add_parser(
+        "status", help="Read existing local receipts while service is running"
+    )
     args = parser.parse_args()
     try:
         if args.command == "setup":
@@ -71,7 +75,10 @@ def main() -> None:
     except AdapterError as exc:
         parser.exit(1, "Notion operation failed: " + exc.code + "\n")
     except (OSError, ValueError, sqlite3.Error):
-        parser.exit(1, "Notion configuration/storage unavailable; inspect private configuration.\n")
+        parser.exit(
+            1,
+            "Notion configuration/storage unavailable; inspect private configuration.\n",
+        )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 

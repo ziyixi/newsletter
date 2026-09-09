@@ -43,7 +43,10 @@ def prior():
                     "kind": "feature",
                     "heading": "主读",
                     "paragraphs": [
-                        {"text": "需要修正的虚构数字。", "citations": ["packet/source"]}
+                        {
+                            "text": "需要修正的虚构数字。",
+                            "citations": ["packet/source"],
+                        }
                     ],
                     "limitations": "仅测试",
                 }
@@ -61,7 +64,10 @@ def prior():
                 "is_fixture": True,
             }
         ],
-        "review": {"passed": False, "findings": ["HOLD：虚构数字未得到原始来源支持，应删去。"]},
+        "review": {
+            "passed": False,
+            "findings": ["HOLD：虚构数字未得到原始来源支持，应删去。"],
+        },
         "author_review": {"passed": False, "findings": ["作者不能确认数字。"]},
         "coverage": [{"stage": "research", "degraded": True}],
     }
@@ -72,7 +78,10 @@ def revision_reply(prior, *, passed=True):
     draft["sections"][0]["paragraphs"][0]["text"] = "删除数字后的虚构测试说明。"
     return {
         "draft": draft,
-        "review": {"passed": passed, "findings": [] if passed else ["HOLD：仍不能确认核心结论。"]},
+        "review": {
+            "passed": passed,
+            "findings": [] if passed else ["HOLD：仍不能确认核心结论。"],
+        },
         "supplemental_packets": [],
     }
 
@@ -86,7 +95,11 @@ def rig(tmp_path, monkeypatch, prior):
             "id": "held-edition-revision",
             "nodes": [
                 {"id": "revision", "type": "revision"},
-                {"id": "final_review", "type": "final_review", "needs": ["revision"]},
+                {
+                    "id": "final_review",
+                    "type": "final_review",
+                    "needs": ["revision"],
+                },
             ],
         }
     )
@@ -103,17 +116,26 @@ def rig(tmp_path, monkeypatch, prior):
     )
 
     async def execute(editor, prompt, schema, instructions, workspace):
-        state.calls.append({"prompt": json.loads(prompt), "path": workspace, "schema": schema})
-        assert state.replies, "No unexpected model invocation or third revision is permitted"
+        state.calls.append(
+            {"prompt": json.loads(prompt), "path": workspace, "schema": schema}
+        )
+        assert state.replies, (
+            "No unexpected model invocation or third revision is permitted"
+        )
         value, searched, opened = state.replies.pop(0)
         return json.dumps(value), opened, searched
 
     monkeypatch.setattr(CodexEditor, "execute", execute)
     nodes = EditorialNodes(
-        store, definition, CodexEditor(tmp_path / "unused-auth"), tmp_path / "jobs"
+        store,
+        definition,
+        CodexEditor(tmp_path / "unused-auth"),
+        tmp_path / "jobs",
     )
     state.nodes = nodes
-    state.engine = WorkflowEngine(repository, {"revision": nodes, "final_review": nodes})
+    state.engine = WorkflowEngine(
+        repository, {"revision": nodes, "final_review": nodes}
+    )
 
     def start(value=None):
         repository.start(
@@ -134,7 +156,9 @@ def rig(tmp_path, monkeypatch, prior):
     store.close()
 
 
-async def test_initial_pass_skips_revision_and_second_review_without_model(rig, prior):
+async def test_initial_pass_skips_revision_and_second_review_without_model(
+    rig, prior
+):
     prior["review"] = {"passed": True, "findings": []}
     prior["author_review"] = {"passed": True, "findings": []}
     rig.start()
@@ -143,26 +167,44 @@ async def test_initial_pass_skips_revision_and_second_review_without_model(rig, 
     assert all(node["state"] == "skipped" for node in result["nodes"].values())
     assert not rig.calls and not rig.replies
     final = rig.repository.output("run", "final_review")
-    assert final["draft"] == prior["draft"] and final["review"] == prior["review"]
+    assert (
+        final["draft"] == prior["draft"] and final["review"] == prior["review"]
+    )
     assert final["revision"]["performed"] is False
 
 
-async def test_failed_review_gets_one_minimal_revision_and_fresh_independent_review(rig, prior):
+async def test_failed_review_gets_one_minimal_revision_and_fresh_independent_review(
+    rig, prior
+):
     repair = revision_reply(prior)
     rig.replies = [
         (repair, True, {"https://example.com/evidence"}),
-        ({"passed": True, "findings": []}, True, {"https://example.com/evidence"}),
+        (
+            {"passed": True, "findings": []},
+            True,
+            {"https://example.com/evidence"},
+        ),
     ]
     rig.start()
     assert (await rig.engine.run("run"))["state"] == "succeeded"
     final = rig.repository.output("run", "final_review")
-    assert final["review"]["passed"] is True and final["revision"]["performed"] is True
+    assert (
+        final["review"]["passed"] is True
+        and final["revision"]["performed"] is True
+    )
     assert len(rig.calls) == 2 and rig.calls[0]["path"] != rig.calls[1]["path"]
-    assert rig.calls[0]["prompt"]["review_findings_untrusted"] == prior["review"]
-    assert rig.calls[0]["prompt"]["prior_author_review_untrusted"] == prior["author_review"]
+    assert (
+        rig.calls[0]["prompt"]["review_findings_untrusted"] == prior["review"]
+    )
+    assert (
+        rig.calls[0]["prompt"]["prior_author_review_untrusted"]
+        == prior["author_review"]
+    )
     assert rig.calls[1]["prompt"]["draft_untrusted"] == repair["draft"]
     assert final["packets"] == prior["packets"]
-    assert rig.repository.snapshot("run")["inputs"]["prior_review_result"] == prior
+    assert (
+        rig.repository.snapshot("run")["inputs"]["prior_review_result"] == prior
+    )
     assert await rig.engine.step("run") is False and len(rig.calls) == 2
 
 
@@ -179,20 +221,32 @@ async def test_second_hold_or_missing_evidence_never_starts_a_third_attempt(
     rig, prior, author_passed, review_passed, searched, opened
 ):
     rig.replies = [
-        (revision_reply(prior, passed=author_passed), True, {"https://example.com/evidence"}),
         (
-            {"passed": review_passed, "findings": [] if review_passed else ["HOLD：仍有错误。"]},
+            revision_reply(prior, passed=author_passed),
+            True,
+            {"https://example.com/evidence"},
+        ),
+        (
+            {
+                "passed": review_passed,
+                "findings": [] if review_passed else ["HOLD：仍有错误。"],
+            },
             searched,
             opened,
         ),
     ]
     rig.start()
     await rig.engine.run("run")
-    assert rig.repository.output("run", "final_review")["review"]["passed"] is False
+    assert (
+        rig.repository.output("run", "final_review")["review"]["passed"]
+        is False
+    )
     assert len(rig.calls) == 2 and await rig.engine.step("run") is False
 
 
-async def test_actual_repair_even_identical_text_requires_independent_review(rig, prior):
+async def test_actual_repair_even_identical_text_requires_independent_review(
+    rig, prior
+):
     repair = revision_reply(prior)
     repair["draft"] = deepcopy(prior["draft"])
     rig.replies = [
@@ -206,7 +260,10 @@ async def test_actual_repair_even_identical_text_requires_independent_review(rig
     rig.start()
     await rig.engine.run("run")
     assert len(rig.calls) == 2
-    assert rig.repository.output("run", "final_review")["review"]["passed"] is False
+    assert (
+        rig.repository.output("run", "final_review")["review"]["passed"]
+        is False
+    )
 
 
 async def test_revision_cannot_add_new_material(rig, prior):
@@ -217,7 +274,10 @@ async def test_revision_cannot_add_new_material(rig, prior):
     rig.replies = [(repair, True, {"https://example.com/evidence"})]
     rig.start()
     result = await rig.engine.run("run")
-    assert result["state"] == "failed" and result["nodes"]["final_review"]["state"] == "pending"
+    assert (
+        result["state"] == "failed"
+        and result["nodes"]["final_review"]["state"] == "pending"
+    )
     assert len(rig.calls) == 1
 
 
@@ -230,7 +290,9 @@ async def test_model_cannot_inject_skip_metadata(rig, prior):
     assert len(rig.calls) == 1
 
 
-async def test_forged_skip_requires_actual_skipped_dependency_and_original_hash(rig, prior):
+async def test_forged_skip_requires_actual_skipped_dependency_and_original_hash(
+    rig, prior
+):
     prior["review"] = {"passed": True, "findings": []}
     result = {
         **prior,
@@ -252,17 +314,24 @@ async def test_forged_skip_requires_actual_skipped_dependency_and_original_hash(
     with pytest.raises(NodeFailure):
         await rig.nodes.execute("final_review", ctx, rig.path)
     ctx.dependency_states["revision"]["state"] = "skipped"
-    result["draft"] = {**prior["draft"], "title": "Changed after initial review"}
+    result["draft"] = {
+        **prior["draft"],
+        "title": "Changed after initial review",
+    }
     with pytest.raises(NodeFailure):
         await rig.nodes.execute("final_review", ctx, rig.path)
     assert not rig.calls
 
 
-async def test_complete_recipe_never_uses_recovery_input_instead_of_review_dependency(rig, prior):
+async def test_complete_recipe_never_uses_recovery_input_instead_of_review_dependency(
+    rig, prior
+):
     definition = load_definition(
         files("newsletter").joinpath("workflows/legacy-daily.yaml").read_bytes()
     )
-    nodes = EditorialNodes(rig.store, definition, CodexEditor(rig.path / "unused-auth"), rig.path)
+    nodes = EditorialNodes(
+        rig.store, definition, CodexEditor(rig.path / "unused-auth"), rig.path
+    )
     alternate = deepcopy(prior)
     alternate["review"] = {"passed": True, "findings": []}
     ctx = NodeContext(
@@ -274,14 +343,21 @@ async def test_complete_recipe_never_uses_recovery_input_instead_of_review_depen
         {
             "issue_date": "2026-09-06",
             "prior_review_result": alternate,
-            "policy": {"editorial.md": "Fixture policy.", "reader-profile.md": "Fixture reader."},
+            "policy": {
+                "editorial.md": "Fixture policy.",
+                "reader-profile.md": "Fixture reader.",
+            },
         },
     )
     with pytest.raises(NodeFailure):
         await nodes.execute("revision", ctx, rig.path)
     assert not rig.calls
     ctx.inputs["review"] = prior
-    rig.replies = [(revision_reply(prior), True, {"https://example.com/evidence"})]
+    rig.replies = [
+        (revision_reply(prior), True, {"https://example.com/evidence"})
+    ]
     result = await nodes.execute("revision", ctx, rig.path)
     assert result["revision"]["performed"] is True
-    assert rig.calls[0]["prompt"]["review_findings_untrusted"] == prior["review"]
+    assert (
+        rig.calls[0]["prompt"]["review_findings_untrusted"] == prior["review"]
+    )

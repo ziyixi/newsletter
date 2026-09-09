@@ -50,9 +50,13 @@ def pool(request, tmp_path, monkeypatch):
         raise AssertionError("Candidate pooling cannot call a provider")
 
     monkeypatch.setattr(CodexEditor, "execute", forbidden)
-    definition = load_definition(Path(str(files("newsletter").joinpath("workflows/daily.yaml"))))
+    definition = load_definition(
+        Path(str(files("newsletter").joinpath("workflows/daily.yaml")))
+    )
     store = Store(tmp_path / "newsletter.sqlite3", "mock")
-    nodes = request.param(store, definition, CodexEditor(tmp_path / "unused-auth"), tmp_path)
+    nodes = request.param(
+        store, definition, CodexEditor(tmp_path / "unused-auth"), tmp_path
+    )
 
     async def run(groups, *, limit=30, history=(), feeds=(), states=None):
         context = NodeContext(
@@ -61,8 +65,14 @@ def pool(request, tmp_path, monkeypatch):
             item_id="",
             params={"max_candidates": limit},
             inputs={
-                "history": {"candidates": list(history), "editions": [], "watchlist": []},
-                "feeds": {"candidates": list(feeds)} if feeds is not None else None,
+                "history": {
+                    "candidates": list(history),
+                    "editions": [],
+                    "watchlist": [],
+                },
+                "feeds": {"candidates": list(feeds)}
+                if feeds is not None
+                else None,
                 "discovery": groups,
             },
             run_inputs={"issue_date": DAY},
@@ -77,14 +87,25 @@ def pool(request, tmp_path, monkeypatch):
     store.close()
 
 
-async def test_eight_full_directions_share_existing_thirty_candidate_cap_in_frozen_order(pool):
-    groups = [{"candidates": [candidate(direction, i) for i in range(5)]} for direction in range(8)]
-    expected = [groups[direction]["candidates"][i] for i in range(5) for direction in range(8)][:30]
+async def test_eight_full_directions_share_existing_thirty_candidate_cap_in_frozen_order(
+    pool,
+):
+    groups = [
+        {"candidates": [candidate(direction, i) for i in range(5)]}
+        for direction in range(8)
+    ]
+    expected = [
+        groups[direction]["candidates"][i]
+        for i in range(5)
+        for direction in range(8)
+    ][:30]
     original_hash = content_hash(groups)
     first = await pool(groups)
     second = await pool(deepcopy(groups))
     assert first == second
-    assert first["candidates"] == [to_dict(parse_message(item, pb.Candidate)) for item in expected]
+    assert first["candidates"] == [
+        to_dict(parse_message(item, pb.Candidate)) for item in expected
+    ]
     assert len(first["candidates"]) == 30
     assert Counter(item["direction"] for item in first["candidates"]) == {
         f"direction-{i}": 4 if i < 6 else 3 for i in range(8)
@@ -105,7 +126,9 @@ async def test_configured_caps_and_order_with_uneven_or_empty_directions_remain_
     ]
 
 
-async def test_alias_and_history_dedup_still_run_before_the_cap_and_keep_first_source(pool):
+async def test_alias_and_history_dedup_still_run_before_the_cap_and_keep_first_source(
+    pool,
+):
     a, b, followup, extra = [candidate(0, i) for i in range(4)]
     a["doi"] = "10.1234/shared"
     alias = {**candidate(1, 0), "doi": "https://doi.org/10.1234/shared"}
@@ -114,7 +137,8 @@ async def test_alias_and_history_dedup_still_run_before_the_cap_and_keep_first_s
     groups = [{"candidates": [a, b, extra]}, {"candidates": [alias, followup]}]
     result = await pool(groups, history=[b, old], limit=3)
     assert result["candidates"] == [
-        to_dict(parse_message(item, pb.Candidate)) for item in (a, followup, extra)
+        to_dict(parse_message(item, pb.Candidate))
+        for item in (a, followup, extra)
     ]
     assert result["candidates"][0]["url"] == a["url"]
     assert result["candidates"][0]["evidence_urls"] == a["evidence_urls"]
@@ -128,21 +152,38 @@ async def test_missing_or_empty_discovery_preserves_metadata_supplement_and_fail
         "discovery": {
             "state": "succeeded",
             "degraded": True,
-            "items": [{"id": "direction-7", "state": "unknown", "error_code": "timeout"}],
+            "items": [
+                {
+                    "id": "direction-7",
+                    "state": "unknown",
+                    "error_code": "timeout",
+                }
+            ],
         }
     }
     supplement = candidate("feed", 0)
     result = await pool(discovery, feeds=[supplement], states=states)
     assert [item["id"] for item in result["candidates"]] == [supplement["id"]]
     assert result["coverage"][0]["degraded"] is True
-    assert result["coverage"][0]["failures"] == [{"id": "direction-7", "error_code": "timeout"}]
+    assert result["coverage"][0]["failures"] == [
+        {"id": "direction-7", "error_code": "timeout"}
+    ]
 
 
-async def test_metadata_remains_after_discovery_and_missing_feed_does_not_change_pool(pool):
-    first, second, supplement = candidate(0, 0), candidate(1, 0), candidate("feed", 0)
+async def test_metadata_remains_after_discovery_and_missing_feed_does_not_change_pool(
+    pool,
+):
+    first, second, supplement = (
+        candidate(0, 0),
+        candidate(1, 0),
+        candidate("feed", 0),
+    )
     groups = [{"candidates": [first]}, {"candidates": [second]}]
     capped = await pool(groups, feeds=[supplement], limit=2)
-    assert [item["id"] for item in capped["candidates"]] == [first["id"], second["id"]]
+    assert [item["id"] for item in capped["candidates"]] == [
+        first["id"],
+        second["id"],
+    ]
     assert capped == await pool(groups, feeds=None, limit=2)
     supplemented = await pool(groups, feeds=[supplement], limit=3)
     assert [item["id"] for item in supplemented["candidates"]] == [

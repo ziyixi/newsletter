@@ -11,10 +11,14 @@ from newsletter.schema_smoke import check_schemas, main, smoke_cases
 
 
 @pytest.mark.asyncio
-async def test_schema_smoke_checks_all_cases_without_creating_publication(tmp_path):
+async def test_schema_smoke_checks_all_cases_without_creating_publication(
+    tmp_path,
+):
     editor = CodexEditor(tmp_path)
     cases = smoke_cases()
-    editor.execute = AsyncMock(side_effect=[(json.dumps(c[2]), set(), False) for c in cases])
+    editor.execute = AsyncMock(
+        side_effect=[(json.dumps(c[2]), set(), False) for c in cases]
+    )
     result = await check_schemas(editor)
     assert result["accepted"] is True
     assert result["schemas"] == ["brief", "deep", "brief_repair", "review"]
@@ -26,7 +30,8 @@ async def test_schema_smoke_checks_all_cases_without_creating_publication(tmp_pa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "reply", [("{}", set(), False), ("invalid", set(), False), ("{}", set(), True)]
+    "reply",
+    [("{}", set(), False), ("invalid", set(), False), ("{}", set(), True)],
 )
 async def test_schema_smoke_fails_on_first_bad_response(tmp_path, reply):
     editor = CodexEditor(tmp_path)
@@ -39,7 +44,8 @@ async def test_schema_smoke_fails_on_first_bad_response(tmp_path, reply):
 def test_cli_does_not_read_credentials_without_explicit_opt_in(monkeypatch):
     monkeypatch.setattr("sys.argv", ["schema_smoke"])
     monkeypatch.setattr(
-        "newsletter.schema_smoke.Settings.from_env", lambda: pytest.fail("env read")
+        "newsletter.schema_smoke.Settings.from_env",
+        lambda: pytest.fail("env read"),
     )
     with pytest.raises(SystemExit) as error:
         main()

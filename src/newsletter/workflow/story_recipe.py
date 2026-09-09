@@ -37,7 +37,9 @@ def validate_story_recipe(definition: WorkflowDefinition) -> None:
         if len(nodes) != 1:
             raise DefinitionError()
         roles[kind] = nodes[0]
-    discoveries = [node for node in definition.nodes if node.type == "discovery"]
+    discoveries = [
+        node for node in definition.nodes if node.type == "discovery"
+    ]
     feeds = [node for node in definition.nodes if node.type == "api_feed"]
     if not discoveries:
         raise DefinitionError()
@@ -54,7 +56,9 @@ def validate_story_recipe(definition: WorkflowDefinition) -> None:
             or {history.id, *(node.id for node in feeds)} - set(discovery.needs)
         ):
             raise DefinitionError()
-    if {history.id, *(node.id for node in feeds + discoveries)} - set(roles["deduplicate"].needs):
+    if {history.id, *(node.id for node in feeds + discoveries)} - set(
+        roles["deduplicate"].needs
+    ):
         raise DefinitionError()
     requirements = {
         "deduplicate": {"history", "discovery"},
@@ -65,7 +69,9 @@ def validate_story_recipe(definition: WorkflowDefinition) -> None:
         "publish": {"story_plan", "story_brief", "story_deep"},
     }
     for kind, dependencies in requirements.items():
-        if not dependencies <= {by_id[dependency].type for dependency in roles[kind].needs}:
+        if not dependencies <= {
+            by_id[dependency].type for dependency in roles[kind].needs
+        }:
             raise DefinitionError()
     for node in definition.nodes:
         if (
@@ -74,7 +80,9 @@ def validate_story_recipe(definition: WorkflowDefinition) -> None:
         ):
             raise DefinitionError()
         parameters = {"timeout_seconds"}
-        parameters |= {"max_candidates"} if node.type == "deduplicate" else set()
+        parameters |= (
+            {"max_candidates"} if node.type == "deduplicate" else set()
+        )
         parameters |= {"max_tasks"} if node.type == "selection" else set()
         parameters |= {"max_deep"} if node.type == "story_plan" else set()
         if set(node.params) - parameters:
@@ -86,16 +94,26 @@ def validate_story_recipe(definition: WorkflowDefinition) -> None:
                 "max_tasks": (1, 12),
                 "max_deep": (0, 4),
             }
-            if type(value) is not int or not bounds[key][0] <= value <= bounds[key][1]:
+            if (
+                type(value) is not int
+                or not bounds[key][0] <= value <= bounds[key][1]
+            ):
                 raise DefinitionError()
         if (
-            node.type in {"story_plan", "publish", "history", "selection", "deduplicate"}
+            node.type
+            in {"story_plan", "publish", "history", "selection", "deduplicate"}
             and node.map is not None
         ):
             raise DefinitionError()
-    for kind, field in (("story_brief", "brief_tasks"), ("story_deep", "deep_tasks")):
+    for kind, field in (
+        ("story_brief", "brief_tasks"),
+        ("story_deep", "deep_tasks"),
+    ):
         node = roles[kind]
-        if node.map is None or node.map.source != roles["story_plan"].id + "." + field:
+        if (
+            node.map is None
+            or node.map.source != roles["story_plan"].id + "." + field
+        ):
             raise DefinitionError()
     brief_map, deep_map = roles["story_brief"].map, roles["story_deep"].map
     if brief_map is None or deep_map is None:

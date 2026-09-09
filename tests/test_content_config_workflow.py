@@ -49,14 +49,21 @@ def run_record(engine: str, **overrides) -> dict:
     }
 
 
-def api_fixture(*, current: str = NEW, runs: list | None = None, differences: dict | None = None):
+def api_fixture(
+    *,
+    current: str = NEW,
+    runs: list | None = None,
+    differences: dict | None = None,
+):
     calls = []
     differences = differences or {}
 
     def request(method, path, value=None, **kwargs):
         calls.append((method, path, value, kwargs))
         if path.startswith("/actions/workflows/ci.yml/runs?"):
-            return {"workflow_runs": runs if runs is not None else [run_record(OLD)]}
+            return {
+                "workflow_runs": runs if runs is not None else [run_record(OLD)]
+            }
         if path.startswith("/compare/"):
             return differences.get(
                 path,
@@ -68,7 +75,9 @@ def api_fixture(*, current: str = NEW, runs: list | None = None, differences: di
         raise AssertionError("unexpected API request")
 
     return SimpleNamespace(
-        main=Mock(return_value=current), request=Mock(side_effect=request), calls=calls
+        main=Mock(return_value=current),
+        request=Mock(side_effect=request),
+        calls=calls,
     )
 
 
@@ -80,7 +89,9 @@ def api_fixture(*, current: str = NEW, runs: list | None = None, differences: di
         ("workflow_run", {"workflow_run": run_record(OLD)}),
     ],
 )
-def test_config_only_publication_reuses_successful_ancestor_engine(release, event_name, event):
+def test_config_only_publication_reuses_successful_ancestor_engine(
+    release, event_name, event
+):
     api = api_fixture()
     assert release.plan(api, event_name, event) == {
         "ready": "true",
@@ -90,7 +101,9 @@ def test_config_only_publication_reuses_successful_ancestor_engine(release, even
     assert all(method == "GET" for method, *_ in api.calls)
 
 
-def test_diverged_configuration_pr_can_validate_without_building_candidate_code(release):
+def test_diverged_configuration_pr_can_validate_without_building_candidate_code(
+    release,
+):
     api = api_fixture(
         differences={
             f"/compare/{NEW}...{PR}": {
@@ -111,14 +124,23 @@ def test_diverged_configuration_pr_can_validate_without_building_candidate_code(
     "file",
     [
         {"filename": "src/newsletter/service.py"},
-        {"filename": "content-config/copied.py", "previous_filename": "scripts/program.py"},
+        {
+            "filename": "content-config/copied.py",
+            "previous_filename": "scripts/program.py",
+        },
         {"filename": "content-config/anything", "previous_filename": None},
         {"filename": "content-config-fake/editorial.yaml"},
         None,
     ],
 )
-def test_mixed_pr_cannot_misrepresent_engine_changes_as_config_only(release, file):
-    api = api_fixture(differences={f"/compare/{NEW}...{PR}": {"status": "ahead", "files": [file]}})
+def test_mixed_pr_cannot_misrepresent_engine_changes_as_config_only(
+    release, file
+):
+    api = api_fixture(
+        differences={
+            f"/compare/{NEW}...{PR}": {"status": "ahead", "files": [file]}
+        }
+    )
     event = {"pull_request": {"head": {"sha": PR}, "base": {"sha": NEW}}}
     assert release.plan(api, "pull_request", event)["ready"] == "false"
     assert not any("/actions/" in path for _, path, *_ in api.calls)
@@ -133,17 +155,28 @@ def test_main_engine_change_waits_for_its_own_successful_ci(release):
             }
         }
     )
-    assert release.plan(api, "push", {"ref": "refs/heads/main", "after": NEW})["ready"] == "false"
+    assert (
+        release.plan(api, "push", {"ref": "refs/heads/main", "after": NEW})[
+            "ready"
+        ]
+        == "false"
+    )
     api = api_fixture(runs=[run_record(NEW)])
-    assert release.plan(api, "workflow_run", {"workflow_run": run_record(NEW)}) == {
+    assert release.plan(
+        api, "workflow_run", {"workflow_run": run_record(NEW)}
+    ) == {
         "ready": "true",
         "revision": NEW,
         "engine_sha": NEW,
     }
 
 
-@pytest.mark.parametrize("status", ["behind", "diverged", "identical", "unknown"])
-def test_tested_engine_must_be_same_commit_or_ancestor_not_diverged(release, status):
+@pytest.mark.parametrize(
+    "status", ["behind", "diverged", "identical", "unknown"]
+)
+def test_tested_engine_must_be_same_commit_or_ancestor_not_diverged(
+    release, status
+):
     api = api_fixture(
         differences={
             f"/compare/{OLD}...{NEW}": {
@@ -159,13 +192,25 @@ def test_same_engine_needs_no_diff_request_and_empty_tree_diff_is_safe(release):
     api = api_fixture(runs=[run_record(NEW)])
     assert release.compatible_engine(api, NEW) == NEW
     assert not any("/compare/" in path for _, path, *_ in api.calls)
-    api = api_fixture(differences={f"/compare/{OLD}...{NEW}": {"status": "ahead", "files": []}})
+    api = api_fixture(
+        differences={
+            f"/compare/{OLD}...{NEW}": {"status": "ahead", "files": []}
+        }
+    )
     assert release.compatible_engine(api, NEW) == OLD
 
 
-@pytest.mark.parametrize("files", [None, "not-list", [{"filename": "content-config/a"}] * 300])
-def test_missing_or_truncated_compare_files_cannot_prove_compatibility(release, files):
-    api = api_fixture(differences={f"/compare/{OLD}...{NEW}": {"status": "ahead", "files": files}})
+@pytest.mark.parametrize(
+    "files", [None, "not-list", [{"filename": "content-config/a"}] * 300]
+)
+def test_missing_or_truncated_compare_files_cannot_prove_compatibility(
+    release, files
+):
+    api = api_fixture(
+        differences={
+            f"/compare/{OLD}...{NEW}": {"status": "ahead", "files": files}
+        }
+    )
     assert release.compatible_engine(api, NEW) is None
 
 
@@ -189,7 +234,9 @@ def test_only_successful_main_push_service_ci_is_eligible(release, bad):
         {"ref": "refs/heads/published", "after": NEW},
     ],
 )
-def test_stale_or_wrong_branch_push_never_validates_or_publishes(release, event):
+def test_stale_or_wrong_branch_push_never_validates_or_publishes(
+    release, event
+):
     api = api_fixture()
     assert release.plan(api, "push", event)["reason"] == "stale_push"
     api.request.assert_not_called()
@@ -205,13 +252,18 @@ def test_stale_or_wrong_branch_push_never_validates_or_publishes(release, event)
 )
 def test_untrusted_workflow_run_cannot_start_publication(release, run):
     api = api_fixture()
-    assert release.plan(api, "workflow_run", {"workflow_run": run})["ready"] == "false"
+    assert (
+        release.plan(api, "workflow_run", {"workflow_run": run})["ready"]
+        == "false"
+    )
     api.request.assert_not_called()
 
 
 @pytest.fixture
 def artifact(tmp_path):
-    raw = json.dumps({"revision": NEW, "synthetic": "image-validated artifact"}).encode()
+    raw = json.dumps(
+        {"revision": NEW, "synthetic": "image-validated artifact"}
+    ).encode()
     (tmp_path / "bundle.json").write_bytes(raw)
     (tmp_path / "validation.json").write_text(
         json.dumps(
@@ -244,20 +296,40 @@ def publisher(*, parent: str | None = PARENT, mains: list | None = None):
         raise AssertionError("unexpected publication path")
 
     return SimpleNamespace(
-        main=Mock(side_effect=mains or [NEW, NEW]), request=Mock(side_effect=request), calls=calls
+        main=Mock(side_effect=mains or [NEW, NEW]),
+        request=Mock(side_effect=request),
+        calls=calls,
     )
 
 
-def test_publisher_writes_single_bundle_tree_with_nonforce_parent_cas(release, artifact):
+def test_publisher_writes_single_bundle_tree_with_nonforce_parent_cas(
+    release, artifact
+):
     api = publisher()
     assert release.publish(api, NEW, artifact)
-    blob = next(value for _, path, value, _ in api.calls if path == "/git/blobs")
-    assert base64.b64decode(blob["content"]) == (artifact / "bundle.json").read_bytes()
-    tree = next(value for _, path, value, _ in api.calls if path == "/git/trees")
+    blob = next(
+        value for _, path, value, _ in api.calls if path == "/git/blobs"
+    )
+    assert (
+        base64.b64decode(blob["content"])
+        == (artifact / "bundle.json").read_bytes()
+    )
+    tree = next(
+        value for _, path, value, _ in api.calls if path == "/git/trees"
+    )
     assert tree == {
-        "tree": [{"path": "bundle.json", "mode": "100644", "type": "blob", "sha": BLOB}]
+        "tree": [
+            {
+                "path": "bundle.json",
+                "mode": "100644",
+                "type": "blob",
+                "sha": BLOB,
+            }
+        ]
     }
-    commit = next(value for _, path, value, _ in api.calls if path == "/git/commits")
+    commit = next(
+        value for _, path, value, _ in api.calls if path == "/git/commits"
+    )
     assert commit["parents"] == [PARENT]
     assert api.calls[-1] == (
         "PATCH",
@@ -278,12 +350,16 @@ def test_first_publication_creates_only_published_branch(release, artifact):
         {"ref": "refs/heads/published", "sha": COMMIT},
         {},
     )
-    commit = next(value for _, path, value, _ in api.calls if path == "/git/commits")
+    commit = next(
+        value for _, path, value, _ in api.calls if path == "/git/commits"
+    )
     assert commit["parents"] == []
 
 
 @pytest.mark.parametrize("mains", [[OLD], [NEW, OLD]])
-def test_main_advance_never_updates_visible_publication(release, artifact, mains):
+def test_main_advance_never_updates_visible_publication(
+    release, artifact, mains
+):
     api = publisher(mains=mains)
     assert not release.publish(api, NEW, artifact)
     assert not any(path.startswith("/git/refs") for _, path, *_ in api.calls)
@@ -321,7 +397,9 @@ def test_ambiguous_ref_update_is_not_blindly_retried(release, artifact):
     api.request.side_effect = fail_once
     with pytest.raises(release.ReleaseError):
         release.publish(api, NEW, artifact)
-    assert sum(call.args[0] == "PATCH" for call in api.request.call_args_list) == 1
+    assert (
+        sum(call.args[0] == "PATCH" for call in api.request.call_args_list) == 1
+    )
 
 
 def test_validation_uses_exact_image_id_host_owned_output_and_no_network(
@@ -336,7 +414,9 @@ def test_validation_uses_exact_image_id_host_owned_output_and_no_network(
         calls.append((arguments, options))
         if arguments[1:3] == ["image", "inspect"]:
             return SimpleNamespace(
-                stdout=json.dumps({"id": IMAGE, "os": "linux", "architecture": "amd64"})
+                stdout=json.dumps(
+                    {"id": IMAGE, "os": "linux", "architecture": "amd64"}
+                )
             )
         if arguments[1] == "run" and "build" in arguments:
             (output / "bundle.json").write_text(json.dumps({"revision": NEW}))
@@ -348,7 +428,14 @@ def test_validation_uses_exact_image_id_host_owned_output_and_no_network(
     release.validate(tag, OLD, NEW, source, output, pull=True)
     containers = [arguments for arguments, _ in calls if arguments[1] == "run"]
     assert len(containers) == 2
-    assert calls[0][0] == ["docker", "pull", "--platform", "linux/amd64", "--", tag]
+    assert calls[0][0] == [
+        "docker",
+        "pull",
+        "--platform",
+        "linux/amd64",
+        "--",
+        tag,
+    ]
     for arguments in containers:
         for option, value in (
             ("--network", "none"),
@@ -360,7 +447,9 @@ def test_validation_uses_exact_image_id_host_owned_output_and_no_network(
             assert arguments[arguments.index(option) + 1] == value
         assert IMAGE in arguments and tag not in arguments
         assert "--read-only" in arguments
-        assert not {"--env", "--env-file", "-e", "--privileged"} & set(arguments)
+        assert not {"--env", "--env-file", "-e", "--privileged"} & set(
+            arguments
+        )
         assert all("docker.sock" not in item for item in arguments)
     assert f"type=bind,src={source},dst=/config,readonly" in containers[0]
     assert f"type=bind,src={output},dst=/out,readonly" in containers[1]
@@ -370,10 +459,14 @@ def test_validation_uses_exact_image_id_host_owned_output_and_no_network(
         receipt["bundle_sha256"]
         == hashlib.sha256((output / "bundle.json").read_bytes()).hexdigest()
     )
-    assert len([arguments for arguments, _ in calls if arguments[1] == "rm"]) == 2
+    assert (
+        len([arguments for arguments, _ in calls if arguments[1] == "rm"]) == 2
+    )
 
 
-@pytest.mark.parametrize("architecture,image_id", [("arm64", IMAGE), ("amd64", "mutable:tag")])
+@pytest.mark.parametrize(
+    "architecture,image_id", [("arm64", IMAGE), ("amd64", "mutable:tag")]
+)
 def test_wrong_architecture_or_mutable_image_stops_before_container(
     release, tmp_path, monkeypatch, architecture, image_id
 ):
@@ -384,16 +477,22 @@ def test_wrong_architecture_or_mutable_image_stops_before_container(
     def run(arguments, **kwargs):
         calls.append(arguments)
         return SimpleNamespace(
-            stdout=json.dumps({"id": image_id, "os": "linux", "architecture": architecture})
+            stdout=json.dumps(
+                {"id": image_id, "os": "linux", "architecture": architecture}
+            )
         )
 
     monkeypatch.setattr(release.subprocess, "run", run)
     with pytest.raises(release.ReleaseError):
-        release.validate("local-test", OLD, NEW, source, tmp_path / "out", pull=False)
+        release.validate(
+            "local-test", OLD, NEW, source, tmp_path / "out", pull=False
+        )
     assert len(calls) == 1
 
 
-def test_validation_timeout_cleans_only_its_unique_container(release, monkeypatch):
+def test_validation_timeout_cleans_only_its_unique_container(
+    release, monkeypatch
+):
     calls = []
 
     def run(arguments, **kwargs):
@@ -404,7 +503,9 @@ def test_validation_timeout_cleans_only_its_unique_container(release, monkeypatc
 
     monkeypatch.setattr(release.subprocess, "run", run)
     with pytest.raises(release.ReleaseError) as caught:
-        release.run_container(release.docker_base(IMAGE) + [IMAGE, "-m", "newsletter.config_cli"])
+        release.run_container(
+            release.docker_base(IMAGE) + [IMAGE, "-m", "newsletter.config_cli"]
+        )
     name = calls[0][0][calls[0][0].index("--name") + 1]
     assert name.startswith("newsletter-content-validation-")
     assert calls[-1][0] == ["docker", "rm", "--force", name]
@@ -412,7 +513,9 @@ def test_validation_timeout_cleans_only_its_unique_container(release, monkeypatc
     assert SECRET not in str(caught.value)
 
 
-def test_api_credentials_have_fixed_origin_no_redirect_or_environment_proxy(release, monkeypatch):
+def test_api_credentials_have_fixed_origin_no_redirect_or_environment_proxy(
+    release, monkeypatch
+):
     handlers = []
     opener = Mock()
     opener.open.return_value = io.BytesIO(b'{"synthetic":true}')
@@ -425,15 +528,21 @@ def test_api_credentials_have_fixed_origin_no_redirect_or_environment_proxy(rele
     api = release.GitHub("ziyixi/newsletter", SECRET)
     assert api.request("GET", "/git/ref/heads/main") == {"synthetic": True}
     request = opener.open.call_args.args[0]
-    assert request.full_url == "https://api.github.com/repos/ziyixi/newsletter/git/ref/heads/main"
+    assert (
+        request.full_url
+        == "https://api.github.com/repos/ziyixi/newsletter/git/ref/heads/main"
+    )
     assert request.get_header("Authorization") == "Bearer " + SECRET
     assert opener.open.call_args.kwargs["timeout"] == 30
     assert any(isinstance(handler, release.NoRedirect) for handler in handlers)
     assert any(
-        isinstance(handler, release.ProxyHandler) and handler.proxies == {} for handler in handlers
+        isinstance(handler, release.ProxyHandler) and handler.proxies == {}
+        for handler in handlers
     )
     assert (
-        release.NoRedirect().redirect_request(None, None, 302, "", {}, "https://evil.invalid")
+        release.NoRedirect().redirect_request(
+            None, None, 302, "", {}, "https://evil.invalid"
+        )
         is None
     )
 
@@ -442,7 +551,13 @@ def test_api_credentials_have_fixed_origin_no_redirect_or_environment_proxy(rele
     "error",
     [
         HTTPError("https://example.org", 403, SECRET, {}, None),
-        HTTPError("https://example.org", 302, SECRET, {"Location": "https://evil.invalid"}, None),
+        HTTPError(
+            "https://example.org",
+            302,
+            SECRET,
+            {"Location": "https://evil.invalid"},
+            None,
+        ),
         URLError(SECRET),
         TimeoutError(SECRET),
     ],
@@ -458,23 +573,40 @@ def test_api_failures_never_echo_credentials_or_remote_text(release, error):
 
 def test_workflow_permissions_and_event_isolation_are_least_privilege():
     config = yaml.load(
-        (ROOT / ".github/workflows/content-config.yml").read_text(), Loader=yaml.BaseLoader
+        (ROOT / ".github/workflows/content-config.yml").read_text(),
+        Loader=yaml.BaseLoader,
     )
-    service = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)
+    service = yaml.load(
+        (ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader
+    )
     assert config["permissions"] == {"contents": "read"}
-    assert config["jobs"]["validate"]["permissions"] == {"contents": "read", "actions": "read"}
+    assert config["jobs"]["validate"]["permissions"] == {
+        "contents": "read",
+        "actions": "read",
+    }
     assert config["jobs"]["publish"]["permissions"] == {"contents": "write"}
-    assert "github.event_name != 'pull_request'" in config["jobs"]["publish"]["if"]
-    assert config["on"]["push"] == {"branches": ["main"], "paths": ["content-config/**"]}
-    assert config["on"]["workflow_run"]["workflows"] == ["Newsletter Service CI"]
+    assert (
+        "github.event_name != 'pull_request'" in config["jobs"]["publish"]["if"]
+    )
+    assert config["on"]["push"] == {
+        "branches": ["main"],
+        "paths": ["content-config/**"],
+    }
+    assert config["on"]["workflow_run"]["workflows"] == [
+        "Newsletter Service CI"
+    ]
     assert config["on"]["workflow_run"]["branches"] == ["main"]
     assert "pull_request_target" not in config["on"]
     for event in ("push", "pull_request"):
         assert service["on"][event]["paths-ignore"] == ["content-config/**"]
     all_config = (ROOT / ".github/workflows/content-config.yml").read_text()
-    assert "docker build" not in all_config and "packages: write" not in all_config
+    assert (
+        "docker build" not in all_config and "packages: write" not in all_config
+    )
     assert "secrets.GITHUB_TOKEN" in all_config
-    assert "NEWSLETTER_SEND_TOKEN" not in all_config and "RESEND" not in all_config
+    assert (
+        "NEWSLETTER_SEND_TOKEN" not in all_config and "RESEND" not in all_config
+    )
     for job in config["jobs"].values():
         for step in job["steps"]:
             if str(step.get("uses", "")).startswith("actions/checkout"):

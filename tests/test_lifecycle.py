@@ -23,7 +23,9 @@ def settings(tmp_path):
     )
 
 
-def test_factory_does_not_open_storage_or_start_dependencies(settings, monkeypatch):
+def test_factory_does_not_open_storage_or_start_dependencies(
+    settings, monkeypatch
+):
     def unexpected(*args, **kwargs):
         pytest.fail("Factory performed startup work")
 
@@ -42,8 +44,14 @@ def test_two_apps_do_not_share_authentication_or_storage(settings):
         editor_token="b" * 32,
         send_token="c" * 32,
     )
-    with TestClient(create_app(settings)) as first, TestClient(create_app(second)) as other:
-        for client, own, foreign in ((first, settings, second), (other, second, settings)):
+    with (
+        TestClient(create_app(settings)) as first,
+        TestClient(create_app(second)) as other,
+    ):
+        for client, own, foreign in (
+            (first, settings, second),
+            (other, second, settings),
+        ):
             assert client.post(
                 "/v1/inbox/query",
                 json={},
@@ -71,7 +79,9 @@ def test_data_directory_lock_is_exclusive_and_released(settings):
         assert reopened.get("/healthz").status_code == 200
 
 
-def test_preflight_failure_closes_storage_and_releases_lock(settings, monkeypatch):
+def test_preflight_failure_closes_storage_and_releases_lock(
+    settings, monkeypatch
+):
     original = lifecycle.preflight
     captured = []
 

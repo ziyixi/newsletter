@@ -10,7 +10,9 @@ from newsletter.errors import EditorError
 from newsletter.model_io import MAX_JSON_BYTES, load_json, prepare_workspace
 
 
-@pytest.mark.parametrize("value", [{"中文": [True, 3, None]}, [], "text", 2, False, None])
+@pytest.mark.parametrize(
+    "value", [{"中文": [True, 3, None]}, [], "text", 2, False, None]
+)
 def test_load_json_preserves_values_without_imposing_output_shape(value):
     assert load_json(json.dumps(value, ensure_ascii=False)) == value
 
@@ -58,11 +60,15 @@ def test_parser_recursion_failure_keeps_the_safe_error(monkeypatch):
     assert error.value.__cause__ is None
 
 
-def test_workspace_creates_a_private_canonical_directory_and_retains_history(tmp_path):
+def test_workspace_creates_a_private_canonical_directory_and_retains_history(
+    tmp_path,
+):
     requested = tmp_path / "jobs" / "edition"
     workspace = prepare_workspace(requested, "2026-09-05")
     assert workspace == requested.absolute()
-    assert workspace.is_dir() and stat.S_IMODE(workspace.stat().st_mode) == 0o700
+    assert (
+        workspace.is_dir() and stat.S_IMODE(workspace.stat().st_mode) == 0o700
+    )
     history = workspace / "recent-history.json"
     history.write_text("[]")
     assert prepare_workspace(requested, "2026-09-05") == workspace
@@ -78,7 +84,8 @@ def test_existing_workspace_permissions_are_not_changed(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "issue_date", ["20260905", "2026-9-5", "2026-02-30", "2026-09-05T00:00:00", "", None]
+    "issue_date",
+    ["20260905", "2026-9-5", "2026-02-30", "2026-09-05T00:00:00", "", None],
 )
 def test_invalid_date_fails_before_creating_workspace(tmp_path, issue_date):
     workspace = tmp_path / "must-not-exist"
@@ -88,7 +95,9 @@ def test_invalid_date_fails_before_creating_workspace(tmp_path, issue_date):
     assert not workspace.exists()
 
 
-@pytest.mark.parametrize("name", ["draft.json", "review.json", "supplemental.json"])
+@pytest.mark.parametrize(
+    "name", ["draft.json", "review.json", "supplemental.json"]
+)
 @pytest.mark.parametrize("kind", ["file", "directory", "dangling-symlink"])
 def test_stale_artifacts_are_rejected_without_overwrite(tmp_path, name, kind):
     workspace = tmp_path / "job"
@@ -112,7 +121,9 @@ def test_stale_artifacts_are_rejected_without_overwrite(tmp_path, name, kind):
 
 
 @pytest.mark.parametrize("symlink_is_final", [True, False])
-def test_workspace_rejects_final_or_ancestor_symlinks(tmp_path, symlink_is_final):
+def test_workspace_rejects_final_or_ancestor_symlinks(
+    tmp_path, symlink_is_final
+):
     target = tmp_path / "real-directory"
     target.mkdir()
     linked = tmp_path / "linked"

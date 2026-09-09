@@ -46,7 +46,10 @@ def load_sdk() -> ModuleType:
 def runtime_env(codex_home: Path) -> dict[str, str]:
     # Blank secrets before launching the isolated Python helper; its final exec
     # actually removes non-allowlisted keys. Empty is NOT equivalent to unset.
-    env = {key: value if key in RUNTIME_ENV_KEYS else "" for key, value in os.environ.items()}
+    env = {
+        key: value if key in RUNTIME_ENV_KEYS else ""
+        for key, value in os.environ.items()
+    }
     env["CODEX_HOME"] = str(codex_home)
     return env
 
@@ -62,7 +65,10 @@ def launch_args(overrides: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def skill_paths(codex_home: Path) -> set[str]:
-    return {str(codex_home / "skills" / ".system" / name / "SKILL.md") for name in SYSTEM_SKILLS}
+    return {
+        str(codex_home / "skills" / ".system" / name / "SKILL.md")
+        for name in SYSTEM_SKILLS
+    }
 
 
 def runtime_overrides(codex_home: Path) -> tuple[str, ...]:
@@ -75,7 +81,9 @@ def runtime_overrides(codex_home: Path) -> tuple[str, ...]:
     return (*CONFIG_OVERRIDES, "skills.config=[" + ",".join(entries) + "]")
 
 
-async def assert_no_skills(client: AsyncCodex, workspace: Path, codex_home: Path) -> None:
+async def assert_no_skills(
+    client: AsyncCodex, workspace: Path, codex_home: Path
+) -> None:
     from openai_codex.generated.v2_all import SkillsListResponse
 
     # High-level 0.147 has no skills-list convenience method; use its typed
@@ -159,7 +167,11 @@ def check_codex_home(path: Path, workspace: Path) -> Path:
         if (absolute / name).exists() or (absolute / name).is_symlink():
             raise EditorError("configuration")
     for parent in (workspace, *workspace.parents):
-        for name in (".codex/config.toml", ".codex/hooks.json", ".agents/skills"):
+        for name in (
+            ".codex/config.toml",
+            ".codex/hooks.json",
+            ".agents/skills",
+        ):
             if (parent / name).exists() or (parent / name).is_symlink():
                 raise EditorError("configuration")
     for root in (Path.home() / ".agents" / "skills", Path("/etc/codex/skills")):

@@ -21,7 +21,11 @@ def source(tmp_path):
     state = WorkflowState(store)
     runs = RunRepository(store)
     graph = parse_definition(
-        {"version": 1, "id": "fixture-source", "nodes": [{"id": "review", "type": "review"}]}
+        {
+            "version": 1,
+            "id": "fixture-source",
+            "nodes": [{"id": "review", "type": "review"}],
+        }
     )
     inputs = {
         "issue_date": "2026-09-06",
@@ -38,8 +42,13 @@ def source(tmp_path):
     )
     material = packet(store, "public-fixture")
     frozen = binding(run["id"], [material])
-    frozen["result"]["review"] = {"passed": False, "findings": ["Synthetic review objection."]}
-    edition = store.prepare(request("source-edition", [material]), workflow_binding=frozen)
+    frozen["result"]["review"] = {
+        "passed": False,
+        "findings": ["Synthetic review objection."],
+    }
+    edition = store.prepare(
+        request("source-edition", [material]), workflow_binding=frozen
+    )
     edition = store.finish(
         edition["id"],
         state="blocked",
@@ -48,14 +57,19 @@ def source(tmp_path):
         error_code="editorial_review_failed",
     )
     run = runs.update(
-        run["id"], state="blocked", edition_id=edition["id"], error_code="editorial_review_failed"
+        run["id"],
+        state="blocked",
+        edition_id=edition["id"],
+        error_code="editorial_review_failed",
     )
     # Real immutable workflow artifact to prove repair creation does not rewrite
     # the failed review or force an original attempt back to pending.
     workflow = WorkflowRepository(store)
     workflow.start(run["id"], graph, inputs)
     attempt = workflow.claim(run["id"], "review", "", inputs)
-    workflow.finish(attempt, "succeeded", {**frozen["result"], "packets": [material]})
+    workflow.finish(
+        attempt, "succeeded", {**frozen["result"], "packets": [material]}
+    )
     repair_definition = {
         "version": 1,
         "id": "fixture-repair",
@@ -109,32 +123,47 @@ def old_rows(store):
         "model_usage",
     )
     return {
-        name: [tuple(row) for row in store.db.execute(f"SELECT * FROM {name} ORDER BY rowid")]
+        name: [
+            tuple(row)
+            for row in store.db.execute(f"SELECT * FROM {name} ORDER BY rowid")
+        ]
         for name in tables
     }
 
 
-def test_repair_freezes_one_detached_snapshot_without_rewriting_original_state(source):
+def test_repair_freezes_one_detached_snapshot_without_rewriting_original_state(
+    source,
+):
     original = old_rows(source["store"])
     receipt = create(source)
     assert receipt == {
         "parent_run_id": source["run"]["id"],
         "source_edition_id": source["edition"]["id"],
         "child_run_id": source["run"]["id"] + ":repair-1",
-        "snapshot": {"definition": source["definition"], "inputs": source["inputs"]},
+        "snapshot": {
+            "definition": source["definition"],
+            "inputs": source["inputs"],
+        },
     }
     assert old_rows(source["store"]) == original
     assert create(source) == receipt
-    source["inputs"]["policy"]["editorial.md"] = "Caller mutation after freezing."
+    source["inputs"]["policy"]["editorial.md"] = (
+        "Caller mutation after freezing."
+    )
     receipt["snapshot"]["inputs"]["history"].append("Returned object mutation.")
     persisted = source["state"].repair(source["run"]["id"])
-    assert persisted["snapshot"]["inputs"]["policy"]["editorial.md"] == "Synthetic policy only."
+    assert (
+        persisted["snapshot"]["inputs"]["policy"]["editorial.md"]
+        == "Synthetic policy only."
+    )
     assert persisted["snapshot"]["inputs"]["history"] == []
     assert source["state"].repair("unrelated") is None
 
 
 @pytest.mark.parametrize("changed", ["inputs", "definition", "source"])
-def test_existing_repair_rejects_changed_source_or_frozen_inputs(source, changed):
+def test_existing_repair_rejects_changed_source_or_frozen_inputs(
+    source, changed
+):
     original = create(source)
     if changed == "inputs":
         inputs = copy.deepcopy(source["inputs"])
@@ -150,12 +179,19 @@ def test_existing_repair_rejects_changed_source_or_frozen_inputs(source, changed
         create(source, **args)
     assert caught.value.code == "conflict"
     assert source["state"].repair(source["run"]["id"]) == original
-    assert source["store"].db.execute("SELECT COUNT(*) FROM workflow_repairs").fetchone()[0] == 1
+    assert (
+        source["store"]
+        .db.execute("SELECT COUNT(*) FROM workflow_repairs")
+        .fetchone()[0]
+        == 1
+    )
 
 
 def test_idempotent_receipt_remains_available_after_parent_advances(source):
     receipt = create(source)
-    source["runs"].update(source["run"]["id"], state="editing", edition_id="new-edition")
+    source["runs"].update(
+        source["run"]["id"], state="editing", edition_id="new-edition"
+    )
     assert create(source) == receipt
 
 
@@ -164,7 +200,12 @@ def test_repair_cannot_create_a_second_generation(source):
     with pytest.raises(StoreError) as caught:
         create(source, parent_run_id=receipt["child_run_id"])
     assert caught.value.code == "conflict"
-    assert source["store"].db.execute("SELECT COUNT(*) FROM workflow_repairs").fetchone()[0] == 1
+    assert (
+        source["store"]
+        .db.execute("SELECT COUNT(*) FROM workflow_repairs")
+        .fetchone()[0]
+        == 1
+    )
 
 
 @pytest.mark.parametrize(
@@ -202,7 +243,9 @@ def test_parent_must_still_be_the_expected_review_blocked_run(source, patch):
         {"issue_date": "2026-09-07"},
     ],
 )
-def test_source_edition_must_be_review_failed_and_never_submitted(source, patch):
+def test_source_edition_must_be_review_failed_and_never_submitted(
+    source, patch
+):
     source["store"].finish(source["edition"]["id"], **patch)
     with pytest.raises(StoreError) as caught:
         create(source)
@@ -211,11 +254,14 @@ def test_source_edition_must_be_review_failed_and_never_submitted(source, patch)
 
 
 @pytest.mark.parametrize("missing", [False, True])
-def test_parent_workflow_binding_cannot_be_missing_or_point_to_another_run(source, missing):
+def test_parent_workflow_binding_cannot_be_missing_or_point_to_another_run(
+    source, missing
+):
     with source["store"].transaction():
         if missing:
             source["store"].db.execute(
-                "DELETE FROM workflow_editions WHERE edition_id=?", (source["edition"]["id"],)
+                "DELETE FROM workflow_editions WHERE edition_id=?",
+                (source["edition"]["id"],),
             )
         else:
             source["store"].db.execute(
@@ -239,14 +285,20 @@ def test_any_same_date_send_reservation_prevents_a_new_repair(source):
     assert old_rows(store) == before
 
 
-def test_missing_parent_fails_safely_even_before_collection_tables_exist(tmp_path):
+def test_missing_parent_fails_safely_even_before_collection_tables_exist(
+    tmp_path,
+):
     store = Store(tmp_path / "empty.sqlite3", "mock")
     try:
         with pytest.raises(StoreError) as caught:
             WorkflowState(store).create_repair(
                 "missing-parent",
                 "missing-edition",
-                {"version": 1, "id": "fixture", "nodes": [{"id": "review", "type": "review"}]},
+                {
+                    "version": 1,
+                    "id": "fixture",
+                    "nodes": [{"id": "review", "type": "review"}],
+                },
                 {"issue_date": "2026-09-06"},
             )
         assert caught.value.code == "not_found"
@@ -254,7 +306,9 @@ def test_missing_parent_fails_safely_even_before_collection_tables_exist(tmp_pat
         store.close()
 
 
-@pytest.mark.parametrize("bad", [None, {"version": 1}, {"unexpected": "synthetic"}])
+@pytest.mark.parametrize(
+    "bad", [None, {"version": 1}, {"unexpected": "synthetic"}]
+)
 def test_invalid_definition_is_not_frozen(source, bad):
     with pytest.raises(StoreError) as caught:
         create(source, definition=bad)
@@ -270,7 +324,9 @@ def test_frozen_repair_cannot_change_or_omit_issue_date(source, bad):
 
 
 @pytest.mark.parametrize("mode", ["too_large", "nonfinite", "cycle"])
-def test_invalid_or_oversized_snapshot_has_fixed_non_secret_diagnostics(source, mode):
+def test_invalid_or_oversized_snapshot_has_fixed_non_secret_diagnostics(
+    source, mode
+):
     inputs = copy.deepcopy(source["inputs"])
     inputs["private_fixture"] = "DO_NOT_INCLUDE_IN_ERROR"
     if mode == "too_large":
@@ -281,11 +337,16 @@ def test_invalid_or_oversized_snapshot_has_fixed_non_secret_diagnostics(source, 
         inputs["recursive"] = inputs
     with pytest.raises(StoreError, match="^Invalid repair snapshot$") as caught:
         create(source, inputs=inputs)
-    assert caught.value.code == "invalid_argument" and caught.value.__suppress_context__
+    assert (
+        caught.value.code == "invalid_argument"
+        and caught.value.__suppress_context__
+    )
     assert source["state"].repair(source["run"]["id"]) is None
 
 
-def test_parent_child_usage_aggregates_latest_invocations_without_cross_run_leak(source):
+def test_parent_child_usage_aggregates_latest_invocations_without_cross_run_leak(
+    source,
+):
     state, parent = source["state"], source["run"]["id"]
     # Synthetic reported counters use the requested prior total for arithmetic
     # regression; this test never loads a real run, session log or provider.
@@ -304,9 +365,16 @@ def test_parent_child_usage_aggregates_latest_invocations_without_cross_run_leak
     assert state.usage(child)["invocations"] == 2
     assert not state.usage(child)["partial"]
     assert state.usage("unrelated-run")["usage"]["total_tokens"] == 1_000_000
-    assert source["store"].db.execute("SELECT COUNT(*) FROM model_usage").fetchone()[0] == 3
+    assert (
+        source["store"]
+        .db.execute("SELECT COUNT(*) FROM model_usage")
+        .fetchone()[0]
+        == 3
+    )
     with pytest.raises(StoreError):
-        state.usage_sink(child)(prior)  # Do not copy parent rows into the child.
+        state.usage_sink(child)(
+            prior
+        )  # Do not copy parent rows into the child.
 
 
 def test_missing_child_usage_preserves_known_parent_and_partial_status(source):
@@ -327,7 +395,9 @@ def test_repair_and_combined_usage_survive_reopening_database(source, tmp_path):
     try:
         state = WorkflowState(peer)
         assert state.repair(source["run"]["id"]) == receipt
-        assert state.usage(receipt["child_run_id"])["usage"]["total_tokens"] == 240
+        assert (
+            state.usage(receipt["child_run_id"])["usage"]["total_tokens"] == 240
+        )
     finally:
         peer.close()
 
@@ -341,7 +411,10 @@ def test_concurrent_identical_requests_create_one_repair_row(source, tmp_path):
             state = WorkflowState(peer)
             gate.wait(timeout=5)
             return state.create_repair(
-                source["run"]["id"], source["edition"]["id"], source["definition"], source["inputs"]
+                source["run"]["id"],
+                source["edition"]["id"],
+                source["definition"],
+                source["inputs"],
             )
         finally:
             peer.close()
@@ -349,4 +422,9 @@ def test_concurrent_identical_requests_create_one_repair_row(source, tmp_path):
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(create_peer, range(2)))
     assert results[0] == results[1]
-    assert source["store"].db.execute("SELECT COUNT(*) FROM workflow_repairs").fetchone()[0] == 1
+    assert (
+        source["store"]
+        .db.execute("SELECT COUNT(*) FROM workflow_repairs")
+        .fetchone()[0]
+        == 1
+    )

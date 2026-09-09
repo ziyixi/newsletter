@@ -45,9 +45,17 @@ def load_discovery_instructions(directory: Path) -> list[Instruction]:
             with path.open("rb") as source:
                 raw = source.read(MAX_GUIDE_BYTES + 1)
             guide = raw.decode("utf-8")
-            if len(raw) > MAX_GUIDE_BYTES or not guide.strip() or "\x00" in guide:
+            if (
+                len(raw) > MAX_GUIDE_BYTES
+                or not guide.strip()
+                or "\x00" in guide
+            ):
                 raise InstructionError()
-            text = instruction.text + "\n\n## Frozen public source guide\n\n" + guide
+            text = (
+                instruction.text
+                + "\n\n## Frozen public source guide\n\n"
+                + guide
+            )
             if len(text.encode("utf-8")) > MAX_INSTRUCTION_BYTES:
                 raise InstructionError()
             result.append(Instruction(instruction.id, text, content_hash(text)))

@@ -4,8 +4,15 @@ from importlib.resources import files
 
 import pytest
 
-from newsletter.workflow.definition import DefinitionError, load_definition, parse_definition
-from newsletter.workflow.nodes import validate_recipe, validate_revision_subgraph
+from newsletter.workflow.definition import (
+    DefinitionError,
+    load_definition,
+    parse_definition,
+)
+from newsletter.workflow.nodes import (
+    validate_recipe,
+    validate_revision_subgraph,
+)
 from newsletter.workflow.pipeline import adopted_packets
 
 
@@ -28,7 +35,9 @@ def test_packaged_legacy_recipe_passes_both_syntax_and_semantic_safety_checks():
         "revision",
         "final_review",
     ]
-    assert {node.type for node in definition.nodes}.isdisjoint({"send", "mail", "notion", "render"})
+    assert {node.type for node in definition.nodes}.isdisjoint(
+        {"send", "mail", "notion", "render"}
+    )
 
 
 @pytest.mark.parametrize(
@@ -59,9 +68,19 @@ def test_critical_role_cannot_be_deleted_even_if_dag_stays_valid(kind):
 
 @pytest.mark.parametrize(
     "kind",
-    ["selection", "composition", "gap_plan", "finalization", "review", "revision", "final_review"],
+    [
+        "selection",
+        "composition",
+        "gap_plan",
+        "finalization",
+        "review",
+        "revision",
+        "final_review",
+    ],
 )
-def test_critical_role_cannot_run_as_zero_item_map_or_continue_after_failure(kind):
+def test_critical_role_cannot_run_as_zero_item_map_or_continue_after_failure(
+    kind,
+):
     for bypass in ("map", "continue"):
         value = recipe()
         target = by_type(value, kind)
@@ -93,7 +112,9 @@ def test_critical_role_cannot_run_as_zero_item_map_or_continue_after_failure(kin
 )
 def test_required_dependency_cannot_be_bypassed(kind, dependency):
     value = recipe()
-    removed = {node["id"] for node in value["nodes"] if node["type"] == dependency}
+    removed = {
+        node["id"] for node in value["nodes"] if node["type"] == dependency
+    }
     target = by_type(value, kind)
     target["needs"] = [dep for dep in target["needs"] if dep not in removed]
     with pytest.raises(DefinitionError):
@@ -143,15 +164,21 @@ def test_role_checks_follow_node_types_when_operator_renames_ids():
         ("unknown_option", 1),
     ],
 )
-def test_recipe_parameter_values_stay_literal_bounded_and_registered(parameter, value):
+def test_recipe_parameter_values_stay_literal_bounded_and_registered(
+    parameter, value
+):
     definition = recipe()
     by_type(definition, "review")["params"] = {parameter: value}
     with pytest.raises(DefinitionError):
         validate_recipe(parse_definition(definition))
 
 
-@pytest.mark.parametrize("kind,maximum", [("selection", 12), ("gap_plan", 3), ("deduplicate", 30)])
-def test_candidate_and_research_budgets_cannot_exceed_recipe_limits(kind, maximum):
+@pytest.mark.parametrize(
+    "kind,maximum", [("selection", 12), ("gap_plan", 3), ("deduplicate", 30)]
+)
+def test_candidate_and_research_budgets_cannot_exceed_recipe_limits(
+    kind, maximum
+):
     value = recipe()
     key = "max_candidates" if kind == "deduplicate" else "max_tasks"
     by_type(value, kind)["params"][key] = maximum + 1
@@ -170,8 +197,15 @@ def test_research_budget_types_rejected_before_comparing_map_bounds(kind, bad):
 
 def test_adopted_packets_cover_body_chart_and_recommended_reading_without_duplicates():
     draft = {
-        "sections": [{"paragraphs": [{"citations": ["body/source", "shared/source"]}]}],
-        "chart": {"points": [{"citations": ["chart/source", "shared/other"]}, {"citations": []}]},
+        "sections": [
+            {"paragraphs": [{"citations": ["body/source", "shared/source"]}]}
+        ],
+        "chart": {
+            "points": [
+                {"citations": ["chart/source", "shared/other"]},
+                {"citations": []},
+            ]
+        },
         "recommended_reading": {"citation": "reading/source"},
     }
     assert adopted_packets(draft) == ["body", "chart", "reading", "shared"]
@@ -184,19 +218,26 @@ def test_adopted_packets_cover_body_chart_and_recommended_reading_without_duplic
         {"recommended_reading": {"citation": "only-reading/source"}},
     ],
 )
-def test_material_only_used_outside_body_is_still_required_for_publication(optional):
+def test_material_only_used_outside_body_is_still_required_for_publication(
+    optional,
+):
     draft = {"sections": [{"paragraphs": [{"citations": []}]}], **optional}
     assert len(adopted_packets(draft)) == 1
 
 
 def test_uncited_packets_are_not_added_to_adopted_material():
-    assert adopted_packets({"sections": [{"paragraphs": [{"citations": []}]}]}) == []
+    assert (
+        adopted_packets({"sections": [{"paragraphs": [{"citations": []}]}]})
+        == []
+    )
 
 
 def test_pre_revision_immutable_recipe_remains_valid():
     value = recipe()
     value["nodes"] = [
-        node for node in value["nodes"] if node["type"] not in {"revision", "final_review"}
+        node
+        for node in value["nodes"]
+        if node["type"] not in {"revision", "final_review"}
     ]
     validate_recipe(parse_definition(value))
     assert value["nodes"][-1]["type"] == "review"
@@ -240,7 +281,11 @@ def test_recovery_subgraph_cannot_relax_timeout_or_add_work(bad):
         "version": 1,
         "id": "held-edition-revision",
         "nodes": [
-            {"id": "repair", "type": "revision", "params": {"timeout_seconds": bad}},
+            {
+                "id": "repair",
+                "type": "revision",
+                "params": {"timeout_seconds": bad},
+            },
             {"id": "audit", "type": "final_review", "needs": ["repair"]},
         ],
     }

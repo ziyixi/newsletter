@@ -24,8 +24,12 @@ from newsletter.model_schema import packet_body_schema, research_schema
 def enum_fields():
     schema = _schema()
     draft = schema["properties"]["draft"]["properties"]
-    supplement = schema["properties"]["supplemental_packets"]["items"]["properties"]
-    source = supplement["content"]["properties"]["sources"]["items"]["properties"]
+    supplement = schema["properties"]["supplemental_packets"]["items"][
+        "properties"
+    ]
+    source = supplement["content"]["properties"]["sources"]["items"][
+        "properties"
+    ]
     return {
         "section_kind": draft["sections"]["items"]["properties"]["kind"],
         "chart_kind": draft["chart"]["anyOf"][0]["properties"]["kind"],
@@ -64,7 +68,8 @@ def draft():
                 heading="Synthetic heading",
                 paragraphs=[
                     pb.Paragraph(
-                        text="Synthetic statement.", citations=["fixture-packet/fixture-source"]
+                        text="Synthetic statement.",
+                        citations=["fixture-packet/fixture-source"],
                     )
                 ],
             )
@@ -79,7 +84,9 @@ def draft():
             alt_text="Synthetic value is 12.",
             points=[
                 pb.ChartPoint(
-                    label="A", decimal_value="12", citations=["fixture-packet/fixture-source"]
+                    label="A",
+                    decimal_value="12",
+                    citations=["fixture-packet/fixture-source"],
                 )
             ],
         ),
@@ -98,7 +105,12 @@ def test_schema_enums_exactly_match_shared_contract_values(enum_fields):
         "health",
     )
     assert CHART_KINDS == ("bar", "line")
-    assert SOURCE_ACCESS_SCOPES == ("metadata", "abstract", "full_text", "dataset")
+    assert SOURCE_ACCESS_SCOPES == (
+        "metadata",
+        "abstract",
+        "full_text",
+        "dataset",
+    )
     for field, values in (
         ("section_kind", SECTION_KINDS),
         ("chart_kind", CHART_KINDS),
@@ -123,7 +135,9 @@ def test_every_schema_enum_combination_is_accepted_by_contracts(
     validate_draft(draft, [packet])
 
 
-@pytest.mark.parametrize("kind", ["world_brief", "main_read", "innovation_radar"])
+@pytest.mark.parametrize(
+    "kind", ["world_brief", "main_read", "innovation_radar"]
+)
 def test_real_run_section_aliases_are_rejected_by_schema_and_contracts(
     enum_fields, packet, draft, kind
 ):
@@ -135,7 +149,9 @@ def test_real_run_section_aliases_are_rejected_by_schema_and_contracts(
 
 
 @pytest.mark.parametrize("kind", ["pie", "BAR", ""])
-def test_invalid_chart_kinds_are_rejected_by_schema_and_contracts(enum_fields, packet, draft, kind):
+def test_invalid_chart_kinds_are_rejected_by_schema_and_contracts(
+    enum_fields, packet, draft, kind
+):
     assert kind not in enum_fields["chart_kind"]["enum"]
     draft.chart.kind = kind
     with pytest.raises(ContractError, match="Unsupported chart kind"):
@@ -143,29 +159,41 @@ def test_invalid_chart_kinds_are_rejected_by_schema_and_contracts(enum_fields, p
 
 
 @pytest.mark.parametrize("scope", ["fulltext", "FULL_TEXT", ""])
-def test_invalid_source_scopes_are_rejected_by_schema_and_contracts(enum_fields, packet, scope):
+def test_invalid_source_scopes_are_rejected_by_schema_and_contracts(
+    enum_fields, packet, scope
+):
     assert scope not in enum_fields["source_access_scope"]["enum"]
     packet.content.sources[0].access_scope = scope
     with pytest.raises(ContractError, match="Unsupported source access_scope"):
         validate_packet_body(packet.content)
 
 
-def test_schema_enum_arrays_are_fresh_and_do_not_mutate_contract_constants(enum_fields):
+def test_schema_enum_arrays_are_fresh_and_do_not_mutate_contract_constants(
+    enum_fields,
+):
     enum_fields["section_kind"]["enum"].append("world_brief")
-    fresh = _schema()["properties"]["draft"]["properties"]["sections"]["items"]["properties"]
+    fresh = _schema()["properties"]["draft"]["properties"]["sections"]["items"][
+        "properties"
+    ]
     assert fresh["kind"]["enum"] == list(SECTION_KINDS)
     assert "world_brief" not in SECTION_KINDS
 
 
-def test_material_schema_is_shared_without_depending_on_editor_envelope(monkeypatch):
+def test_material_schema_is_shared_without_depending_on_editor_envelope(
+    monkeypatch,
+):
     material = packet_body_schema()
-    editorial = _schema()["properties"]["supplemental_packets"]["items"]["properties"]["content"]
+    editorial = _schema()["properties"]["supplemental_packets"]["items"][
+        "properties"
+    ]["content"]
     research = research_schema()["properties"]["packets"]["items"]
     assert material == editorial == research
     assert collector_schema is research_schema
 
     def unrelated_editor_schema():
-        pytest.fail("Research must not construct or inspect the editor envelope")
+        pytest.fail(
+            "Research must not construct or inspect the editor envelope"
+        )
 
     monkeypatch.setattr(model_schema, "editor_schema", unrelated_editor_schema)
     assert research_schema()["properties"]["packets"]["items"] == material
@@ -176,16 +204,26 @@ def test_material_schema_consumers_own_independent_mutable_trees(changed_index):
     expected = packet_body_schema()
     materials = [
         packet_body_schema(),
-        _schema()["properties"]["supplemental_packets"]["items"]["properties"]["content"],
+        _schema()["properties"]["supplemental_packets"]["items"]["properties"][
+            "content"
+        ],
         research_schema()["properties"]["packets"]["items"],
     ]
     changed = materials[changed_index]
     changed["required"].append("fixture-only")
-    changed["properties"]["sources"]["items"]["properties"]["access_scope"]["enum"].clear()
-    assert all(value == expected for index, value in enumerate(materials) if index != changed_index)
+    changed["properties"]["sources"]["items"]["properties"]["access_scope"][
+        "enum"
+    ].clear()
+    assert all(
+        value == expected
+        for index, value in enumerate(materials)
+        if index != changed_index
+    )
     assert packet_body_schema() == expected
     assert (
-        _schema()["properties"]["supplemental_packets"]["items"]["properties"]["content"]
+        _schema()["properties"]["supplemental_packets"]["items"]["properties"][
+            "content"
+        ]
         == expected
     )
     assert research_schema()["properties"]["packets"]["items"] == expected
@@ -193,12 +231,16 @@ def test_material_schema_consumers_own_independent_mutable_trees(changed_index):
 
 @pytest.fixture
 def identifier_fields():
-    supplement = _schema()["properties"]["supplemental_packets"]["items"]["properties"]
+    supplement = _schema()["properties"]["supplemental_packets"]["items"][
+        "properties"
+    ]
     return [
-        supplement["content"]["properties"]["sources"]["items"]["properties"]["id"],
-        research_schema()["properties"]["packets"]["items"]["properties"]["sources"]["items"][
-            "properties"
-        ]["id"],
+        supplement["content"]["properties"]["sources"]["items"]["properties"][
+            "id"
+        ],
+        research_schema()["properties"]["packets"]["items"]["properties"][
+            "sources"
+        ]["items"]["properties"]["id"],
     ]
 
 
@@ -207,14 +249,22 @@ def test_source_schema_explains_the_shared_local_id_grammar(identifier_fields):
     for field in identifier_fields:
         assert field["type"] == "string"
         assert field["pattern"] == "^" + IDENTIFIER_PATTERN + "$"
-        assert isinstance(field["description"], str) and field["description"].strip()
+        assert (
+            isinstance(field["description"], str)
+            and field["description"].strip()
+        )
 
 
-@pytest.mark.parametrize("identifier", ["s1", "paper-1", "A.b_c:2026", "0", "A" * 128])
+@pytest.mark.parametrize(
+    "identifier", ["s1", "paper-1", "A.b_c:2026", "0", "A" * 128]
+)
 def test_safe_ids_match_schema_and_are_accepted_by_strict_contracts(
     identifier_fields, packet, draft, identifier
 ):
-    assert all(re.search(field["pattern"], identifier) is not None for field in identifier_fields)
+    assert all(
+        re.search(field["pattern"], identifier) is not None
+        for field in identifier_fields
+    )
     packet.id = identifier
     packet.content.sources[0].id = identifier
     citation = identifier + "/" + identifier
@@ -238,37 +288,54 @@ def test_safe_ids_match_schema_and_are_accepted_by_strict_contracts(
         "source label",
     ],
 )
-def test_invalid_ids_do_not_satisfy_schema_or_backend(identifier_fields, packet, draft, identifier):
-    assert all(re.search(field["pattern"], identifier) is None for field in identifier_fields)
+def test_invalid_ids_do_not_satisfy_schema_or_backend(
+    identifier_fields, packet, draft, identifier
+):
+    assert all(
+        re.search(field["pattern"], identifier) is None
+        for field in identifier_fields
+    )
     packet.content.sources[0].id = identifier
-    with pytest.raises(ContractError, match="source.id is not a valid identifier"):
+    with pytest.raises(
+        ContractError, match="source.id is not a valid identifier"
+    ):
         validate_packet_body(packet.content)
     packet.content.sources[0].id = "fixture-source"
     packet.id = identifier
-    with pytest.raises(ContractError, match="packet.id is not a valid identifier"):
+    with pytest.raises(
+        ContractError, match="packet.id is not a valid identifier"
+    ):
         validate_draft(draft, [packet])
 
 
 @pytest.mark.parametrize("ending", ["\n", "\r\n"])
-def test_backend_identifier_validation_still_rejects_trailing_newlines(packet, draft, ending):
+def test_backend_identifier_validation_still_rejects_trailing_newlines(
+    packet, draft, ending
+):
     # JSON Schema's ^/$ anchors may accept a final newline in some regex engines.
     # They guide model output; backend fullmatch remains the strict authority.
     packet.content.sources[0].id = "fixture-source" + ending
-    with pytest.raises(ContractError, match="source.id is not a valid identifier"):
+    with pytest.raises(
+        ContractError, match="source.id is not a valid identifier"
+    ):
         validate_packet_body(packet.content)
     packet.content.sources[0].id = "fixture-source"
     packet.id += ending
-    with pytest.raises(ContractError, match="packet.id is not a valid identifier"):
+    with pytest.raises(
+        ContractError, match="packet.id is not a valid identifier"
+    ):
         validate_draft(draft, [packet])
 
 
 def citation_fields(schema):
     draft = schema["properties"]["draft"]["properties"]
-    points = draft["chart"]["anyOf"][0]["properties"]["points"]["items"]["anyOf"]
+    points = draft["chart"]["anyOf"][0]["properties"]["points"]["items"][
+        "anyOf"
+    ]
     return [
-        draft["sections"]["items"]["properties"]["paragraphs"]["items"]["properties"]["citations"][
-            "items"
-        ],
+        draft["sections"]["items"]["properties"]["paragraphs"]["items"][
+            "properties"
+        ]["citations"]["items"],
         *(point["properties"]["citations"]["items"] for point in points),
         draft["recommended_reading"]["anyOf"][0]["properties"]["citation"],
     ]
@@ -281,16 +348,25 @@ def citation_schema():
         [
             {
                 "id": "fixture.packet-1",
-                "content": {"sources": [{"id": "source.1"}, {"id": "source:2"}]},
+                "content": {
+                    "sources": [{"id": "source.1"}, {"id": "source:2"}]
+                },
             },
-            {"id": "fixture-packet:2", "content": {"sources": [{"id": "source_3"}]}},
+            {
+                "id": "fixture-packet:2",
+                "content": {"sources": [{"id": "source_3"}]},
+            },
         ]
     )
 
 
-def test_all_citation_locations_share_one_bounded_dynamic_pattern(citation_schema):
+def test_all_citation_locations_share_one_bounded_dynamic_pattern(
+    citation_schema,
+):
     fields = citation_fields(citation_schema)
-    assert len(fields) == 4  # Paragraph, both chart oneofs, recommended reading.
+    assert (
+        len(fields) == 4
+    )  # Paragraph, both chart oneofs, recommended reading.
     assert all(field["type"] == "string" for field in fields)
     assert len({field["pattern"] for field in fields}) == 1
 
@@ -309,7 +385,10 @@ def test_all_citation_locations_share_one_bounded_dynamic_pattern(citation_schem
 def test_citation_schema_accepts_exact_inputs_and_bounded_new_supplements(
     citation_schema, citation
 ):
-    assert all(re.search(field["pattern"], citation) for field in citation_fields(citation_schema))
+    assert all(
+        re.search(field["pattern"], citation)
+        for field in citation_fields(citation_schema)
+    )
 
 
 @pytest.mark.parametrize(
@@ -330,44 +409,67 @@ def test_citation_schema_accepts_exact_inputs_and_bounded_new_supplements(
         "supplement-1/_invalid-start",
     ],
 )
-def test_citation_schema_rejects_unknown_pairs_and_regex_near_matches(citation_schema, citation):
+def test_citation_schema_rejects_unknown_pairs_and_regex_near_matches(
+    citation_schema, citation
+):
     assert all(
-        re.search(field["pattern"], citation) is None for field in citation_fields(citation_schema)
+        re.search(field["pattern"], citation) is None
+        for field in citation_fields(citation_schema)
     )
 
 
 def test_empty_input_citation_schema_does_not_allow_arbitrary_packet_ids():
     for field in citation_fields(_schema()):
         assert re.search(field["pattern"], "supplement-1/source-1")
-        assert re.search(field["pattern"], "unavailable-packet/source-1") is None
+        assert (
+            re.search(field["pattern"], "unavailable-packet/source-1") is None
+        )
 
 
-def test_request_specific_citation_schema_does_not_leak_into_other_requests(citation_schema):
+def test_request_specific_citation_schema_does_not_leak_into_other_requests(
+    citation_schema,
+):
     field = citation_fields(citation_schema)[0]
     field["pattern"] = ".*"
-    fresh = _schema([{"id": "another-packet", "content": {"sources": [{"id": "s1"}]}}])
+    fresh = _schema(
+        [{"id": "another-packet", "content": {"sources": [{"id": "s1"}]}}]
+    )
     for fresh_field in citation_fields(fresh):
         assert re.search(fresh_field["pattern"], "another-packet/s1")
-        assert re.search(fresh_field["pattern"], "fixture.packet-1/source.1") is None
+        assert (
+            re.search(fresh_field["pattern"], "fixture.packet-1/source.1")
+            is None
+        )
 
 
 def test_supplement_ids_are_six_explicit_local_labels_and_have_independent_enums():
-    field = _schema()["properties"]["supplemental_packets"]["items"]["properties"]["id"]
+    field = _schema()["properties"]["supplemental_packets"]["items"][
+        "properties"
+    ]["id"]
     expected = [f"supplement-{index}" for index in range(1, 7)]
     assert field["enum"] == expected
     assert field["pattern"] == "^" + IDENTIFIER_PATTERN + "$"
-    assert all(re.search(field["pattern"], identifier) for identifier in expected)
+    assert all(
+        re.search(field["pattern"], identifier) for identifier in expected
+    )
     field["enum"].append("supplement-7")
-    fresh = _schema()["properties"]["supplemental_packets"]["items"]["properties"]["id"]
+    fresh = _schema()["properties"]["supplemental_packets"]["items"][
+        "properties"
+    ]["id"]
     assert fresh["enum"] == expected
 
 
 @pytest.mark.parametrize("location", ["paragraph", "chart", "reading"])
-@pytest.mark.parametrize("citation", ["supplement-1/missing-source", "supplement-2/fixture-source"])
+@pytest.mark.parametrize(
+    "citation", ["supplement-1/missing-source", "supplement-2/fixture-source"]
+)
 def test_schema_valid_supplement_citations_still_require_existing_packet_and_source(
     packet, draft, location, citation
 ):
-    assert all(re.search(field["pattern"], citation) for field in citation_fields(_schema()))
+    assert all(
+        re.search(field["pattern"], citation)
+        for field in citation_fields(_schema())
+    )
     packet.id = "supplement-1"
     existing = "supplement-1/fixture-source"
     draft.sections[0].paragraphs[0].citations[:] = [existing]
@@ -381,15 +483,21 @@ def test_schema_valid_supplement_citations_still_require_existing_packet_and_sou
             pb.RecommendedReading(citation=citation, reason="Fixture")
         )
     with pytest.raises(
-        ContractError, match="Citation does not identify an available packet/source"
+        ContractError,
+        match="Citation does not identify an available packet/source",
     ):
         validate_draft(draft, [packet])
 
 
 @pytest.mark.parametrize("ending", ["\n", "\r\n"])
-def test_backend_citation_existence_remains_strict_about_trailing_newlines(packet, draft, ending):
-    draft.sections[0].paragraphs[0].citations[:] = ["fixture-packet/fixture-source" + ending]
+def test_backend_citation_existence_remains_strict_about_trailing_newlines(
+    packet, draft, ending
+):
+    draft.sections[0].paragraphs[0].citations[:] = [
+        "fixture-packet/fixture-source" + ending
+    ]
     with pytest.raises(
-        ContractError, match="Citation does not identify an available packet/source"
+        ContractError,
+        match="Citation does not identify an available packet/source",
     ):
         validate_draft(draft, [packet])

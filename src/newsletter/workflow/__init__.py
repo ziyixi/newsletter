@@ -6,7 +6,12 @@ from newsletter.workflow.definition import (
     load_definition,
     parse_definition,
 )
-from newsletter.workflow.engine import NodeContext, NodeFailure, NodeResult, WorkflowEngine
+from newsletter.workflow.engine import (
+    NodeContext,
+    NodeFailure,
+    NodeResult,
+    WorkflowEngine,
+)
 from newsletter.workflow.repository import WorkflowError, WorkflowRepository
 
 __all__ = [

@@ -39,7 +39,14 @@ NODE_TYPES = frozenset(
     }
 )
 CONTINUE_TYPES = frozenset(
-    {"discovery", "api_feed", "history", "research", "story_brief", "story_deep"}
+    {
+        "discovery",
+        "api_feed",
+        "history",
+        "research",
+        "story_brief",
+        "story_deep",
+    }
 )
 _ID = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 _FIELD = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}\Z")
@@ -121,7 +128,10 @@ class NodeDefinition:
             "on_error": self.on_error,
         }
         if self.map:
-            result["map"] = {"from": self.map.source, "max_items": self.map.max_items}
+            result["map"] = {
+                "from": self.map.source,
+                "max_items": self.map.max_items,
+            }
         return result
 
 
@@ -173,7 +183,11 @@ def _parse_definition(value: object) -> WorkflowDefinition:
         }:
             raise DefinitionError()
         identifier, kind = item["id"], item["type"]
-        if not isinstance(identifier, str) or not _ID.fullmatch(identifier) or identifier == "run":
+        if (
+            not isinstance(identifier, str)
+            or not _ID.fullmatch(identifier)
+            or identifier == "run"
+        ):
             raise DefinitionError()
         if not isinstance(kind, str) or kind not in NODE_TYPES:
             raise DefinitionError()
@@ -186,7 +200,10 @@ def _parse_definition(value: object) -> WorkflowDefinition:
         if (
             not isinstance(needs, list)
             or len(needs) > MAX_NODES
-            or any(not isinstance(dep, str) or not _ID.fullmatch(dep) for dep in needs)
+            or any(
+                not isinstance(dep, str) or not _ID.fullmatch(dep)
+                for dep in needs
+            )
             or len(set(needs)) != len(needs)
             or identifier in needs
         ):
@@ -201,7 +218,10 @@ def _parse_definition(value: object) -> WorkflowDefinition:
         mapping = None
         if "map" in item:
             mapping = item["map"]
-            if not isinstance(mapping, dict) or set(mapping) != {"from", "max_items"}:
+            if not isinstance(mapping, dict) or set(mapping) != {
+                "from",
+                "max_items",
+            }:
                 raise DefinitionError()
             source, maximum = mapping["from"], mapping["max_items"]
             if (
@@ -218,20 +238,34 @@ def _parse_definition(value: object) -> WorkflowDefinition:
             if parts[0] != "run" and parts[0] not in needs:
                 raise DefinitionError()
             mapping = MapDefinition(source, maximum)
-        nodes.append(NodeDefinition(identifier, kind, tuple(needs), params_json, mapping, on_error))
+        nodes.append(
+            NodeDefinition(
+                identifier, kind, tuple(needs), params_json, mapping, on_error
+            )
+        )
     by_id = {node.id: node for node in nodes}
-    if len(by_id) != len(nodes) or any(set(node.needs) - by_id.keys() for node in nodes):
+    if len(by_id) != len(nodes) or any(
+        set(node.needs) - by_id.keys() for node in nodes
+    ):
         raise DefinitionError()
     completed: set[str] = set()
     while len(completed) < len(nodes):
-        ready = {node.id for node in nodes if set(node.needs) <= completed} - completed
+        ready = {
+            node.id for node in nodes if set(node.needs) <= completed
+        } - completed
         if not ready:
             raise DefinitionError()
         completed.update(ready)
-    if sum(node.map.max_items if node.map else 1 for node in nodes) > MAX_TOTAL_TASKS:
+    if (
+        sum(node.map.max_items if node.map else 1 for node in nodes)
+        > MAX_TOTAL_TASKS
+    ):
         raise DefinitionError()
     result = WorkflowDefinition(value["id"], tuple(nodes))
-    if len(canonical_json(result.snapshot()).encode("utf-8")) > MAX_DEFINITION_BYTES:
+    if (
+        len(canonical_json(result.snapshot()).encode("utf-8"))
+        > MAX_DEFINITION_BYTES
+    ):
         raise DefinitionError()
     return result
 
@@ -240,7 +274,9 @@ class _UniqueSafeLoader(yaml.SafeLoader):
     pass
 
 
-def _unique_mapping(loader: _UniqueSafeLoader, node: yaml.MappingNode, deep: bool = False) -> Any:
+def _unique_mapping(
+    loader: _UniqueSafeLoader, node: yaml.MappingNode, deep: bool = False
+) -> Any:
     result: dict[str, Any] = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
@@ -250,7 +286,9 @@ def _unique_mapping(loader: _UniqueSafeLoader, node: yaml.MappingNode, deep: boo
     return result
 
 
-_UniqueSafeLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
+_UniqueSafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping
+)
 
 
 def load_definition(source: Path | bytes | str) -> WorkflowDefinition:
@@ -267,20 +305,37 @@ def load_definition(source: Path | bytes | str) -> WorkflowDefinition:
                 raw = stream.read(MAX_DEFINITION_BYTES + 1)
         else:
             raw = source.encode("utf-8") if isinstance(source, str) else source
-        if not isinstance(raw, bytes) or len(raw) > MAX_DEFINITION_BYTES or b"\x00" in raw:
+        if (
+            not isinstance(raw, bytes)
+            or len(raw) > MAX_DEFINITION_BYTES
+            or b"\x00" in raw
+        ):
             raise DefinitionError()
         text = raw.decode("utf-8")
         for token in yaml.scan(text):
-            if isinstance(token, (yaml.AliasToken, yaml.AnchorToken, yaml.TagToken)):
+            if isinstance(
+                token, (yaml.AliasToken, yaml.AnchorToken, yaml.TagToken)
+            ):
                 raise DefinitionError()
         depth = 0
         for event in yaml.parse(text):
-            if isinstance(event, (yaml.MappingStartEvent, yaml.SequenceStartEvent)):
+            if isinstance(
+                event, (yaml.MappingStartEvent, yaml.SequenceStartEvent)
+            ):
                 depth += 1
-            elif isinstance(event, (yaml.MappingEndEvent, yaml.SequenceEndEvent)):
+            elif isinstance(
+                event, (yaml.MappingEndEvent, yaml.SequenceEndEvent)
+            ):
                 depth -= 1
             if depth > 16:
                 raise DefinitionError()
         return parse_definition(yaml.load(text, Loader=_UniqueSafeLoader))
-    except (OSError, UnicodeError, yaml.YAMLError, TypeError, ValueError, RecursionError):
+    except (
+        OSError,
+        UnicodeError,
+        yaml.YAMLError,
+        TypeError,
+        ValueError,
+        RecursionError,
+    ):
         raise DefinitionError() from None

@@ -35,7 +35,9 @@ ISSUE_DATE = "2026-09-06"
 DISCOVERY_COUNT = 8
 # Eight discovery calls; the existing eight downstream model calls are unchanged.
 BASE_MODEL_INVOCATIONS = DISCOVERY_COUNT + 8
-LEGACY_RECIPE = Path(str(files("newsletter").joinpath("workflows/legacy-daily.yaml")))
+LEGACY_RECIPE = Path(
+    str(files("newsletter").joinpath("workflows/legacy-daily.yaml"))
+)
 MODEL_KINDS = {
     "discovery",
     "selection",
@@ -72,7 +74,9 @@ def task(identifier, source=None):
         "why": "这是离线集成测试，不生成真实报道。",
         "priority": 1,
         "evidence_context": "补查任务可以没有候选 ID，但必须携带明确的证据问题。",
-        "source_urls": [source["url"]] if source else ["https://example.org/gap"],
+        "source_urls": [source["url"]]
+        if source
+        else ["https://example.org/gap"],
     }
 
 
@@ -136,7 +140,9 @@ class FakeNotion:
         assert packet["is_fixture"] is True
         self.calls.append(packet["id"])
         if self.failed_tags.intersection(packet["content"]["tags"]):
-            raise AdapterError("NOTION_FIXTURE_FAILURE", ambiguous=self.ambiguous)
+            raise AdapterError(
+                "NOTION_FIXTURE_FAILURE", ambiguous=self.ambiguous
+            )
 
 
 def attach(rig):
@@ -176,7 +182,9 @@ def rig(tmp_path, monkeypatch, request):
 
     async def forbidden(*args, **kwargs):
         rig.forbidden_calls.append("model-or-legacy-collector")
-        raise AssertionError("The frozen DAG must never run an SDK or a second editor")
+        raise AssertionError(
+            "The frozen DAG must never run an SDK or a second editor"
+        )
 
     async def synthetic_tail(editor, prompt, schema, policy, path):
         # Only the new tail may reach this explicit SDK boundary substitute.
@@ -192,7 +200,9 @@ def rig(tmp_path, monkeypatch, request):
                 "draft": revised,
                 "review": {
                     "passed": rig.revision_passed,
-                    "findings": [] if rig.revision_passed else ["HOLD: author still uncertain"],
+                    "findings": []
+                    if rig.revision_passed
+                    else ["HOLD: author still uncertain"],
                 },
                 "supplemental_packets": [],
             }
@@ -201,7 +211,9 @@ def rig(tmp_path, monkeypatch, request):
             packets = value["packets_untrusted"]
             output = {
                 "passed": rig.final_review_passed,
-                "findings": [] if rig.final_review_passed else ["HOLD: final synthetic finding"],
+                "findings": []
+                if rig.final_review_passed
+                else ["HOLD: final synthetic finding"],
             }
         else:
             return await forbidden()
@@ -209,7 +221,9 @@ def rig(tmp_path, monkeypatch, request):
         assert value["issue_date"] == ISSUE_DATE
         rig.tail_model_calls.append((kind, value))
         record_synthetic_usage()
-        opened = {source["url"] for p in packets for source in p["content"]["sources"]}
+        opened = {
+            source["url"] for p in packets for source in p["content"]["sources"]
+        }
         return json.dumps(output, ensure_ascii=False), opened, True
 
     monkeypatch.setattr(CodexEditor, "execute", synthetic_tail)
@@ -229,17 +243,30 @@ def rig(tmp_path, monkeypatch, request):
         if kind == "history":
             return {"candidates": [], "editions": [], "watchlist": []}
         if kind == "api_feed":
-            return {"candidates": [], "diagnostics": ["offline fixture: no HTTP"]}
+            return {
+                "candidates": [],
+                "diagnostics": ["offline fixture: no HTTP"],
+            }
         if kind == "discovery":
-            return {"candidates": [candidate(ctx.item["id"])], "note": "fixture"}
+            return {
+                "candidates": [candidate(ctx.item["id"])],
+                "note": "fixture",
+            }
         if kind == "deduplicate":
-            candidates = [c for batch in nodes.one(ctx, "discovery") for c in batch["candidates"]]
+            candidates = [
+                c
+                for batch in nodes.one(ctx, "discovery")
+                for c in batch["candidates"]
+            ]
             nodes.state.remember(candidates, ISSUE_DATE)
             return {"candidates": candidates}
         if kind == "selection":
             candidates = nodes.one(ctx, "deduplicate")["candidates"]
             return {
-                "research_tasks": [task("adopted", candidates[0]), task("unused", candidates[1])],
+                "research_tasks": [
+                    task("adopted", candidates[0]),
+                    task("unused", candidates[1]),
+                ],
                 "note": "只选两项，不凑满默认八项。",
             }
         if kind == "research":
@@ -279,12 +306,17 @@ def rig(tmp_path, monkeypatch, request):
                 "review": {"passed": True, "findings": []},
             }
         if kind == "gap_plan":
-            return {"research_tasks": [task("gap")], "note": "只执行一轮有界补查。"}
+            return {
+                "research_tasks": [task("gap")],
+                "note": "只执行一轮有界补查。",
+            }
         if kind == "review":
             result = deepcopy(nodes.one(ctx, "finalization"))
             result["review"] = {
                 "passed": rig.review_passed,
-                "findings": [] if rig.review_passed else ["HOLD: synthetic unresolved evidence"],
+                "findings": []
+                if rig.review_passed
+                else ["HOLD: synthetic unresolved evidence"],
             }
             return result
         raise AssertionError("Unexpected registered node type")
@@ -292,7 +324,9 @@ def rig(tmp_path, monkeypatch, request):
     monkeypatch.setattr(EditorialNodes, "execute", execute)
     attach(rig)
     instructions, snapshot = freeze_workflow(
-        Settings(data_dir=tmp_path, workflow_file=LEGACY_RECIPE), rig.pipeline.state, ISSUE_DATE
+        Settings(data_dir=tmp_path, workflow_file=LEGACY_RECIPE),
+        rig.pipeline.state,
+        ISSUE_DATE,
     )
     assert len(instructions) == DISCOVERY_COUNT
     rig.current_recipe = rig.pipeline.recipe_path
@@ -304,7 +338,9 @@ def rig(tmp_path, monkeypatch, request):
         ]
         rig.pipeline.recipe_path = tmp_path / "legacy.yaml"
         # JSON is valid YAML. No SQL mutations or nonpublic snapshot rewrites.
-        rig.pipeline.recipe_path.write_text(json.dumps(snapshot["definition"]), encoding="utf-8")
+        rig.pipeline.recipe_path.write_text(
+            json.dumps(snapshot["definition"]), encoding="utf-8"
+        )
     rig.instructions = instructions
     rig.snapshot = snapshot
     rig.run = rig.runs.start(
@@ -341,7 +377,9 @@ def approval(edition):
     return {
         "id": edition["id"],
         "request_key": "synthetic-approval",
-        "expected_render_hash": edition.get("rendered", {}).get("render_hash", "not-rendered"),
+        "expected_render_hash": edition.get("rendered", {}).get(
+            "render_hash", "not-rendered"
+        ),
     }
 
 
@@ -368,7 +406,10 @@ def expire_budget(rig, monkeypatch):
 async def legacy_hold(rig):
     rig.review_passed = False
     held = await drain(rig)
-    assert held["state"] == "blocked" and held["error_code"] == "editorial_review_failed"
+    assert (
+        held["state"] == "blocked"
+        and held["error_code"] == "editorial_review_failed"
+    )
     assert held["usage"]["invocations"] == BASE_MODEL_INVOCATIONS
     assert rig.pipeline.state.repair(rig.run["id"]) is None
     assert not rig.tail_model_calls
@@ -376,14 +417,18 @@ async def legacy_hold(rig):
 
 
 @pytest.mark.asyncio
-async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_receipt(rig):
+async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_receipt(
+    rig,
+):
     assert receipt(rig)["state"] == "queued"
     finished = await drain(rig)
     assert finished["state"] == "ready", finished
     assert finished["workflow"]["state"] == "succeeded"
     assert finished["workflow"]["candidate_count"] == DISCOVERY_COUNT
     assert finished["workflow"]["research_count"] == 3
-    states = {node["id"]: node["state"] for node in finished["workflow"]["nodes"]}
+    states = {
+        node["id"]: node["state"] for node in finished["workflow"]["nodes"]
+    }
     assert states["revision"] == states["final_review"] == "skipped"
     assert not rig.tail_model_calls
     assert all(count == 1 for count in rig.calls.values())
@@ -391,23 +436,40 @@ async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_rec
     bound = WorkflowState(rig.store).edition(edition["id"])
     packets = rig.pipeline.repository.output(rig.run["id"], "review")["packets"]
     validate_draft(edition["draft"], packets)
-    assert len(edition["packet_ids"]) == 3 and len(bound["required_packets"]) == 2
-    assert edition["state"] == "ready" and edition["delivery_state"] == "not_requested"
+    assert (
+        len(edition["packet_ids"]) == 3 and len(bound["required_packets"]) == 2
+    )
+    assert (
+        edition["state"] == "ready"
+        and edition["delivery_state"] == "not_requested"
+    )
     assert edition["review"]["passed"] and edition["is_fixture"]
-    assert "补查任务" not in edition["rendered"]["text"]  # No internal task prompts rendered.
+    assert (
+        "补查任务" not in edition["rendered"]["text"]
+    )  # No internal task prompts rendered.
     assert "https://example.org/gap" in edition["rendered"]["text"]
     assert "MOCK · 用量统计仅为流程演示" in edition["rendered"]["html"]
     assert "MOCK · 用量统计仅为流程演示" in edition["rendered"]["text"]
     # 8 discovery + selection + 3 research + composition + gap + final + review.
     assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS
-    assert finished["usage"]["usage"]["total_tokens"] == BASE_MODEL_INVOCATIONS * 120
+    assert (
+        finished["usage"]["usage"]["total_tokens"]
+        == BASE_MODEL_INVOCATIONS * 120
+    )
     assert not finished["usage"]["partial"]
-    assert int(edition["usage"]["usage"]["total_tokens"]) == BASE_MODEL_INVOCATIONS * 120
-    assert len(rig.notion.calls) == 4  # Three research packets plus optional candidate index.
+    assert (
+        int(edition["usage"]["usage"]["total_tokens"])
+        == BASE_MODEL_INVOCATIONS * 120
+    )
+    assert (
+        len(rig.notion.calls) == 4
+    )  # Three research packets plus optional candidate index.
     assert_no_mail(rig)
 
     with pytest.raises(StoreError):
-        rig.store.reserve_send({**approval(edition), "expected_render_hash": "wrong"})
+        rig.store.reserve_send(
+            {**approval(edition), "expected_render_hash": "wrong"}
+        )
     adopted = bound["required_packets"][0]
     rig.store.projection_result(adopted, "pending")
     with pytest.raises(StoreError):
@@ -419,11 +481,15 @@ async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_rec
     rig.store.recover()
     assert rig.store.reserve_send(approval(edition))[1] is False
     assert rig.store.get(edition["id"])["delivery_state"] == "unknown"
-    assert not list(rig.path.rglob("*.eml"))  # Reservations are not adapter calls.
+    assert not list(
+        rig.path.rglob("*.eml")
+    )  # Reservations are not adapter calls.
 
 
 @pytest.mark.asyncio
-async def test_restart_after_completed_research_preserves_artifacts_and_does_not_repeat(rig):
+async def test_restart_after_completed_research_preserves_artifacts_and_does_not_repeat(
+    rig,
+):
     for _ in range(40):
         assert await rig.worker.step()
         if ("research", "adopted") in rig.calls:
@@ -443,7 +509,9 @@ async def test_restart_after_completed_research_preserves_artifacts_and_does_not
     assert rig.runs.workflow_snapshot(rig.run["id"]) == frozen == rig.snapshot
     assert rig.pipeline.repository.artifacts(rig.run["id"]) == before_artifacts
     assert (await drain(rig))["state"] == "ready"
-    assert all(rig.calls[key] == count == 1 for key, count in before_calls.items())
+    assert all(
+        rig.calls[key] == count == 1 for key, count in before_calls.items()
+    )
     attempts = rig.pipeline.repository.attempts(rig.run["id"])
     assert all(attempt in attempts for attempt in before_attempts)
     assert all(count == 1 for count in rig.calls.values())
@@ -462,9 +530,15 @@ async def test_independent_review_hold_blocks_worker_render_and_send(rig):
     edition = rig.store.get(finished["edition_id"])
     assert edition["state"] == "blocked" and not edition["review"]["passed"]
     assert not edition.get("rendered")
-    assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
+    assert [kind for kind, _ in rig.tail_model_calls] == [
+        "revision",
+        "final_review",
+    ]
     assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS + 2
-    assert finished["usage"]["usage"]["total_tokens"] == (BASE_MODEL_INVOCATIONS + 2) * 120
+    assert (
+        finished["usage"]["usage"]["total_tokens"]
+        == (BASE_MODEL_INVOCATIONS + 2) * 120
+    )
     assert rig.pipeline.state.repair(rig.run["id"]) is None
     assert await rig.worker.step() is False
     with pytest.raises(StoreError):
@@ -473,7 +547,9 @@ async def test_independent_review_hold_blocks_worker_render_and_send(rig):
 
 
 @pytest.mark.asyncio
-async def test_initial_hold_revises_once_then_independently_reviews_before_publication(rig):
+async def test_initial_hold_revises_once_then_independently_reviews_before_publication(
+    rig,
+):
     rig.review_passed = False
     finished = await drain(rig)
     assert finished["state"] == "ready", finished
@@ -486,11 +562,20 @@ async def test_initial_hold_revises_once_then_independently_reviews_before_publi
     assert revised["revision"]["performed"] is True
     assert final["review"]["passed"] and edition["review"]["passed"]
     assert edition["draft"]["title"].endswith("synthetic revision")
-    assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
+    assert [kind for kind, _ in rig.tail_model_calls] == [
+        "revision",
+        "final_review",
+    ]
     assert rig.tail_model_calls[1][1]["draft_untrusted"] == revised["draft"]
-    assert rig.tail_model_calls[1][1]["prior_review_findings_untrusted"] == original["review"]
+    assert (
+        rig.tail_model_calls[1][1]["prior_review_findings_untrusted"]
+        == original["review"]
+    )
     assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS + 2
-    assert int(edition["usage"]["usage"]["total_tokens"]) == (BASE_MODEL_INVOCATIONS + 2) * 120
+    assert (
+        int(edition["usage"]["usage"]["total_tokens"])
+        == (BASE_MODEL_INVOCATIONS + 2) * 120
+    )
     assert len(rig.notion.calls) == 4
     assert rig.pipeline.state.repair(rig.run["id"]) is None
     assert await rig.worker.step() is False
@@ -498,14 +583,24 @@ async def test_initial_hold_revises_once_then_independently_reviews_before_publi
 
 
 @pytest.mark.asyncio
-async def test_revision_author_hold_cannot_be_overruled_by_a_passing_final_review(rig):
+async def test_revision_author_hold_cannot_be_overruled_by_a_passing_final_review(
+    rig,
+):
     rig.review_passed = rig.revision_passed = False
     finished = await drain(rig)
-    assert finished["state"] == "blocked" and finished["error_code"] == "editorial_review_failed"
+    assert (
+        finished["state"] == "blocked"
+        and finished["error_code"] == "editorial_review_failed"
+    )
     edition = rig.store.get(finished["edition_id"])
     assert not edition["review"]["passed"]
-    assert any("定稿总编仍报告" in finding for finding in edition["review"]["findings"])
-    assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
+    assert any(
+        "定稿总编仍报告" in finding for finding in edition["review"]["findings"]
+    )
+    assert [kind for kind, _ in rig.tail_model_calls] == [
+        "revision",
+        "final_review",
+    ]
     assert not edition.get("rendered")
     assert await rig.worker.step() is False
     with pytest.raises(StoreError):
@@ -515,7 +610,9 @@ async def test_revision_author_hold_cannot_be_overruled_by_a_passing_final_revie
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rig", ["legacy"], indirect=True)
-async def test_legacy_hold_upgrade_preserves_original_records_and_combines_child_usage(rig):
+async def test_legacy_hold_upgrade_preserves_original_records_and_combines_child_usage(
+    rig,
+):
     held = await legacy_hold(rig)
     original_edition = rig.store.get(held["edition_id"])
     original_artifacts = rig.pipeline.repository.artifacts(rig.run["id"])
@@ -529,8 +626,12 @@ async def test_legacy_hold_upgrade_preserves_original_records_and_combines_child
     assert child == rig.run["id"] + ":repair-1"
     assert repair["source_edition_id"] == held["edition_id"]
     frozen = repair["snapshot"]["inputs"]
-    assert all(frozen[key] == value for key, value in rig.snapshot["inputs"].items())
-    assert frozen["prior_review_result"] == rig.pipeline.repository.output(rig.run["id"], "review")
+    assert all(
+        frozen[key] == value for key, value in rig.snapshot["inputs"].items()
+    )
+    assert frozen["prior_review_result"] == rig.pipeline.repository.output(
+        rig.run["id"], "review"
+    )
     # A collecting repair must not be put back in HOLD by its original edition.
     assert rig.pipeline.advance() is False
     assert rig.runs.get(rig.run["id"])["state"] == "collecting"
@@ -557,21 +658,32 @@ async def test_legacy_hold_upgrade_preserves_original_records_and_combines_child
     )
     assert rig.runs.workflow_snapshot(rig.run["id"]) == rig.snapshot
     assert rig.pipeline.repository.snapshot(rig.run["id"]) == original_graph
-    assert rig.pipeline.repository.artifacts(rig.run["id"]) == original_artifacts
+    assert (
+        rig.pipeline.repository.artifacts(rig.run["id"]) == original_artifacts
+    )
     assert rig.store.get(held["edition_id"]) == original_edition
     assert all(rig.calls[key] == count for key, count in original_calls.items())
     assert rig.notion.calls == original_projections
-    assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
+    assert [kind for kind, _ in rig.tail_model_calls] == [
+        "revision",
+        "final_review",
+    ]
     edition = rig.store.get(finished["edition_id"])
     assert edition["issue_date"] == original_edition["issue_date"]
     assert edition["packet_ids"] == original_edition["packet_ids"]
     assert rig.pipeline.state.edition(edition["id"])["run_id"] == child
     assert finished["usage"] == rig.pipeline.state.usage(child)
     assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS + 2
-    assert int(edition["usage"]["usage"]["total_tokens"]) == (BASE_MODEL_INVOCATIONS + 2) * 120
+    assert (
+        int(edition["usage"]["usage"]["total_tokens"])
+        == (BASE_MODEL_INVOCATIONS + 2) * 120
+    )
     continuation = finished["workflow"]["continuations"][0]
     assert continuation["state"] == "succeeded"
-    assert [node["type"] for node in continuation["nodes"]] == ["revision", "final_review"]
+    assert [node["type"] for node in continuation["nodes"]] == [
+        "revision",
+        "final_review",
+    ]
     assert_no_mail(rig)
     with pytest.raises(StoreError):
         rig.store.reserve_send(approval(original_edition))
@@ -581,16 +693,24 @@ async def test_legacy_hold_upgrade_preserves_original_records_and_combines_child
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rig", ["legacy"], indirect=True)
-async def test_legacy_repair_final_hold_is_terminal_and_cannot_create_a_third_round(rig):
+async def test_legacy_repair_final_hold_is_terminal_and_cannot_create_a_third_round(
+    rig,
+):
     held = await legacy_hold(rig)
     rig.final_review_passed = False
     rig.pipeline.recipe_path = rig.current_recipe
     finished = await drain(rig)
-    assert finished["state"] == "blocked" and finished["error_code"] == "editorial_review_failed"
+    assert (
+        finished["state"] == "blocked"
+        and finished["error_code"] == "editorial_review_failed"
+    )
     assert finished["edition_id"] != held["edition_id"]
     assert finished["workflow"]["continuations"][0]["state"] == "succeeded"
     assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS + 2
-    assert [kind for kind, _ in rig.tail_model_calls] == ["revision", "final_review"]
+    assert [kind for kind, _ in rig.tail_model_calls] == [
+        "revision",
+        "final_review",
+    ]
     assert await rig.worker.step() is False
     for identifier in (held["edition_id"], finished["edition_id"]):
         edition = rig.store.get(identifier)
@@ -602,7 +722,9 @@ async def test_legacy_repair_final_hold_is_terminal_and_cannot_create_a_third_ro
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rig", ["legacy"], indirect=True)
-async def test_expired_legacy_hold_does_not_start_a_new_repair(rig, monkeypatch):
+async def test_expired_legacy_hold_does_not_start_a_new_repair(
+    rig, monkeypatch
+):
     await legacy_hold(rig)
     rig.pipeline.recipe_path = rig.current_recipe
     expire_budget(rig, monkeypatch)
@@ -621,13 +743,19 @@ async def test_completed_repair_recovers_local_publication_after_deadline_withou
     rig.pipeline.recipe_path = rig.current_recipe
 
     def interrupted_tail(*args, **kwargs):
-        raise StoreError("busy", "Synthetic interruption before edition receipt")
+        raise StoreError(
+            "busy", "Synthetic interruption before edition receipt"
+        )
 
     monkeypatch.setattr(rig.pipeline, "queue_edition", interrupted_tail)
     for _ in range(20):
         assert await rig.worker.step()
         repair = rig.pipeline.state.repair(rig.run["id"])
-        if repair and rig.pipeline.repository.get(repair["child_run_id"])["state"] == "succeeded":
+        if (
+            repair
+            and rig.pipeline.repository.get(repair["child_run_id"])["state"]
+            == "succeeded"
+        ):
             break
     else:
         pytest.fail("Repair did not complete before the interrupted local tail")
@@ -660,14 +788,19 @@ async def test_persisted_repair_receipt_recovers_after_deadline_but_cannot_start
         raise KeyboardInterrupt("Synthetic crash after durable repair record")
 
     with monkeypatch.context() as crash:
-        crash.setattr(rig.pipeline.repository, "start", crash_before_child_start)
+        crash.setattr(
+            rig.pipeline.repository, "start", crash_before_child_start
+        )
         with pytest.raises(KeyboardInterrupt):
             rig.pipeline.advance()
     repair = rig.pipeline.state.repair(rig.run["id"])
     assert repair is not None
     expire_budget(rig, monkeypatch)
     finished = await drain(rig)
-    assert finished["state"] == "blocked" and finished["error_code"] == "workflow_deadline"
+    assert (
+        finished["state"] == "blocked"
+        and finished["error_code"] == "workflow_deadline"
+    )
     assert finished["edition_id"] == held["edition_id"]
     assert rig.pipeline.state.repair(rig.run["id"]) == repair
     assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS
@@ -697,12 +830,20 @@ async def test_terminal_repair_attempt_recovers_original_failure_before_deadline
 
     def crash_after_failed_artifact(run, definition, execution_id, status):
         if status["state"] == "failed":
-            raise KeyboardInterrupt("Synthetic crash before parent failure receipt")
+            raise KeyboardInterrupt(
+                "Synthetic crash before parent failure receipt"
+            )
         return original_finish(run, definition, execution_id, status)
 
     monkeypatch.setattr(CodexEditor, "execute", failed_model)
-    monkeypatch.setattr(rig.pipeline, "finish_graph", crash_after_failed_artifact)
-    with pytest.raises(asyncio.CancelledError if failure == "interrupted" else KeyboardInterrupt):
+    monkeypatch.setattr(
+        rig.pipeline, "finish_graph", crash_after_failed_artifact
+    )
+    with pytest.raises(
+        asyncio.CancelledError
+        if failure == "interrupted"
+        else KeyboardInterrupt
+    ):
         await rig.worker.step()
     assert attempted == [failure]
     expire_budget(rig, monkeypatch)
@@ -715,7 +856,9 @@ async def test_terminal_repair_attempt_recovers_original_failure_before_deadline
     finished = await drain(rig)
     assert finished["state"] == "blocked"
     assert finished["error_code"] == "workflow_" + failure
-    assert attempted == [failure]  # Neither failure nor uncertain cancellation is retried.
+    assert attempted == [
+        failure
+    ]  # Neither failure nor uncertain cancellation is retried.
     assert finished["usage"]["invocations"] == BASE_MODEL_INVOCATIONS + 1
     assert_no_mail(rig)
 
@@ -741,7 +884,10 @@ async def test_optional_archive_and_unused_projection_failure_do_not_block_adopt
     assert finished["state"] == "ready", finished
     edition = rig.store.get(finished["edition_id"])
     binding = rig.pipeline.state.edition(edition["id"])
-    assert rig.runs.projection_states(binding["required_packets"]) == ["done", "done"]
+    assert rig.runs.projection_states(binding["required_packets"]) == [
+        "done",
+        "done",
+    ]
     unused = set(edition["packet_ids"]) - set(binding["required_packets"])
     assert rig.runs.projection_states(list(unused)) == ["failed"]
     archive = rig.store.db.execute(
@@ -766,7 +912,9 @@ async def test_adopted_projection_failure_blocks_publication_and_is_never_auto_r
     assert finished["state"] == "blocked", finished
     assert finished["error_code"] == "notion_projection_unconfirmed"
     edition = rig.store.get(finished["edition_id"])
-    assert edition["state"] == "ready"  # Rendering success alone does not authorize sending.
+    assert (
+        edition["state"] == "ready"
+    )  # Rendering success alone does not authorize sending.
     with pytest.raises(StoreError):
         rig.store.reserve_send(approval(edition))
     calls = list(rig.notion.calls)

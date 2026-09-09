@@ -32,7 +32,9 @@ from newsletter.content_config import (
 )
 
 MAX_BUNDLE_BYTES = 2_000_000
-REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\Z")
+REPOSITORY = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\Z"
+)
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -50,7 +52,9 @@ class SyncSettings:
     @classmethod
     def from_env(cls) -> SyncSettings:
         try:
-            interval = int(os.environ.get("NEWSLETTER_CONFIG_POLL_SECONDS", "900"))
+            interval = int(
+                os.environ.get("NEWSLETTER_CONFIG_POLL_SECONDS", "900")
+            )
         except ValueError:
             raise SyncError("CONFIG_INTERVAL_INVALID") from None
         if not 60 <= interval <= 86400:
@@ -58,7 +62,9 @@ class SyncSettings:
         directory = os.environ.get("NEWSLETTER_CONTENT_CONFIG_DIR", "")
         if not directory or not Path(directory).is_absolute():
             raise SyncError("CONFIG_DIRECTORY_REQUIRED")
-        repository = os.environ.get("NEWSLETTER_CONFIG_REPOSITORY", "ziyixi/newsletter")
+        repository = os.environ.get(
+            "NEWSLETTER_CONFIG_REPOSITORY", "ziyixi/newsletter"
+        )
         if not REPOSITORY.fullmatch(repository) or any(
             part in {".", ".."} for part in repository.split("/")
         ):
@@ -67,7 +73,10 @@ class SyncSettings:
 
 
 def _read_json(path: Path, limit: int = MAX_BUNDLE_BYTES) -> dict[str, Any]:
-    if any(part.is_symlink() for part in (path, *path.parents)) or not path.is_file():
+    if (
+        any(part.is_symlink() for part in (path, *path.parents))
+        or not path.is_file()
+    ):
         raise SyncError("CONFIG_LOCAL_STATE_INVALID")
     try:
         with path.open("rb") as stream:
@@ -117,9 +126,14 @@ def _sync_directory(directory: Path) -> None:
 
 @contextmanager
 def _writer_lock(root: Path) -> Iterator[None]:
-    if any(part.is_symlink() for part in (root, *root.parents)) or not root.is_dir():
+    if (
+        any(part.is_symlink() for part in (root, *root.parents))
+        or not root.is_dir()
+    ):
         raise SyncError("CONFIG_DIRECTORY_REQUIRED")
-    fd = os.open(root / ".sync.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    fd = os.open(
+        root / ".sync.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
+    )
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise SyncError("CONFIG_LOCAL_STATE_INVALID")
@@ -133,13 +147,17 @@ def _writer_lock(root: Path) -> Iterator[None]:
 
 
 class GitHubSource:
-    def __init__(self, repository: str, transport: httpx.BaseTransport | None = None):
+    def __init__(
+        self, repository: str, transport: httpx.BaseTransport | None = None
+    ):
         if not REPOSITORY.fullmatch(repository):
             raise SyncError("CONFIG_REPOSITORY_INVALID")
         self.repository = repository
         self.transport = transport
 
-    def _get(self, suffix: str, *, raw: bool = False, limit: int = MAX_BUNDLE_BYTES) -> bytes:
+    def _get(
+        self, suffix: str, *, raw: bool = False, limit: int = MAX_BUNDLE_BYTES
+    ) -> bytes:
         # Public configuration requires no credential. Only the fixed TLS
         # origin is read; redirects and download_url values are never followed.
         try:
@@ -156,12 +174,15 @@ class GitHubSource:
                 },
             ) as client:
                 with client.stream(
-                    "GET", f"https://api.github.com/repos/{self.repository}/{suffix}"
+                    "GET",
+                    f"https://api.github.com/repos/{self.repository}/{suffix}",
                 ) as response:
                     if response.status_code in {401, 403}:
                         raise SyncError("CONFIG_GITHUB_ACCESS_OR_RATE_LIMIT")
                     if response.status_code == 404:
-                        raise SyncError("CONFIG_GITHUB_REPOSITORY_OR_RELEASE_UNAVAILABLE")
+                        raise SyncError(
+                            "CONFIG_GITHUB_REPOSITORY_OR_RELEASE_UNAVAILABLE"
+                        )
                     if response.status_code != 200:
                         raise SyncError("CONFIG_GITHUB_UNAVAILABLE")
                     result = bytearray()
@@ -178,7 +199,9 @@ class GitHubSource:
         try:
             data = _decode_json(raw)
             commit = data["object"]["sha"]
-            if data["object"]["type"] != "commit" or not COMMIT.fullmatch(commit):
+            if data["object"]["type"] != "commit" or not COMMIT.fullmatch(
+                commit
+            ):
                 raise ValueError
         except (ValueError, TypeError, KeyError, RecursionError):
             raise SyncError("CONFIG_PUBLISHED_REF_INVALID") from None
@@ -195,7 +218,9 @@ class GitHubSource:
 
 
 class ConfigSync:
-    def __init__(self, settings: SyncSettings, source: GitHubSource | None = None):
+    def __init__(
+        self, settings: SyncSettings, source: GitHubSource | None = None
+    ):
         self.settings = settings
         self.root = settings.root
         self.source = source
@@ -219,7 +244,9 @@ class ConfigSync:
         if not DIGEST.fullmatch(digest):
             raise SyncError("CONFIG_PIN_INVALID")
         try:
-            value = validate_snapshot(_read_json(self.root / "releases" / digest / "bundle.json"))
+            value = validate_snapshot(
+                _read_json(self.root / "releases" / digest / "bundle.json")
+            )
             if value["digest"] != digest:
                 raise ValueError
             return value
@@ -253,7 +280,10 @@ class ConfigSync:
             if (self.root / "active.json").exists():
                 raise SyncError("CONFIG_ALREADY_INITIALIZED")
             install_snapshot(self.root, packaged_snapshot())
-            _atomic_json(self.root / "sync-status.json", {"error": None, "last_success": None})
+            _atomic_json(
+                self.root / "sync-status.json",
+                {"error": None, "last_success": None},
+            )
             return self.status()
 
     def pin(self, digest: str | None = None) -> dict[str, Any]:
@@ -279,7 +309,9 @@ class ConfigSync:
         with _writer_lock(self.root):
             active = self._active()
             report = self.status()
-            report.update(last_attempt=time.time(), repository=self.settings.repository)
+            report.update(
+                last_attempt=time.time(), repository=self.settings.repository
+            )
             try:
                 pinned = self._pin_digest()
                 if pinned:
@@ -287,19 +319,24 @@ class ConfigSync:
                     if active["digest"] != pinned:
                         install_snapshot(self.root, release)
                 else:
-                    source = self.source or GitHubSource(self.settings.repository)
+                    source = self.source or GitHubSource(
+                        self.settings.repository
+                    )
                     commit = source.resolve()
                     report["wanted_commit"] = commit
                     snapshot = source.fetch(commit)
                     report.update(
-                        wanted_revision=snapshot["revision"], wanted_digest=snapshot["digest"]
+                        wanted_revision=snapshot["revision"],
+                        wanted_digest=snapshot["digest"],
                     )
                     if active["digest"] != snapshot["digest"]:
                         install_snapshot(self.root, snapshot)
                 report.update(error=None, last_success=time.time())
             except (OSError, ValueError, TypeError, KeyError) as error:
                 report["error"] = (
-                    str(error) if isinstance(error, SyncError) else "CONFIG_ACTIVATION_FAILED"
+                    str(error)
+                    if isinstance(error, SyncError)
+                    else "CONFIG_ACTIVATION_FAILED"
                 )
             _atomic_json(self.root / "sync-status.json", report)
             return self.status()
@@ -345,13 +382,19 @@ def main() -> None:
             raise SystemExit(0 if sync.health() else 1)
         else:
             result = (
-                sync.pin(args.digest) if args.command == "pin" else getattr(sync, args.command)()
+                sync.pin(args.digest)
+                if args.command == "pin"
+                else getattr(sync, args.command)()
             )
             print(json.dumps(result, sort_keys=True))
             if args.command == "once" and result.get("error"):
                 raise SystemExit(1)
     except (OSError, ValueError, TypeError, KeyError) as error:
-        code = str(error) if isinstance(error, SyncError) else "CONFIG_LOCAL_STATE_INVALID"
+        code = (
+            str(error)
+            if isinstance(error, SyncError)
+            else "CONFIG_LOCAL_STATE_INVALID"
+        )
         print("Newsletter configuration: " + code, file=sys.stderr)
         raise SystemExit(1) from None
 

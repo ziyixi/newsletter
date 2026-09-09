@@ -27,7 +27,15 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
-_RUN_STATES = {"queued", "collecting", "projecting", "editing", "ready", "blocked", "failed"}
+_RUN_STATES = {
+    "queued",
+    "collecting",
+    "projecting",
+    "editing",
+    "ready",
+    "blocked",
+    "failed",
+}
 _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _INTERNAL_ORIGIN = "http://newsletter:8080"
 
@@ -91,8 +99,12 @@ class Config:
 
         def token(name: str) -> str:
             value = os.environ.get(name, "")
-            if not 24 <= len(value) <= 512 or any(not 33 <= ord(c) <= 126 for c in value):
-                raise TriggerError(f"Set a valid {name} in the process environment")
+            if not 24 <= len(value) <= 512 or any(
+                not 33 <= ord(c) <= 126 for c in value
+            ):
+                raise TriggerError(
+                    f"Set a valid {name} in the process environment"
+                )
             return value
 
         editor_token = token("NEWSLETTER_EDITOR_TOKEN")
@@ -100,23 +112,32 @@ class Config:
         if args.send and send_token == editor_token:
             raise TriggerError("Editor and send tokens must be distinct")
         try:
-            zone = ZoneInfo(os.environ.get("NEWSLETTER_TIME_ZONE", "America/Los_Angeles"))
+            zone = ZoneInfo(
+                os.environ.get("NEWSLETTER_TIME_ZONE", "America/Los_Angeles")
+            )
             issue_date = (
-                os.environ.get("NEWSLETTER_ISSUE_DATE") or datetime.now(zone).date().isoformat()
+                os.environ.get("NEWSLETTER_ISSUE_DATE")
+                or datetime.now(zone).date().isoformat()
             )
             if date.fromisoformat(issue_date).isoformat() != issue_date:
                 raise ValueError
         except (ValueError, ZoneInfoNotFoundError):
-            raise TriggerError("Configure a valid issue date and IANA time zone") from None
+            raise TriggerError(
+                "Configure a valid issue date and IANA time zone"
+            ) from None
         key = os.environ.get("NEWSLETTER_REQUEST_KEY") or "daily-" + issue_date
         if (
             not 1 <= len(key) <= 128
             or key != key.strip()
             or any(ord(c) < 32 or ord(c) == 127 for c in key)
         ):
-            raise TriggerError("NEWSLETTER_REQUEST_KEY must be 1..128 characters on one line")
+            raise TriggerError(
+                "NEWSLETTER_REQUEST_KEY must be 1..128 characters on one line"
+            )
         if not 1 <= args.timeout <= 86400 or not 1 <= args.poll_interval <= 300:
-            raise TriggerError("Timeout must be 1..86400 seconds; poll interval must be 1..300")
+            raise TriggerError(
+                "Timeout must be 1..86400 seconds; poll interval must be 1..300"
+            )
         return cls(
             origin,
             editor_token,
@@ -131,7 +152,9 @@ class Config:
 
 
 def _object(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str) for key in value
+    ):
         raise ValueError("Invalid object")
     return cast(dict[str, object], value)
 
@@ -165,15 +188,26 @@ def _run(value: dict[str, object], config: Config) -> dict[str, str]:
     }
 
 
-def _edition(value: dict[str, object], edition_id: str, config: Config) -> tuple[str, str]:
-    if value.get("id") != edition_id or value.get("issue_date") != config.issue_date:
-        raise TriggerError("Edition identity does not match the completed run; not sending")
+def _edition(
+    value: dict[str, object], edition_id: str, config: Config
+) -> tuple[str, str]:
+    if (
+        value.get("id") != edition_id
+        or value.get("issue_date") != config.issue_date
+    ):
+        raise TriggerError(
+            "Edition identity does not match the completed run; not sending"
+        )
     if value.get("is_fixture") is not False or value.get("state") != "ready":
-        raise TriggerError("Only a non-fixture ready edition may proceed; not sending")
+        raise TriggerError(
+            "Only a non-fixture ready edition may proceed; not sending"
+        )
     try:
         if _object(value.get("review")).get("passed") is not True:
             raise ValueError("Review did not pass")
-        render_hash = _string(_object(value.get("rendered")).get("render_hash"), _HASH)
+        render_hash = _string(
+            _object(value.get("rendered")).get("render_hash"), _HASH
+        )
         delivery = value.get("delivery_state")
         if not isinstance(delivery, str) or delivery not in {
             "not_requested",
@@ -193,7 +227,9 @@ def _edition(value: dict[str, object], edition_id: str, config: Config) -> tuple
 
 def execute(config: Config) -> dict[str, str]:
     deadline = time.monotonic() + config.timeout
-    client = urllib.request.build_opener(NoRedirect(), urllib.request.ProxyHandler({}))
+    client = urllib.request.build_opener(
+        NoRedirect(), urllib.request.ProxyHandler({})
+    )
 
     def remaining() -> float:
         value = deadline - time.monotonic()
@@ -204,7 +240,10 @@ def execute(config: Config) -> dict[str, str]:
         return value
 
     def request(
-        path: str, *, payload: dict[str, str] | None = None, sending: bool = False
+        path: str,
+        *,
+        payload: dict[str, str] | None = None,
+        sending: bool = False,
     ) -> dict[str, object]:
         data = json.dumps(payload).encode() if payload is not None else None
         req = urllib.request.Request(
@@ -217,7 +256,9 @@ def execute(config: Config) -> dict[str, str]:
                 + (config.send_token if sending else config.editor_token),
             },
         )
-        phase = "Send" if sending else ("Trigger" if data is not None else "Read")
+        phase = (
+            "Send" if sending else ("Trigger" if data is not None else "Read")
+        )
         timeout = min(45 if sending else 30, remaining())
         try:
             with client.open(req, timeout=timeout) as response:
@@ -229,7 +270,9 @@ def execute(config: Config) -> dict[str, str]:
             raise
         except urllib.error.HTTPError as exc:
             outcome = "not confirmed" if sending else "rejected"
-            raise TriggerError(f"{phase} {outcome} (HTTP {exc.code}); no automatic retry") from None
+            raise TriggerError(
+                f"{phase} {outcome} (HTTP {exc.code}); no automatic retry"
+            ) from None
         except Exception:
             guidance = (
                 "inspect the edition before resuming with the same date/request key; never change keys"
@@ -256,16 +299,23 @@ def execute(config: Config) -> dict[str, str]:
     run_id, instructions_hash = result["id"], result["instructions_hash"]
     while True:
         if raw_run.get("is_fixture") is not False:
-            raise TriggerError("Only a non-fixture run may proceed; not sending")
+            raise TriggerError(
+                "Only a non-fixture run may proceed; not sending"
+            )
         if result["state"] in {"blocked", "failed"}:
-            raise TriggerError(f"Run {result['state']}; not sending or creating a replacement run")
+            raise TriggerError(
+                f"Run {result['state']}; not sending or creating a replacement run"
+            )
         if result["state"] == "ready":
             break
         time.sleep(min(config.poll_interval, remaining()))
         raw_run = request("/v1/runs/" + run_id)
         try:
             result = _run(raw_run, config)
-            if result["id"] != run_id or result["instructions_hash"] != instructions_hash:
+            if (
+                result["id"] != run_id
+                or result["instructions_hash"] != instructions_hash
+            ):
                 raise ValueError("Different run")
         except ValueError:
             raise TriggerError("Invalid run observation; not sending") from None
@@ -273,10 +323,14 @@ def execute(config: Config) -> dict[str, str]:
     try:
         edition_id = _string(raw_run.get("edition_id"), _ID)
     except ValueError:
-        raise TriggerError("Ready run has no valid edition ID; not sending") from None
+        raise TriggerError(
+            "Ready run has no valid edition ID; not sending"
+        ) from None
     path = "/v1/editions/" + edition_id
     render_hash, delivery = _edition(request(path), edition_id, config)
-    result.update(edition_id=edition_id, render_hash=render_hash, delivery_state=delivery)
+    result.update(
+        edition_id=edition_id, render_hash=render_hash, delivery_state=delivery
+    )
     if not config.send:
         return result
     if delivery == "not_requested":
@@ -297,7 +351,9 @@ def execute(config: Config) -> dict[str, str]:
         )
         observed_hash, delivery = _edition(sent, edition_id, config)
         if observed_hash != render_hash:
-            raise TriggerError("Send response changed the frozen hash; inspect the edition")
+            raise TriggerError(
+                "Send response changed the frozen hash; inspect the edition"
+            )
         result["delivery_state"] = delivery
     if delivery != "provider_accepted":
         raise TriggerError(
@@ -308,22 +364,45 @@ def execute(config: Config) -> dict[str, str]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--wait", action="store_true", help="Wait for a non-fixture ready edition")
-    parser.add_argument("--send", action="store_true", help="Wait and authorize the frozen edition")
-    parser.add_argument("--timeout", type=int, default=3600, help="Total deadline in seconds")
-    parser.add_argument("--poll-interval", type=int, default=10, help="Polling interval in seconds")
     parser.add_argument(
-        "--check-config", action="store_true", help="Validate without making requests"
+        "--wait",
+        action="store_true",
+        help="Wait for a non-fixture ready edition",
+    )
+    parser.add_argument(
+        "--send",
+        action="store_true",
+        help="Wait and authorize the frozen edition",
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=3600, help="Total deadline in seconds"
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=int,
+        default=10,
+        help="Polling interval in seconds",
+    )
+    parser.add_argument(
+        "--check-config",
+        action="store_true",
+        help="Validate without making requests",
     )
     args = parser.parse_args(argv)
 
     def expired(signum: int, frame: FrameType | None) -> None:
-        raise TriggerError("Trigger deadline exceeded; resume only with the same date/request key")
+        raise TriggerError(
+            "Trigger deadline exceeded; resume only with the same date/request key"
+        )
 
     try:
         config = Config.from_args(args)
         if args.check_config:
-            print(json.dumps({"configuration": "valid", "send_enabled": config.send}))
+            print(
+                json.dumps(
+                    {"configuration": "valid", "send_enabled": config.send}
+                )
+            )
             return
         # POSIX cron runtime: this also bounds DNS resolution and trickling reads,
         # unlike socket timeouts alone. No send retry occurs after interruption.

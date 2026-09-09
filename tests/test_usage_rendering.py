@@ -24,7 +24,9 @@ def test_footer_below_branding_also_ends_plain_text_and_changes_frozen_hash():
     assert "非缓存输入 40 · 缓存输入 60 · 输出 20" in with_usage["html"]
     assert "非缓存输入 40 · 缓存输入 60 · 输出 20" in with_usage["text"]
     assert "不重复相加" not in with_usage["text"]
-    assert with_usage["html"].index("Codex 已记录") > with_usage["html"].index("THE DAILY BRIEF")
+    assert with_usage["html"].index("Codex 已记录") > with_usage["html"].index(
+        "THE DAILY BRIEF"
+    )
     assert "text-align:right" in with_usage["html"]
     assert with_usage["text"].rstrip().endswith("Todofy/Gemini 用量未计入。")
     assert without["render_hash"] != with_usage["render_hash"]
@@ -34,7 +36,10 @@ def test_footer_below_branding_also_ends_plain_text_and_changes_frozen_hash():
 
 def test_uint64_wire_shape_does_not_change_html_or_text():
     summary = summarize_usage(record_one())
-    wire = {**summary, "usage": {key: str(value) for key, value in summary["usage"].items()}}
+    wire = {
+        **summary,
+        "usage": {key: str(value) for key, value in summary["usage"].items()},
+    }
     assert render(wire) == render(summary)
 
 
@@ -55,11 +60,15 @@ def test_mock_footer_cannot_look_like_real_billable_usage():
 
 
 def test_large_cached_usage_is_split_into_disjoint_parts_without_claiming_plan_percent():
-    summary = summarize_usage(record_one(notification(6_000_000, 90_000, cached=5_000_000)))
+    summary = summarize_usage(
+        record_one(notification(6_000_000, 90_000, cached=5_000_000))
+    )
     result = render(summary)
     for output in (result["html"], result["text"]):
         assert "6,090,000 tokens" in output
-        assert "非缓存输入 1,000,000 · 缓存输入 5,000,000 · 输出 90,000" in output
+        assert (
+            "非缓存输入 1,000,000 · 缓存输入 5,000,000 · 输出 90,000" in output
+        )
         assert "11,090,000" not in output
         assert "plan" not in output.lower()
 
@@ -76,7 +85,9 @@ def test_inconsistent_counts_never_create_negative_uncached_input_or_silent_zero
 def test_explanatory_chart_with_unavailable_personal_digest_keeps_partial_footer_last():
     packets = copy.deepcopy(SAMPLE_PACKETS)
     packets[0]["is_fixture"] = False
-    summary = summarize_usage(record_one(notification(6_000_000, 90_000, cached=5_000_000)))
+    summary = summarize_usage(
+        record_one(notification(6_000_000, 90_000, cached=5_000_000))
+    )
     summary["partial"] = True
     rendered = render_edition(
         SAMPLE_DRAFT,
@@ -88,11 +99,17 @@ def test_explanatory_chart_with_unavailable_personal_digest_keeps_partial_footer
     html_text = "".join(ParsedEmail(rendered["html"]).text)
     for output in (html_text, rendered["text"]):
         chart = SAMPLE_DRAFT["chart"]
-        assert output.index(chart["caption"]) < output.index(chart["limitations"])
-        assert output.index(chart["limitations"]) < output.index("TODOFY / 与你有关")
+        assert output.index(chart["caption"]) < output.index(
+            chart["limitations"]
+        )
+        assert output.index(chart["limitations"]) < output.index(
+            "TODOFY / 与你有关"
+        )
         assert output.index("TODOFY / 与你有关") < output.index("Codex 已记录")
         assert "6,090,000 tokens" in output
-        assert "非缓存输入 1,000,000 · 缓存输入 5,000,000 · 输出 90,000" in output
+        assert (
+            "非缓存输入 1,000,000 · 缓存输入 5,000,000 · 输出 90,000" in output
+        )
         assert "部分用量，未含未返回用量的调用" in output
         assert "11,090,000" not in output
         assert output.rstrip().endswith("Todofy/Gemini 用量未计入。")

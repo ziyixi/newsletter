@@ -7,7 +7,11 @@ import json
 import sys
 from pathlib import Path
 
-from newsletter.content_config import _atomic_json, build_directory, read_snapshot
+from newsletter.content_config import (
+    _atomic_json,
+    build_directory,
+    read_snapshot,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,7 +38,11 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, UnicodeError, RecursionError):
         print("CONTENT_CONFIG_INVALID", file=sys.stderr)
         return 1
-    print(json.dumps({key: snapshot[key] for key in ("revision", "digest", "editorial")}))
+    print(
+        json.dumps(
+            {key: snapshot[key] for key in ("revision", "digest", "editorial")}
+        )
+    )
     return 0
 
 

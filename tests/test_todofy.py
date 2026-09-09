@@ -41,7 +41,11 @@ def recommendation():
                 "title": "确认会议安排",
                 "reason": "邀请有两个候选时段。尚未确认你的时间，请对照日历后回复。\n不是已安排的会议。",
             },
-            {"rank": 2, "title": "项目验收", "reason": "预览可以检查，但正式邮件还没有发送。"},
+            {
+                "rank": 2,
+                "title": "项目验收",
+                "reason": "预览可以检查，但正式邮件还没有发送。",
+            },
         ],
         "task_count": 7,
         "model": "MODEL_GEMINI_TEST_ONLY",
@@ -53,7 +57,9 @@ def forbid_http_network(monkeypatch):
     async def forbidden(*args, **kwargs):
         pytest.fail("Todofy tests must not call real services")
 
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", forbidden)
+    monkeypatch.setattr(
+        httpx.AsyncHTTPTransport, "handle_async_request", forbidden
+    )
 
 
 async def test_fetches_ten_candidates_once_and_preserves_selected_full_reasons():
@@ -62,7 +68,10 @@ async def test_fetches_ten_candidates_once_and_preserves_selected_full_reasons()
     def handler(request):
         calls.append(request)
         assert request.method == "GET"
-        assert str(request.url) == "https://todofy.example.org/api/recommendation?top=10"
+        assert (
+            str(request.url)
+            == "https://todofy.example.org/api/recommendation?top=10"
+        )
         expected_auth = base64.b64encode(f"{USER}:{PASSWORD}".encode()).decode()
         assert request.headers["Authorization"] == f"Basic {expected_auth}"
         assert request.headers["Accept"] == "application/json"
@@ -72,7 +81,9 @@ async def test_fetches_ten_candidates_once_and_preserves_selected_full_reasons()
     assert len(calls) == 1
     assert result["state"] == "current"
     assert result["task_count"] == 7
-    assert result["items"][0]["detail"] == recommendation()["tasks"][0]["reason"]
+    assert (
+        result["items"][0]["detail"] == recommendation()["tasks"][0]["reason"]
+    )
     assert result["fetched_at"] == INSTANT.isoformat()
     assert result["time_window_hours"] == 24
     assert "并非全部事件" in result["limitations"]
@@ -89,7 +100,12 @@ async def test_summary_is_opt_in_and_only_one_call():
         calls.append(request)
         assert str(request.url) == "https://todofy.example.org/api/summary"
         return httpx.Response(
-            200, json={"summary": narrative, "task_count": 4, "time_window_hours": 24}
+            200,
+            json={
+                "summary": narrative,
+                "task_count": 4,
+                "time_window_hours": 24,
+            },
         )
 
     result = await adapter(handler, mode="summary").fetch(TODAY)
@@ -119,7 +135,9 @@ async def test_empty_summary_is_success_not_upstream_obsolete_alarm():
 
 
 async def test_empty_recommendations_unknown_total_not_fabricated_zero():
-    result = await adapter(lambda _: httpx.Response(200, json={"tasks": []})).fetch(TODAY)
+    result = await adapter(
+        lambda _: httpx.Response(200, json={"tasks": []})
+    ).fetch(TODAY)
     assert result["state"] == "empty"
     assert "task_count" not in result
     assert "未提供" in result["limitations"]
@@ -136,7 +154,9 @@ async def test_recommendation_known_empty_zero():
 async def test_missing_rank_is_stable_position_and_response_order_by_rank():
     payload = recommendation()
     payload["tasks"][0].pop("rank")
-    result = await adapter(lambda _: httpx.Response(200, json=payload)).fetch(TODAY)
+    result = await adapter(lambda _: httpx.Response(200, json=payload)).fetch(
+        TODAY
+    )
     assert [item["rank"] for item in result["items"]] == [1, 2]
 
 
@@ -185,7 +205,9 @@ async def test_failures_have_one_attempt_no_body_leak_or_redirect(status, code):
     ],
 )
 async def test_invalid_recommendations_not_silently_treated_as_empty(payload):
-    result = await adapter(lambda _: httpx.Response(200, json=payload)).fetch(TODAY)
+    result = await adapter(lambda _: httpx.Response(200, json=payload)).fetch(
+        TODAY
+    )
     assert result["state"] == "unavailable"
     assert result["error_code"] == "todofy_invalid_response"
 
@@ -202,7 +224,9 @@ async def test_invalid_recommendations_not_silently_treated_as_empty(payload):
     ],
 )
 async def test_invalid_summary_not_published(payload):
-    result = await adapter(lambda _: httpx.Response(200, json=payload), mode="summary").fetch(TODAY)
+    result = await adapter(
+        lambda _: httpx.Response(200, json=payload), mode="summary"
+    ).fetch(TODAY)
     assert result["state"] == "unavailable"
     assert result["error_code"] == "todofy_invalid_response"
 
@@ -219,21 +243,28 @@ async def test_invalid_summary_not_published(payload):
 )
 async def test_bad_or_oversize_json(content):
     result = await adapter(
-        lambda _: httpx.Response(200, content=content, headers={"Content-Type": "application/json"})
+        lambda _: httpx.Response(
+            200, content=content, headers={"Content-Type": "application/json"}
+        )
     ).fetch(TODAY)
     assert result["error_code"] == "todofy_invalid_response"
 
 
 async def test_html_response_is_not_parsed_as_json():
     result = await adapter(
-        lambda _: httpx.Response(200, content='{"tasks":[]}', headers={"Content-Type": "text/html"})
+        lambda _: httpx.Response(
+            200, content='{"tasks":[]}', headers={"Content-Type": "text/html"}
+        )
     ).fetch(TODAY)
     assert result["error_code"] == "todofy_invalid_response"
 
 
 @pytest.mark.parametrize(
     "error,code",
-    [(httpx.ReadTimeout, "todofy_timeout"), (httpx.ConnectError, "todofy_unavailable")],
+    [
+        (httpx.ReadTimeout, "todofy_timeout"),
+        (httpx.ConnectError, "todofy_unavailable"),
+    ],
 )
 async def test_transport_errors_are_safe(error, code):
     def handler(request):
@@ -266,7 +297,9 @@ async def test_cancellation_propagates():
 
 
 @pytest.mark.parametrize("issue_date", ["2026-09-04", "2026-09-06"])
-async def test_current_rolling_window_cannot_masquerade_as_historical_or_future(issue_date):
+async def test_current_rolling_window_cannot_masquerade_as_historical_or_future(
+    issue_date,
+):
     def forbidden(request):
         pytest.fail("Historical dates must never fetch current private events")
 
@@ -281,7 +314,9 @@ async def test_issue_date_uses_configured_timezone():
         USER,
         PASSWORD,
         transport=httpx.MockTransport(
-            lambda request: seen.append(request) or httpx.Response(200, json={"tasks": []})
+            lambda request: (
+                seen.append(request) or httpx.Response(200, json={"tasks": []})
+            )
         ),
         clock=lambda: datetime(2026, 9, 6, 1, 0, tzinfo=UTC),
     )
@@ -323,7 +358,9 @@ def test_reject_unsafe_service_url_without_echoing_input(url):
 )
 def test_reject_invalid_auth_without_echo(username, password):
     with pytest.raises(ValueError, match="Invalid Todofy"):
-        validate_todofy_configuration("https://todofy.example.org", username, password)
+        validate_todofy_configuration(
+            "https://todofy.example.org", username, password
+        )
 
 
 @pytest.mark.parametrize(
@@ -351,13 +388,18 @@ async def test_fakes_and_disabled_are_offline_and_honest():
     assert first["is_fixture"]
     assert len(first["items"]) == 3
     assert all(len(item["detail"]) > 35 for item in first["items"])
-    assert "不是真实" in first["summary"] or "不是从你的账户读取" in first["summary"]
+    assert (
+        "不是真实" in first["summary"]
+        or "不是从你的账户读取" in first["summary"]
+    )
     assert "未连接" in first["limitations"]
     validate_personal_digest(first)
     validate_personal_digest(disabled)
 
 
-@pytest.mark.parametrize("value", ["2026-02-30", "20260905", "2026-9-5", "not-a-date"])
+@pytest.mark.parametrize(
+    "value", ["2026-02-30", "20260905", "2026-9-5", "not-a-date"]
+)
 async def test_invalid_issue_dates(value):
     with pytest.raises(ValueError, match="Invalid Todofy issue date"):
         await DisabledTodofy().fetch(value)
@@ -373,8 +415,16 @@ async def test_top_limits_display_after_filtering_not_the_candidate_request():
     calls = []
     payload = {
         "tasks": [
-            {"rank": 1, "title": "信用卡账单已出", "reason": "电子账单可查看。"},
-            {"rank": 2, "title": "普通项目记录", "reason": "这里是尚待判断的具体说明。"},
+            {
+                "rank": 1,
+                "title": "信用卡账单已出",
+                "reason": "电子账单可查看。",
+            },
+            {
+                "rank": 2,
+                "title": "普通项目记录",
+                "reason": "这里是尚待判断的具体说明。",
+            },
             {
                 "rank": 3,
                 "title": "AutoPay failed",
@@ -392,9 +442,14 @@ async def test_top_limits_display_after_filtering_not_the_candidate_request():
 
     result = await adapter(handler, top=2).fetch(TODAY)
     assert len(calls) == 1
-    assert [item["title"] for item in result["items"]] == ["AutoPay failed", "确认会议安排"]
+    assert [item["title"] for item in result["items"]] == [
+        "AutoPay failed",
+        "确认会议安排",
+    ]
     assert [item["rank"] for item in result["items"]] == [1, 2]
-    assert result["task_count"] == 23  # Original ingress count, not selected count.
+    assert (
+        result["task_count"] == 23
+    )  # Original ingress count, not selected count.
     assert result["items"][0]["detail"] == payload["tasks"][2]["reason"]
     assert "1 条明确例行通知" in result["summary"]
     assert "1 条候选超过展示上限" in result["summary"]
@@ -409,11 +464,17 @@ async def test_all_routine_candidates_do_not_fill_slots_or_claim_no_events_or_pa
                 "title": "Statement available",
                 "reason": "Your monthly statement is ready.",
             },
-            {"rank": 2, "title": "信用卡账单提醒", "reason": "已启用自动还款。"},
+            {
+                "rank": 2,
+                "title": "信用卡账单提醒",
+                "reason": "已启用自动还款。",
+            },
         ],
         "task_count": 8,
     }
-    result = await adapter(lambda _: httpx.Response(200, json=payload)).fetch(TODAY)
+    result = await adapter(lambda _: httpx.Response(200, json=payload)).fetch(
+        TODAY
+    )
     assert result["state"] == "current"
     assert result["items"] == []
     assert result["task_count"] == 8
@@ -436,10 +497,16 @@ async def test_successful_upstream_can_select_zero_from_nonempty_source_records(
 
 async def test_risk_candidates_exceeding_cap_are_counted_not_silently_hidden():
     tasks = [
-        {"rank": i, "title": f"安全告警 {i}", "reason": f"测试账户 {i} 检测到异常登录。"}
+        {
+            "rank": i,
+            "title": f"安全告警 {i}",
+            "reason": f"测试账户 {i} 检测到异常登录。",
+        }
         for i in range(1, 4)
     ]
-    result = await adapter(lambda _: httpx.Response(200, json={"tasks": tasks}), top=1).fetch(TODAY)
+    result = await adapter(
+        lambda _: httpx.Response(200, json={"tasks": tasks}), top=1
+    ).fetch(TODAY)
     assert len(result["items"]) == 1
     assert "2 条含风险提示" in result["summary"]
     assert "task_count" not in result

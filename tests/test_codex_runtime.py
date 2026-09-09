@@ -71,10 +71,15 @@ def test_runtime_environment_actually_omits_unapproved_keys(parent_environment):
 
 
 def test_runtime_environment_does_not_invent_missing_system_keys():
-    assert _codex_runtime.runtime_environment({"OPENAI_API_KEY": "synthetic"}) == {}
+    assert (
+        _codex_runtime.runtime_environment({"OPENAI_API_KEY": "synthetic"})
+        == {}
+    )
 
 
-def test_sdk_overlay_then_final_environment_does_not_mutate_parent(monkeypatch, parent_environment):
+def test_sdk_overlay_then_final_environment_does_not_mutate_parent(
+    monkeypatch, parent_environment
+):
     before = parent_environment.copy()
     monkeypatch.setattr(os, "environ", parent_environment)
     dedicated_home = Path("/synthetic/other-dedicated-codex")
@@ -91,7 +96,9 @@ def test_sdk_overlay_then_final_environment_does_not_mutate_parent(monkeypatch, 
         assert overlay[key] == ""
 
     # Reproduce the SDK's overlay semantics without importing or starting it.
-    final = _codex_runtime.runtime_environment({**parent_environment, **overlay})
+    final = _codex_runtime.runtime_environment(
+        {**parent_environment, **overlay}
+    )
     expected = expected_environment(parent_environment)
     expected["CODEX_HOME"] = str(dedicated_home)
     assert final == expected
@@ -99,7 +106,9 @@ def test_sdk_overlay_then_final_environment_does_not_mutate_parent(monkeypatch, 
     assert os.environ is parent_environment
 
 
-@pytest.mark.parametrize("bundled_tools", [None, Path("/synthetic/bundled tools")])
+@pytest.mark.parametrize(
+    "bundled_tools", [None, Path("/synthetic/bundled tools")]
+)
 @pytest.mark.parametrize("has_path", [False, True])
 def test_helper_execs_only_bundled_runtime_with_exact_environment_and_argv(
     monkeypatch, parent_environment, bundled_tools, has_path
@@ -141,7 +150,9 @@ def test_helper_execs_only_bundled_runtime_with_exact_environment_and_argv(
     expected = expected_environment(parent_environment)
     if bundled_tools is not None:
         expected["PATH"] = (
-            f"{bundled_tools}{os.pathsep}{before['PATH']}" if has_path else str(bundled_tools)
+            f"{bundled_tools}{os.pathsep}{before['PATH']}"
+            if has_path
+            else str(bundled_tools)
         )
     assert calls == [(str(executable), [str(executable), *argv[1:]], expected)]
     assert parent_environment == before
@@ -151,10 +162,16 @@ def test_helper_execs_only_bundled_runtime_with_exact_environment_and_argv(
 
 @pytest.mark.parametrize(
     "overrides",
-    [(), runtime.CONFIG_OVERRIDES, ('test_value="$(never-execute); literal text"',)],
+    [
+        (),
+        runtime.CONFIG_OVERRIDES,
+        ('test_value="$(never-execute); literal text"',),
+    ],
 )
 def test_launch_args_use_isolated_python_and_forward_each_override(overrides):
-    expected_configs = tuple(part for item in overrides for part in ("--config", item))
+    expected_configs = tuple(
+        part for item in overrides for part in ("--config", item)
+    )
     helper = Path(runtime.__file__).with_name("_codex_runtime.py")
 
     assert runtime.launch_args(overrides) == (
@@ -169,14 +186,18 @@ def test_launch_args_use_isolated_python_and_forward_each_override(overrides):
 
 
 @pytest.mark.parametrize("helper_kind", ["missing", "directory", "symlink"])
-def test_launch_args_reject_missing_or_unsafe_helper(monkeypatch, tmp_path, helper_kind):
+def test_launch_args_reject_missing_or_unsafe_helper(
+    monkeypatch, tmp_path, helper_kind
+):
     monkeypatch.setattr(runtime, "__file__", str(tmp_path / "codex_runtime.py"))
     helper = tmp_path / "_codex_runtime.py"
     if helper_kind == "directory":
         helper.mkdir()
     elif helper_kind == "symlink":
         target = tmp_path / "synthetic-helper.py"
-        target.write_text("# synthetic fixture; never executed\n", encoding="utf-8")
+        target.write_text(
+            "# synthetic fixture; never executed\n", encoding="utf-8"
+        )
         helper.symlink_to(target)
 
     with pytest.raises(EditorError) as error:

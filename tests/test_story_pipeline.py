@@ -52,7 +52,9 @@ def rig_factory(tmp_path, monkeypatch):
     stores = []
 
     async def forbidden(*args, **kwargs):
-        raise AssertionError("A publication checkpoint must never run another model or collector")
+        raise AssertionError(
+            "A publication checkpoint must never run another model or collector"
+        )
 
     monkeypatch.setattr(CodexEditor, "execute", forbidden)
     monkeypatch.setattr(CodexEditor, "prepare", forbidden)
@@ -65,7 +67,9 @@ def rig_factory(tmp_path, monkeypatch):
         recipe = Path(
             str(
                 files("newsletter").joinpath(
-                    "workflows/legacy-daily.yaml" if legacy else "workflows/daily.yaml"
+                    "workflows/legacy-daily.yaml"
+                    if legacy
+                    else "workflows/daily.yaml"
                 )
             )
         )
@@ -80,10 +84,14 @@ def rig_factory(tmp_path, monkeypatch):
             recipe_path=recipe,
         )
         instructions, snapshot = freeze_workflow(
-            Settings(data_dir=directory, workflow_file=recipe), pipeline.state, DAY
+            Settings(data_dir=directory, workflow_file=recipe),
+            pipeline.state,
+            DAY,
         )
         if expired:
-            snapshot["inputs"]["started_at"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+            snapshot["inputs"]["started_at"] = (
+                datetime.now(UTC) - timedelta(days=1)
+            ).isoformat()
         request = {"request_key": "synthetic-topics", "issue_date": DAY}
         run = runs.start(request, instructions, workflow_snapshot=snapshot)
         definition = parse_definition(snapshot["definition"])
@@ -102,7 +110,14 @@ def rig_factory(tmp_path, monkeypatch):
             request=request,
             tasks=[task(1), task(2), task(3)],
             notion=notion,
-            worker=Worker(store, MockEditor(), notion, directory / "editor", 10, pipeline=pipeline),
+            worker=Worker(
+                store,
+                MockEditor(),
+                notion,
+                directory / "editor",
+                10,
+                pipeline=pipeline,
+            ),
         )
 
     yield make
@@ -114,7 +129,9 @@ def seed_checkpoint(rig, *, approved=True):
     rig.publications.save_plan(rig.run["id"], DAY, rig.tasks)
     value = result(content=approved)
     rig.store.save_workflow_supplements(rig.run["id"], value["packets"])
-    rig.publications.save(rig.run["id"], rig.tasks[0], "brief", value, issue_date=DAY)
+    rig.publications.save(
+        rig.run["id"], rig.tasks[0], "brief", value, issue_date=DAY
+    )
     return value
 
 
@@ -131,7 +148,9 @@ def start_deep_attempt(rig):
     for node in rig.definition.nodes:
         if node.type == "story_deep":
             repository.expand_map(rig.run["id"], node.id, rig.tasks[:1])
-            attempt = repository.claim(rig.run["id"], node.id, rig.tasks[0]["id"], {})
+            attempt = repository.claim(
+                rig.run["id"], node.id, rig.tasks[0]["id"], {}
+            )
             assert attempt
             rig.runs.update(rig.run["id"], state="collecting")
             return attempt
@@ -149,10 +168,12 @@ def assert_partial_publication(rig):
     assert run["state"] == "editing", run
     assert run["edition_id"] and not run["error_code"]
     published = rig.publications.get_publication(run["id"])
-    assert [story["story_id"] for story in published["coverage"]["stories"]] == [
-        selected["id"] for selected in rig.tasks
-    ]
-    assert [story["disposition"] for story in published["coverage"]["stories"]] == [
+    assert [
+        story["story_id"] for story in published["coverage"]["stories"]
+    ] == [selected["id"] for selected in rig.tasks]
+    assert [
+        story["disposition"] for story in published["coverage"]["stories"]
+    ] == [
         "brief",
         "deferred",
         "deferred",
@@ -177,13 +198,17 @@ def test_deep_terminal_attempt_preserves_approved_brief_and_all_topic_dispositio
     attempt = start_deep_attempt(rig)
     if terminal == "failed":
         # An expired shared login is fatal even on an optional map.
-        rig.pipeline.repository.finish(attempt, "failed", error_code="authentication")
+        rig.pipeline.repository.finish(
+            attempt, "failed", error_code="authentication"
+        )
     else:
         assert rig.pipeline.repository.recover() == 1
     status = rig.pipeline.repository.get(rig.run["id"])
     assert status["state"] == terminal
     attempts = deepcopy(rig.pipeline.repository.attempts(rig.run["id"]))
-    assert rig.pipeline.finish_graph(rig.run, rig.definition, rig.run["id"], status)
+    assert rig.pipeline.finish_graph(
+        rig.run, rig.definition, rig.run["id"], status
+    )
     assert_partial_publication(rig)
     assert rig.publications.results(rig.run["id"]) == [checkpoint]
     assert rig.pipeline.repository.attempts(rig.run["id"]) == attempts
@@ -191,7 +216,9 @@ def test_deep_terminal_attempt_preserves_approved_brief_and_all_topic_dispositio
 
 
 @pytest.mark.asyncio
-async def test_expired_budget_publishes_saved_brief_without_reset_or_another_model(rig_factory):
+async def test_expired_budget_publishes_saved_brief_without_reset_or_another_model(
+    rig_factory,
+):
     rig = rig_factory(expired=True)
     seed_checkpoint(rig)
     frozen = deepcopy(rig.snapshot)
@@ -217,13 +244,17 @@ async def test_no_checked_content_stays_blocked_without_mailing_empty_or_unverif
     assert run["error_code"] == "no_publishable_content"
     assert not run["edition_id"]
     assert rig.publications.get_publication(run["id"]) is None
-    assert rig.store.db.execute("SELECT COUNT(*) FROM editions").fetchone()[0] == 0
+    assert (
+        rig.store.db.execute("SELECT COUNT(*) FROM editions").fetchone()[0] == 0
+    )
     assert rig.store.db.execute("SELECT COUNT(*) FROM sends").fetchone()[0] == 0
     assert len(rig.publications.pending_history("2026-09-07")) == 3
 
 
 @pytest.mark.asyncio
-async def test_local_publication_reaches_ready_despite_failed_notion_and_reserves_once(rig_factory):
+async def test_local_publication_reaches_ready_despite_failed_notion_and_reserves_once(
+    rig_factory,
+):
     rig = rig_factory(expired=True)
     seed_checkpoint(rig)
     assert await rig.pipeline.collect_next()
@@ -236,7 +267,10 @@ async def test_local_publication_reaches_ready_despite_failed_notion_and_reserve
     assert run["state"] == "ready", run
     assert not rig.notion.calls  # Projection was never a precondition.
     assert await rig.worker.step()
-    assert rig.store.db.execute("SELECT projection FROM packets").fetchone()[0] == "failed"
+    assert (
+        rig.store.db.execute("SELECT projection FROM packets").fetchone()[0]
+        == "failed"
+    )
     requested = {
         "id": ready["id"],
         "request_key": "send-test",
@@ -249,47 +283,69 @@ async def test_local_publication_reaches_ready_despite_failed_notion_and_reserve
 
 
 @pytest.mark.asyncio
-async def test_frozen_publication_reentry_is_idempotent_and_rejects_late_content(rig_factory):
+async def test_frozen_publication_reentry_is_idempotent_and_rejects_late_content(
+    rig_factory,
+):
     rig = rig_factory(expired=True)
     seed_checkpoint(rig)
     assert await rig.pipeline.collect_next()
     edition, original = assert_partial_publication(rig)
     frozen_hash = content_hash(original)
-    rig.pipeline.publish_available(rig.runs.get(rig.run["id"]), rig.definition, reason="completed")
+    rig.pipeline.publish_available(
+        rig.runs.get(rig.run["id"]), rig.definition, reason="completed"
+    )
     again = rig.runs.get(rig.run["id"])
     assert again["edition_id"] == edition["id"]
-    assert content_hash(rig.publications.get_publication(rig.run["id"])) == frozen_hash
     assert (
-        rig.runs.start(rig.request, rig.instructions, workflow_snapshot=rig.snapshot)["id"]
+        content_hash(rig.publications.get_publication(rig.run["id"]))
+        == frozen_hash
+    )
+    assert (
+        rig.runs.start(
+            rig.request, rig.instructions, workflow_snapshot=rig.snapshot
+        )["id"]
         == rig.run["id"]
     )
-    assert rig.store.db.execute("SELECT COUNT(*) FROM editions").fetchone()[0] == 1
+    assert (
+        rig.store.db.execute("SELECT COUNT(*) FROM editions").fetchone()[0] == 1
+    )
     assert not rig.pipeline.repository.attempts(rig.run["id"])
     with pytest.raises(StoreError):
         rig.publications.save(
-            rig.run["id"], rig.tasks[0], "deep", result(mode="deep"), issue_date=DAY
+            rig.run["id"],
+            rig.tasks[0],
+            "deep",
+            result(mode="deep"),
+            issue_date=DAY,
         )
 
 
 @pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize(
-    "state", ["queued", "collecting", "editing", "projecting", "blocked", "ready"]
+    "state",
+    ["queued", "collecting", "editing", "projecting", "blocked", "ready"],
 )
 def test_only_new_topic_collection_has_priority_over_background_projection(
     rig_factory, legacy, state
 ):
     rig = rig_factory(legacy=legacy)
     rig.runs.update(rig.run["id"], state=state)
-    assert rig.pipeline.has_priority_work() is (not legacy and state in {"queued", "collecting"})
+    assert rig.pipeline.has_priority_work() is (
+        not legacy and state in {"queued", "collecting"}
+    )
 
 
 @pytest.mark.asyncio
-async def test_legacy_deadline_does_not_adopt_new_local_first_policy(rig_factory):
+async def test_legacy_deadline_does_not_adopt_new_local_first_policy(
+    rig_factory,
+):
     rig = rig_factory(expired=True, legacy=True)
     seed_checkpoint(rig)
     assert await rig.pipeline.collect_next()
     run = rig.runs.get(rig.run["id"])
-    assert run["state"] == "blocked" and run["error_code"] == "workflow_deadline"
+    assert (
+        run["state"] == "blocked" and run["error_code"] == "workflow_deadline"
+    )
     assert not run["edition_id"]
     assert rig.publications.get_publication(run["id"]) is None
 
@@ -312,7 +368,9 @@ async def test_approved_checkpoint_from_interrupted_story_handler_is_still_publi
         raise TimeoutError()
 
     monkeypatch.setattr(StoryEditor, "prepare", interrupted_after_checkpoint)
-    nodes = StoryNodes(rig.store, rig.definition, rig.pipeline.editor, rig.path / "jobs")
+    nodes = StoryNodes(
+        rig.store, rig.definition, rig.pipeline.editor, rig.path / "jobs"
+    )
     context = NodeContext(
         run_id=rig.run["id"],
         node_id="briefs",
@@ -323,9 +381,13 @@ async def test_approved_checkpoint_from_interrupted_story_handler_is_still_publi
         item=rig.tasks[0],
     )
     with pytest.raises(TimeoutError):
-        await nodes.execute("story_brief", context, rig.path / "story-workspace")
+        await nodes.execute(
+            "story_brief", context, rig.path / "story-workspace"
+        )
     assert rig.publications.results(rig.run["id"]) == [checked]
-    assert rig.store.db.execute("SELECT COUNT(*) FROM packets").fetchone()[0] == 1
+    assert (
+        rig.store.db.execute("SELECT COUNT(*) FROM packets").fetchone()[0] == 1
+    )
     rig.pipeline.publish_available(rig.run, rig.definition, reason="deadline")
     assert_partial_publication(rig)
     assert calls == [rig.tasks[0]["id"]]
@@ -358,7 +420,9 @@ async def test_complete_default_topic_graph_freezes_all_briefs_before_deepening_
             return {"candidates": deepcopy(candidates)}
         if kind == "selection":
             return {"research_tasks": deepcopy(rig.tasks)}
-        raise AssertionError("Topic graph must not invoke legacy composition or whole-issue review")
+        raise AssertionError(
+            "Topic graph must not invoke legacy composition or whole-issue review"
+        )
 
     async def synthetic_story(self, **kwargs):
         selected, mode = kwargs["task"], kwargs["mode"]
@@ -385,7 +449,9 @@ async def test_complete_default_topic_graph_freezes_all_briefs_before_deepening_
     run = rig.runs.get(rig.run["id"])
     assert run["state"] == "ready", run
     assert len(calls) == 6
-    assert calls == [(mode, item["id"]) for mode in ("brief", "deep") for item in rig.tasks]
+    assert calls == [
+        (mode, item["id"]) for mode in ("brief", "deep") for item in rig.tasks
+    ]
     assert (
         len(rig.publications.results(run["id"])) == 6
     )  # Duplicate callback/final save is idempotent.
@@ -394,7 +460,9 @@ async def test_complete_default_topic_graph_freezes_all_briefs_before_deepening_
     assert len(graph["nodes"]) == 9
     edition = rig.store.get(run["edition_id"])
     assert edition["state"] == "ready"
-    assert [story["disposition"] for story in edition["publication"]["stories"]] == [
+    assert [
+        story["disposition"] for story in edition["publication"]["stories"]
+    ] == [
         "deep",
         "deep",
         "brief",
@@ -414,7 +482,9 @@ async def test_complete_default_topic_graph_freezes_all_briefs_before_deepening_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("match", ["candidate_id", "arxiv_url", "doi_url", "identity_title"])
+@pytest.mark.parametrize(
+    "match", ["candidate_id", "arxiv_url", "doi_url", "identity_title"]
+)
 async def test_next_day_unfinished_source_survives_all_history_filters_without_faking_novelty(
     rig_factory, match
 ):
@@ -442,7 +512,9 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
     }
     # Alias first proves that a candidate-ID match propagates to older DOI/URL
     # identities, regardless of the order in the frozen historical snapshot.
-    rig.pipeline.state.remember([alias, pending_candidate, covered_candidate], DAY)
+    rig.pipeline.state.remember(
+        [alias, pending_candidate, covered_candidate], DAY
+    )
     selected = task(
         candidate_ids=[pending_candidate["id"]]
         if match == "candidate_id"
@@ -454,17 +526,25 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
             if match == "doi_url"
             else "https://example.org/discovery-route"
         ],
-        question=pending_candidate["title"] if match == "identity_title" else task()["question"],
+        question=pending_candidate["title"]
+        if match == "identity_title"
+        else task()["question"],
     )
     covered_task = task(
-        2, candidate_ids=[covered_candidate["id"]], source_urls=[covered_candidate["url"]]
+        2,
+        candidate_ids=[covered_candidate["id"]],
+        source_urls=[covered_candidate["url"]],
     )
     previous_tasks = [selected, covered_task]
     approved_deep = result(2, "deep")
     rig.publications.save_plan("previous-issue", DAY, previous_tasks)
-    rig.publications.save("previous-issue", covered_task, "deep", approved_deep, issue_date=DAY)
+    rig.publications.save(
+        "previous-issue", covered_task, "deep", approved_deep, issue_date=DAY
+    )
     previous = assemble("previous-issue", DAY, previous_tasks, [approved_deep])
-    rig.publications.record_publication("previous-issue", DAY, previous_tasks, previous)
+    rig.publications.record_publication(
+        "previous-issue", DAY, previous_tasks, previous
+    )
     delivery_receipt(rig.publications, "previous-issue", previous)
 
     next_day = "2026-09-07"
@@ -475,8 +555,12 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
     )
     original_inputs = deepcopy(snapshot["inputs"])
     assert len(snapshot["inputs"]["pending_stories"]) == 1
-    assert snapshot["inputs"]["pending_stories"][0]["story_id"] == selected["id"]
-    nodes = StoryNodes(rig.store, rig.definition, rig.pipeline.editor, rig.path / "followup")
+    assert (
+        snapshot["inputs"]["pending_stories"][0]["story_id"] == selected["id"]
+    )
+    nodes = StoryNodes(
+        rig.store, rig.definition, rig.pipeline.editor, rig.path / "followup"
+    )
 
     def context(node_id, inputs, item=None):
         return NodeContext(
@@ -489,11 +573,18 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
             item=item,
         )
 
-    history = await nodes.execute("history", context("history", {}), rig.path / "history")
-    assert [candidate["id"] for candidate in history["candidates"]] == [covered_candidate["id"]]
+    history = await nodes.execute(
+        "history", context("history", {}), rig.path / "history"
+    )
+    assert [candidate["id"] for candidate in history["candidates"]] == [
+        covered_candidate["id"]
+    ]
     assert history["watchlist"][0]["issue_date"] == DAY
     assert "不是新发表或新版本" in history["watchlist"][0]["summary"]
-    chosen = task(candidate_ids=[pending_candidate["id"]], source_urls=[pending_candidate["url"]])
+    chosen = task(
+        candidate_ids=[pending_candidate["id"]],
+        source_urls=[pending_candidate["url"]],
+    )
     engine = ContentEngine(
         (
             discovered(pending_candidate, covered_candidate),
@@ -506,17 +597,26 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
     instruction = rig.instructions[0].snapshot()
     found = await nodes.execute(
         "discovery",
-        context("discovery", {"history": history, "feeds": {"candidates": []}}, instruction),
+        context(
+            "discovery",
+            {"history": history, "feeds": {"candidates": []}},
+            instruction,
+        ),
         rig.path / "next-discovery",
     )
-    assert [candidate["id"] for candidate in found["candidates"]] == [pending_candidate["id"]]
+    assert [candidate["id"] for candidate in found["candidates"]] == [
+        pending_candidate["id"]
+    ]
     assert found["candidates"][0]["published_at"] == DAY
     assert found["candidates"][0]["version"] == "v2"
     # Ordinary same-pool deduplication is unchanged even when two discovery
     # directions both rediscover the permissible unfinished investigation.
     pool = await nodes.execute(
         "deduplicate",
-        context("candidates", {"history": history, "discovery": [found, deepcopy(found)]}),
+        context(
+            "candidates",
+            {"history": history, "discovery": [found, deepcopy(found)]},
+        ),
         rig.path / "next-pool",
     )
     assert len(pool["candidates"]) == 1
@@ -527,7 +627,10 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
     )
     assert selected_again["research_tasks"] == [chosen]
     assert len(engine.calls) == 2
-    assert engine.calls[0][0]["history_untrusted"][0]["id"] == covered_candidate["id"]
+    assert (
+        engine.calls[0][0]["history_untrusted"][0]["id"]
+        == covered_candidate["id"]
+    )
     assert engine.calls[1][0]["candidates_untrusted"][0]["published_at"] == DAY
     assert snapshot["inputs"] == original_inputs
 
@@ -566,7 +669,9 @@ async def test_restart_during_local_render_recovers_same_edition_and_reuses_comp
     assert rig.store.get(edition["id"])["state"] == "queued"
 
     async def no_second_todofy(edition):
-        raise AssertionError("Completed private summary must not be regenerated on local resume")
+        raise AssertionError(
+            "Completed private summary must not be regenerated on local resume"
+        )
 
     monkeypatch.setattr(rig.worker, "personal_digest", no_second_todofy)
     assert await rig.worker.step()
@@ -577,7 +682,9 @@ async def test_restart_during_local_render_recovers_same_edition_and_reuses_comp
     assert rig.runs.get(rig.run["id"])["state"] == "ready"
     assert rig.pipeline.state.edition(edition["id"]) == binding
     assert rig.publications.get_publication(rig.run["id"]) == publication
-    assert rig.store.db.execute("SELECT COUNT(*) FROM editions").fetchone()[0] == 1
+    assert (
+        rig.store.db.execute("SELECT COUNT(*) FROM editions").fetchone()[0] == 1
+    )
     assert not rig.pipeline.repository.attempts(rig.run["id"])
 
 
@@ -643,13 +750,19 @@ def test_local_render_recovery_never_weakens_frozen_evidence_legacy_or_send_guar
     rig.store.claim()
     identifier = edition["id"]
     if unsafe == "legacy_policy":
-        rig.store.db.execute("UPDATE workflow_editions SET projection_required=1")
+        rig.store.db.execute(
+            "UPDATE workflow_editions SET projection_required=1"
+        )
     elif unsafe == "missing_publication":
         rig.store.db.execute("DELETE FROM publication_snapshots")
     elif unsafe == "wrong_publication_date":
-        rig.store.db.execute("UPDATE publication_snapshots SET issue_date='2026-09-07'")
+        rig.store.db.execute(
+            "UPDATE publication_snapshots SET issue_date='2026-09-07'"
+        )
     elif unsafe == "changed_publication":
-        rig.store.db.execute("UPDATE publication_snapshots SET digest='incorrect'")
+        rig.store.db.execute(
+            "UPDATE publication_snapshots SET digest='incorrect'"
+        )
     elif unsafe == "changed_binding":
         rig.store.db.execute("UPDATE workflow_editions SET editor_result='{}'")
     elif unsafe == "missing_evidence":
@@ -671,10 +784,17 @@ def test_local_render_recovery_never_weakens_frozen_evidence_legacy_or_send_guar
     elif unsafe == "render_already_frozen":
         rig.store.finish(
             identifier,
-            rendered={"html": "frozen", "text": "frozen", "chart_png": "", "render_hash": "hash"},
+            rendered={
+                "html": "frozen",
+                "text": "frozen",
+                "chart_png": "",
+                "render_hash": "hash",
+            },
         )
     else:
-        rig.store.finish(identifier, state="failed", error_code="editor_invalid_result")
+        rig.store.finish(
+            identifier, state="failed", error_code="editor_invalid_result"
+        )
     if interruption == "crash":
         rig.store.recover()
     else:

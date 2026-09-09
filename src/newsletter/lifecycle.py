@@ -22,7 +22,11 @@ from newsletter.adapters import (
     NotionAdapter,
     Resend,
 )
-from newsletter.collection.collector import CodexCollector, Collector, MockCollector
+from newsletter.collection.collector import (
+    CodexCollector,
+    Collector,
+    MockCollector,
+)
 from newsletter.collection.instructions import load_instructions
 from newsletter.collection.pipeline import CollectionPipeline
 from newsletter.collection.repository import RunRepository
@@ -57,9 +61,13 @@ async def service_lifespan(
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise RuntimeError("Only one service process may own this data directory") from None
+            raise RuntimeError(
+                "Only one service process may own this data directory"
+            ) from None
         store = Store(
-            settings.data_dir / "newsletter.sqlite3", settings.mode, settings.max_pending_jobs
+            settings.data_dir / "newsletter.sqlite3",
+            settings.mode,
+            settings.max_pending_jobs,
         )
         try:
             store.bind_delivery_target(
@@ -76,28 +84,43 @@ async def service_lifespan(
             runs = RunRepository(store)
             runs.recover()
             workflow_state = WorkflowState(store)
-            dag_enabled = settings.workflow_backend == "dag" and settings.mode == "live"
+            dag_enabled = (
+                settings.workflow_backend == "dag" and settings.mode == "live"
+            )
             if dag_enabled:
                 # Fail startup on malformed graphs or missing instruction resources.
                 freeze_workflow(settings, workflow_state, "2000-01-01")
             chosen_editor: Editor = editor or (
                 MockEditor()
                 if settings.editor_backend == "mock"
-                else CodexEditor(codex_home=cast(Path, settings.codex_home), model=settings.model)
+                else CodexEditor(
+                    codex_home=cast(Path, settings.codex_home),
+                    model=settings.model,
+                )
             )
             notion_factories: dict[str, Callable[[], NotionAdapter]] = {
                 "disabled": lambda: DisabledNotion(),
                 "fake": lambda: FakeNotion(settings.data_dir / "notion"),
-                "notion": lambda: Notion(settings.notion_token, settings.notion_data_source_id),
+                "notion": lambda: Notion(
+                    settings.notion_token, settings.notion_data_source_id
+                ),
             }
-            notion_v2 = settings.notion_backend == "notion" and settings.notion_v2
+            notion_v2 = (
+                settings.notion_backend == "notion" and settings.notion_v2
+            )
             chosen_notion = notion or (
-                DisabledNotion() if notion_v2 else notion_factories[settings.notion_backend]()
+                DisabledNotion()
+                if notion_v2
+                else notion_factories[settings.notion_backend]()
             )
             app.state.mail = mail or (
                 FakeMail(settings.data_dir / "outbox")
                 if settings.mail_backend == "fake"
-                else Resend(settings.resend_api_key, settings.from_email, settings.recipient_email)
+                else Resend(
+                    settings.resend_api_key,
+                    settings.from_email,
+                    settings.recipient_email,
+                )
             )
             todofy_factories: dict[str, Callable[[], TodofyAdapter]] = {
                 "disabled": lambda: DisabledTodofy(),
@@ -177,7 +200,11 @@ async def service_lifespan(
             app.state.notion_sync = sync
             task = asyncio.create_task(worker.run()) if start_worker else None
             app.state.worker_task = task
-            sync_task = asyncio.create_task(sync.run()) if sync and start_worker else None
+            sync_task = (
+                asyncio.create_task(sync.run())
+                if sync and start_worker
+                else None
+            )
             app.state.notion_sync_task = sync_task
             try:
                 yield

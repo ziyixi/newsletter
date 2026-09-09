@@ -23,7 +23,8 @@ class UnavailableNotion:
     async def project(self, packet):
         self.calls.append(packet["id"])
         raise AdapterError(
-            "NOTION_UNKNOWN" if self.ambiguous else "NOTION_REJECTED", self.ambiguous
+            "NOTION_UNKNOWN" if self.ambiguous else "NOTION_REJECTED",
+            self.ambiguous,
         )
 
 
@@ -80,8 +81,17 @@ def queue(store, *, projection_required=False, key="story-edition"):
     }
     if projection_required is not None:
         binding["projection_required"] = projection_required
-    request = {"request_key": key, "issue_date": "2026-09-07", "packet_ids": [packet["id"]]}
-    return store.prepare(request, workflow_binding=binding), packet, request, binding
+    request = {
+        "request_key": key,
+        "issue_date": "2026-09-07",
+        "packet_ids": [packet["id"]],
+    }
+    return (
+        store.prepare(request, workflow_binding=binding),
+        packet,
+        request,
+        binding,
+    )
 
 
 def approval(edition, key="send"):
@@ -104,7 +114,9 @@ async def test_local_publication_survives_notion_failure_without_duplicate_send(
     ready = store.get(edition["id"])
     assert ready["state"] == "ready"
     assert not notion.calls
-    assert await worker.step()  # Background copy fails after local publication is ready.
+    assert (
+        await worker.step()
+    )  # Background copy fails after local publication is ready.
     assert store.db.execute("SELECT projection FROM packets").fetchone()[0] == (
         "unknown" if ambiguous else "failed"
     )
@@ -122,8 +134,12 @@ async def test_local_publication_survives_notion_failure_without_duplicate_send(
 async def test_legacy_or_explicit_notion_policy_still_requires_confirmation(
     store, tmp_path, projection_required
 ):
-    edition, packet, _, _ = queue(store, projection_required=projection_required)
-    worker = Worker(store, MockEditor(), UnavailableNotion(), tmp_path / "jobs", 10)
+    edition, packet, _, _ = queue(
+        store, projection_required=projection_required
+    )
+    worker = Worker(
+        store, MockEditor(), UnavailableNotion(), tmp_path / "jobs", 10
+    )
     assert await worker.step()
     assert await worker.step()
     ready = store.get(edition["id"])
@@ -136,7 +152,10 @@ async def test_legacy_or_explicit_notion_policy_still_requires_confirmation(
 @pytest.mark.parametrize("change", [True, "false", 0, None])
 def test_projection_policy_is_frozen_and_requires_real_boolean(store, change):
     edition, _, request, binding = queue(store)
-    assert store.prepare(request, workflow_binding=copy.deepcopy(binding)) == edition
+    assert (
+        store.prepare(request, workflow_binding=copy.deepcopy(binding))
+        == edition
+    )
     binding["projection_required"] = change
     with pytest.raises(StoreError):
         store.prepare(request, workflow_binding=binding)
@@ -149,11 +168,16 @@ def test_existing_database_migrates_without_weakening_legacy_bindings(tmp_path):
             "CREATE TABLE workflow_editions (edition_id TEXT PRIMARY KEY, "
             "run_id TEXT UNIQUE NOT NULL,editor_result TEXT NOT NULL,required_packets TEXT NOT NULL)"
         )
-        db.execute("INSERT INTO workflow_editions VALUES('legacy','run','{}','[]')")
+        db.execute(
+            "INSERT INTO workflow_editions VALUES('legacy','run','{}','[]')"
+        )
     store = Store(path, "mock")
     try:
         assert (
-            store.db.execute("SELECT projection_required FROM workflow_editions").fetchone()[0] == 1
+            store.db.execute(
+                "SELECT projection_required FROM workflow_editions"
+            ).fetchone()[0]
+            == 1
         )
         with pytest.raises(StoreError, match="confirmed in Notion"):
             store.assert_workflow_research("legacy")
@@ -162,12 +186,16 @@ def test_existing_database_migrates_without_weakening_legacy_bindings(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["missing", "changed", "unfrozen-citation", "wrong-approval"])
+@pytest.mark.parametrize(
+    "failure", ["missing", "changed", "unfrozen-citation", "wrong-approval"]
+)
 async def test_local_policy_does_not_relax_frozen_evidence_or_approval_checks(
     store, tmp_path, failure
 ):
     edition, packet, _, _ = queue(store)
-    worker = Worker(store, MockEditor(), UnavailableNotion(), tmp_path / "jobs", 10)
+    worker = Worker(
+        store, MockEditor(), UnavailableNotion(), tmp_path / "jobs", 10
+    )
     assert await worker.step()
     ready = store.get(edition["id"])
     requested = approval(ready)
@@ -176,7 +204,8 @@ async def test_local_policy_does_not_relax_frozen_evidence_or_approval_checks(
     elif failure == "changed":
         packet["content"]["body"] = "Changed after freezing"
         store.db.execute(
-            "UPDATE packets SET body=? WHERE id=?", (canonical_json(packet), packet["id"])
+            "UPDATE packets SET body=? WHERE id=?",
+            (canonical_json(packet), packet["id"]),
         )
     elif failure == "unfrozen-citation":
         draft = ready["draft"]
@@ -190,7 +219,9 @@ async def test_local_policy_does_not_relax_frozen_evidence_or_approval_checks(
 
 
 @pytest.mark.asyncio
-async def test_story_work_precedes_notion_but_legacy_default_does_not(store, tmp_path):
+async def test_story_work_precedes_notion_but_legacy_default_does_not(
+    store, tmp_path
+):
     _, packet, _, _ = queue(store)
     # No edition is queued here, so only content-vs-projection ordering is tested.
     store.db.execute("DELETE FROM editions")
@@ -201,20 +232,29 @@ async def test_story_work_precedes_notion_but_legacy_default_does_not(store, tmp
         return True
 
     pipeline = SimpleNamespace(
-        advance=lambda: False, has_priority_work=lambda: True, collect_next=collect
+        advance=lambda: False,
+        has_priority_work=lambda: True,
+        collect_next=collect,
     )
     notion = UnavailableNotion()
-    worker = Worker(store, MockEditor(), notion, tmp_path / "jobs", 10, pipeline=pipeline)
+    worker = Worker(
+        store, MockEditor(), notion, tmp_path / "jobs", 10, pipeline=pipeline
+    )
     assert await worker.step()
     assert calls == ["content"] and not notion.calls
-    assert store.db.execute("SELECT projection FROM packets").fetchone()[0] == "pending"
+    assert (
+        store.db.execute("SELECT projection FROM packets").fetchone()[0]
+        == "pending"
+    )
     pipeline.has_priority_work = lambda: False
     assert await worker.step()
     assert notion.calls == [packet["id"]]
     assert not CollectionPipeline.has_priority_work(pipeline)
 
 
-def test_local_snapshot_survives_reopen_even_when_projection_is_unknown(store, tmp_path):
+def test_local_snapshot_survives_reopen_even_when_projection_is_unknown(
+    store, tmp_path
+):
     edition, packet, _, _ = queue(store)
     store.projection_result(packet["id"], "unknown")
     peer = Store(tmp_path / "local.sqlite3", "mock")
@@ -223,6 +263,9 @@ def test_local_snapshot_survives_reopen_even_when_projection_is_unknown(store, t
             "SELECT snapshot FROM editions WHERE id=?", (edition["id"],)
         ).fetchone()
         assert json.loads(row[0]) == [packet]
-        assert peer.db.execute("SELECT projection FROM packets").fetchone()[0] == "unknown"
+        assert (
+            peer.db.execute("SELECT projection FROM packets").fetchone()[0]
+            == "unknown"
+        )
     finally:
         peer.close()

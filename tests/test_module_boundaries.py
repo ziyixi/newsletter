@@ -50,7 +50,9 @@ def test_preview_does_not_mutate_frozen_email(chart_png):
     }
     original = frozen.copy()
     assert preview_html(frozen) == (
-        '<p>cid:newsletter-chart</p><img src="data:image/png;base64,' + chart_png + '">'
+        '<p>cid:newsletter-chart</p><img src="data:image/png;base64,'
+        + chart_png
+        + '">'
     )
     assert frozen == original
 

@@ -60,7 +60,9 @@ async def test_two_consumers_stop_before_store_and_old_projection_is_not_claimed
     monkeypatch.setattr(lifecycle.Worker, "run", idle_worker)
     monkeypatch.setattr(lifecycle.NotionSync, "run", idle_sync)
     app = FastAPI()
-    async with lifecycle.service_lifespan(app, settings=settings, editor=MockEditor()):
+    async with lifecycle.service_lifespan(
+        app, settings=settings, editor=MockEditor()
+    ):
         await asyncio.sleep(0)
         assert events == ["worker-start", "sync-start"]
         assert isinstance(app.state.worker.notion, DisabledNotion)
@@ -72,7 +74,9 @@ async def test_two_consumers_stop_before_store_and_old_projection_is_not_claimed
     assert events == ["worker-start", "sync-start", "sync-stop", "worker-stop"]
 
 
-async def test_destination_failure_does_not_leave_content_worker_running(settings, monkeypatch):
+async def test_destination_failure_does_not_leave_content_worker_running(
+    settings, monkeypatch
+):
     async def checked(*args, **kwargs):
         return PreflightReport((), ())
 
@@ -81,7 +85,9 @@ async def test_destination_failure_does_not_leave_content_worker_running(setting
 
     monkeypatch.setattr(lifecycle, "preflight", checked)
     app = FastAPI()
-    async with lifecycle.service_lifespan(app, settings=settings, start_worker=False):
+    async with lifecycle.service_lifespan(
+        app, settings=settings, start_worker=False
+    ):
         pass
     monkeypatch.setattr(lifecycle.Worker, "run", forbidden)
     with pytest.raises(ValueError, match="explicit migration"):
@@ -100,12 +106,16 @@ def test_status_missing_database_never_creates_it(tmp_path):
     assert not path.exists()
 
 
-def test_legacy_recipe_is_rejected_for_v2_before_freezing(settings, tmp_path, monkeypatch):
+def test_legacy_recipe_is_rejected_for_v2_before_freezing(
+    settings, tmp_path, monkeypatch
+):
     from newsletter.workflow import pipeline
 
     with_store = Store(tmp_path / "source.sqlite3", "live")
     try:
-        monkeypatch.setattr(pipeline, "is_story_recipe", lambda definition: False)
+        monkeypatch.setattr(
+            pipeline, "is_story_recipe", lambda definition: False
+        )
         with pytest.raises(ValueError, match="story publication"):
             freeze_workflow(settings, WorkflowState(with_store), "2026-09-07")
     finally:

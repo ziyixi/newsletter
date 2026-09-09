@@ -20,7 +20,19 @@ from newsletter.rendering import CHART_CID, render_edition
 from newsletter.todofy import DisabledTodofy, FakeTodofy, unavailable_digest
 
 ISSUE_DATE = "2026-09-05"
-_VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "wbr"}
+_VOID = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "wbr",
+}
 
 
 class EmailStructure(HTMLParser):
@@ -67,14 +79,20 @@ class EmailStructure(HTMLParser):
 
     @property
     def links(self):
-        return [node["attrs"].get("href", "") for node in self.elements if node["tag"] == "a"]
+        return [
+            node["attrs"].get("href", "")
+            for node in self.elements
+            if node["tag"] == "a"
+        ]
 
 
 def render(personal_digest=None, *, chart=True):
     draft = copy.deepcopy(SAMPLE_DRAFT)
     if not chart:
         draft.pop("chart")
-    return render_edition(draft, SAMPLE_PACKETS, ISSUE_DATE, personal_digest=personal_digest)
+    return render_edition(
+        draft, SAMPLE_PACKETS, ISSUE_DATE, personal_digest=personal_digest
+    )
 
 
 async def test_visible_copy_keeps_essential_typography_inline():
@@ -84,13 +102,20 @@ async def test_visible_copy_keeps_essential_typography_inline():
     for text, ancestors in parsed.visible:
         assert ancestors, text
         node = ancestors[-1]
-        assert node["tag"] in {"p", "h1", "h2", "h3", "sup", "a", "th", "td"}, node
+        assert node["tag"] in {"p", "h1", "h2", "h3", "sup", "a", "th", "td"}, (
+            node
+        )
         declarations = {
             item.split(":", 1)[0].strip().lower()
             for item in node["attrs"].get("style", "").split(";")
             if ":" in item
         }
-        assert {"font-family", "font-size", "line-height", "color"} <= declarations, node
+        assert {
+            "font-family",
+            "font-size",
+            "line-height",
+            "color",
+        } <= declarations, node
 
 
 async def test_email_is_static_table_layout_without_remote_visual_dependencies():
@@ -113,7 +138,9 @@ async def test_email_is_static_table_layout_without_remote_visual_dependencies()
         "link",
     }
     assert not forbidden.intersection(node["tag"] for node in parsed.elements)
-    assert not re.search(r"display\s*:\s*(?:inline-)?(?:flex|grid)\b", html, re.I)
+    assert not re.search(
+        r"display\s*:\s*(?:inline-)?(?:flex|grid)\b", html, re.I
+    )
     assert not re.search(r"@font-face|@import|url\s*\(|javascript:", html, re.I)
     for node in parsed.elements:
         attrs = node["attrs"]
@@ -124,7 +151,8 @@ async def test_email_is_static_table_layout_without_remote_visual_dependencies()
     layout_tables = [
         node
         for node in parsed.elements
-        if node["tag"] == "table" and node["attrs"].get("role") == "presentation"
+        if node["tag"] == "table"
+        and node["attrs"].get("role") == "presentation"
     ]
     assert len(layout_tables) >= 4
     assert all(table["attrs"].get("width") == "100%" for table in layout_tables)
@@ -137,9 +165,9 @@ async def test_citations_do_not_depend_on_in_email_anchor_support():
     assert "[1]" in parsed.text and "[2]" in parsed.text
     assert not any(link.startswith("#") for link in parsed.links)
     assert all(link.startswith("https://") for link in parsed.links)
-    assert {source["url"] for source in SAMPLE_PACKETS[0]["content"]["sources"]} <= set(
-        parsed.links
-    )
+    assert {
+        source["url"] for source in SAMPLE_PACKETS[0]["content"]["sources"]
+    } <= set(parsed.links)
     assert parsed.text.count("研究介绍") == 1
 
 
@@ -163,7 +191,9 @@ async def test_personal_overview_is_last_content_in_html_and_plain_text(chart):
         for item in digest["items"]:
             assert text.index(item["title"]) > personal_start
             assert text.index(item["detail"]) > personal_start
-    assert html_text.index(digest["limitations"]) < html_text.index("少一点信息，多一点理解。")
+    assert html_text.index(digest["limitations"]) < html_text.index(
+        "少一点信息，多一点理解。"
+    )
     assert html_text.index(marker) < html_text.index("少一点信息，多一点理解。")
     assert plain_text.rstrip().endswith(digest["limitations"])
 
@@ -171,8 +201,12 @@ async def test_personal_overview_is_last_content_in_html_and_plain_text(chart):
 async def test_removing_head_and_styles_retains_all_readable_content_and_source_links():
     result = render(await FakeTodofy().fetch(ISSUE_DATE))
     original = EmailStructure(result["html"])
-    stripped = re.sub(r"<head\b[^>]*>.*?</head>", "", result["html"], flags=re.S | re.I)
-    stripped = re.sub(r"<style\b[^>]*>.*?</style>", "", stripped, flags=re.S | re.I)
+    stripped = re.sub(
+        r"<head\b[^>]*>.*?</head>", "", result["html"], flags=re.S | re.I
+    )
+    stripped = re.sub(
+        r"<style\b[^>]*>.*?</style>", "", stripped, flags=re.S | re.I
+    )
     fallback = EmailStructure(stripped)
     assert fallback.text == original.text
     assert fallback.links == original.links
@@ -187,25 +221,37 @@ def test_research_card_is_readable_without_clicking_and_link_follows_the_explana
     visible = [
         (text, ancestors)
         for text, ancestors in parsed.visible
-        if any("reading-panel" in n["attrs"].get("class", "").split() for n in ancestors)
+        if any(
+            "reading-panel" in n["attrs"].get("class", "").split()
+            for n in ancestors
+        )
     ]
     card_text = "".join(text for text, _ in visible)
     title = SAMPLE_PACKETS[0]["content"]["sources"][1]["title"]
     assert "如果今天只读一篇" not in card_text
-    title_ancestors = next(ancestors for text, ancestors in visible if text == title)
+    title_ancestors = next(
+        ancestors for text, ancestors in visible if text == title
+    )
     assert title_ancestors[-1]["tag"] == "h2"
     assert not any(node["tag"] == "a" for node in title_ancestors)
     paragraphs = SAMPLE_DRAFT["recommended_reading"]["reason"].split("\n\n")
     for paragraph in paragraphs:
         assert paragraph in card_text and paragraph in result["text"]
         assert card_text.index(paragraph) < card_text.index("原文与方法")
-    card_links = [ancestors[-1] for _, ancestors in visible if ancestors[-1]["tag"] == "a"]
+    card_links = [
+        ancestors[-1] for _, ancestors in visible if ancestors[-1]["tag"] == "a"
+    ]
     assert len(card_links) == 1
-    assert card_links[0]["attrs"]["href"] == SAMPLE_PACKETS[0]["content"]["sources"][1]["url"]
+    assert (
+        card_links[0]["attrs"]["href"]
+        == SAMPLE_PACKETS[0]["content"]["sources"][1]["url"]
+    )
     assert "overflow-wrap:anywhere" in card_links[0]["attrs"]["style"]
 
 
-@pytest.mark.parametrize("state", ["current", "empty", "unavailable", "disabled"])
+@pytest.mark.parametrize(
+    "state", ["current", "empty", "unavailable", "disabled"]
+)
 async def test_all_personal_states_have_explicit_readable_content(state):
     digest = await FakeTodofy().fetch(ISSUE_DATE)
     if state == "empty":
@@ -227,7 +273,9 @@ async def test_all_personal_states_have_explicit_readable_content(state):
         assert digest[field] in result["text"]
     for item in digest["items"]:
         assert item["title"] in parsed.text and item["detail"] in parsed.text
-        assert item["title"] in result["text"] and item["detail"] in result["text"]
+        assert (
+            item["title"] in result["text"] and item["detail"] in result["text"]
+        )
     if state != "current":
         assert "研究讨论时间待确认" not in parsed.text
     if state in {"unavailable", "disabled"}:
@@ -242,7 +290,9 @@ async def test_unknown_personal_record_count_stays_distinct_from_explicit_zero()
     assert not re.search(r"\d+ 条来源记录", EmailStructure(result["html"]).text)
     assert not re.search(r"\d+ 条来源记录", result["text"])
     empty = copy.deepcopy(unknown)
-    empty.update(state="empty", items=[], summary="没有新的入库事件。", task_count=0)
+    empty.update(
+        state="empty", items=[], summary="没有新的入库事件。", task_count=0
+    )
     known_zero = render(empty)
     assert "0 条来源记录" in EmailStructure(known_zero["html"]).text
     assert "0 条来源记录" in known_zero["text"]
@@ -252,13 +302,19 @@ async def test_long_malicious_personal_content_is_escaped_without_silent_truncat
     digest = await FakeTodofy().fetch(ISSUE_DATE)
     attack = '<img src="https://evil.example/tracker" onerror="alert(1)"><script>x</script>&'
     long_url = "https://example.org/" + "long-path-" * 80
-    detail = ("中文长段落用于检验完整保留。" * 120) + "\n" + attack + "\n" + long_url
-    digest.update(title=attack, summary=attack + "\n第二段事件概述。", source_label=attack)
+    detail = (
+        ("中文长段落用于检验完整保留。" * 120) + "\n" + attack + "\n" + long_url
+    )
+    digest.update(
+        title=attack, summary=attack + "\n第二段事件概述。", source_label=attack
+    )
     digest["items"][0].update(title=attack, detail=detail)
     digest["limitations"] = attack
     result = render(digest, chart=False)
     parsed = EmailStructure(result["html"])
-    assert not {"script", "img"}.intersection(node["tag"] for node in parsed.elements)
+    assert not {"script", "img"}.intersection(
+        node["tag"] for node in parsed.elements
+    )
     assert all("evil.example" not in link for link in parsed.links)
     assert "&lt;script&gt;" in result["html"]
     assert detail in result["text"]
@@ -271,7 +327,9 @@ async def test_representative_issue_has_a_deliberate_html_size_budget():
     # A project budget, not a claim that every client clips at the same threshold.
     result = render(await FakeTodofy().fetch(ISSUE_DATE))
     assert len(result["html"].encode("utf-8")) < 80 * 1024
-    assert "data:image" not in result["html"]  # Base64 belongs to MIME, not email HTML.
+    assert (
+        "data:image" not in result["html"]
+    )  # Base64 belongs to MIME, not email HTML.
 
 
 async def test_no_chart_and_no_personal_modules_do_not_leave_broken_placeholders():
@@ -284,7 +342,9 @@ async def test_no_chart_and_no_personal_modules_do_not_leave_broken_placeholders
     assert "图表原始数据" not in no_chart["html"]
     assert digest["items"][0]["title"] in parsed.text
     without_personal = render(chart=False)
-    assert "TODOFY / 与你有关" not in EmailStructure(without_personal["html"]).text
+    assert (
+        "TODOFY / 与你有关" not in EmailStructure(without_personal["html"]).text
+    )
     assert "None" not in without_personal["html"]
 
 
@@ -310,10 +370,16 @@ async def test_complete_personal_issue_round_trips_as_frozen_cid_mime(tmp_path):
     html = message.get_body(preferencelist=("html",)).get_content()
     assert plain.replace("\r\n", "\n").rstrip() == rendered["text"].rstrip()
     assert html.replace("\r\n", "\n").rstrip() == rendered["html"].rstrip()
-    image_parts = [part for part in message.walk() if part.get_content_type() == "image/png"]
+    image_parts = [
+        part
+        for part in message.walk()
+        if part.get_content_type() == "image/png"
+    ]
     assert len(image_parts) == 1
     assert image_parts[0]["Content-ID"] == "<newsletter-chart>"
-    assert image_parts[0].get_payload(decode=True) == base64.b64decode(rendered["chart_png"])
+    assert image_parts[0].get_payload(decode=True) == base64.b64decode(
+        rendered["chart_png"]
+    )
     assert CHART_CID in html and digest["items"][0]["detail"] in plain
     assert rendered["render_hash"] == content_hash(
         {key: rendered[key] for key in ("html", "text", "chart_png")}

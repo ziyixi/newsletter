@@ -6,9 +6,16 @@ from importlib.resources import files
 
 import pytest
 
-from newsletter.workflow.definition import DefinitionError, load_definition, parse_definition
+from newsletter.workflow.definition import (
+    DefinitionError,
+    load_definition,
+    parse_definition,
+)
 from newsletter.workflow.nodes import validate_recipe
-from newsletter.workflow.story_recipe import is_story_recipe, validate_story_recipe
+from newsletter.workflow.story_recipe import (
+    is_story_recipe,
+    validate_story_recipe,
+)
 
 
 def recipe():
@@ -48,14 +55,24 @@ def test_default_recipe_is_publication_by_deadline_not_a_global_review_tail():
 
 @pytest.mark.parametrize(
     "kind",
-    ["history", "deduplicate", "selection", "story_plan", "story_brief", "story_deep", "publish"],
+    [
+        "history",
+        "deduplicate",
+        "selection",
+        "story_plan",
+        "story_brief",
+        "story_deep",
+        "publish",
+    ],
 )
 def test_each_critical_role_is_required_exactly_once(kind):
     value = recipe()
     removed = role(value, kind)["id"]
     value["nodes"] = [node for node in value["nodes"] if node["id"] != removed]
     for node in value["nodes"]:
-        node["needs"] = [dependency for dependency in node["needs"] if dependency != removed]
+        node["needs"] = [
+            dependency for dependency in node["needs"] if dependency != removed
+        ]
         if node.get("map", {}).get("from", "").startswith(removed + "."):
             node["map"]["from"] = "run.instructions"
     with pytest.raises(DefinitionError):
@@ -102,9 +119,18 @@ def test_required_predecessors_cannot_be_removed(kind, dependency):
 
 
 @pytest.mark.parametrize(
-    "source", ["run.history", "run.editions", "run.packets", "history.editions", "run.policy"]
+    "source",
+    [
+        "run.history",
+        "run.editions",
+        "run.packets",
+        "history.editions",
+        "run.policy",
+    ],
 )
-def test_discovery_must_scan_frozen_instructions_not_an_arbitrary_empty_collection(source):
+def test_discovery_must_scan_frozen_instructions_not_an_arbitrary_empty_collection(
+    source,
+):
     value = recipe()
     role(value, "discovery")["map"]["from"] = source
     with pytest.raises(DefinitionError):
@@ -112,7 +138,15 @@ def test_discovery_must_scan_frozen_instructions_not_an_arbitrary_empty_collecti
 
 
 @pytest.mark.parametrize(
-    "kind", ["history", "api_feed", "deduplicate", "selection", "story_plan", "publish"]
+    "kind",
+    [
+        "history",
+        "api_feed",
+        "deduplicate",
+        "selection",
+        "story_plan",
+        "publish",
+    ],
 )
 def test_scalar_critical_or_metadata_nodes_cannot_be_mapped(kind):
     value = recipe()
@@ -145,7 +179,9 @@ def test_story_maps_use_their_actual_frozen_plan_fields(kind, source):
         validate(value)
 
 
-@pytest.mark.parametrize("kind", ["api_feed", "discovery", "story_brief", "story_deep"])
+@pytest.mark.parametrize(
+    "kind", ["api_feed", "discovery", "story_brief", "story_deep"]
+)
 def test_a_single_optional_leaf_cannot_be_configured_to_stop_the_issue(kind):
     value = recipe()
     role(value, kind)["on_error"] = "stop"
@@ -153,7 +189,9 @@ def test_a_single_optional_leaf_cannot_be_configured_to_stop_the_issue(kind):
         validate(value)
 
 
-@pytest.mark.parametrize("kind", ["history", "deduplicate", "selection", "story_plan", "publish"])
+@pytest.mark.parametrize(
+    "kind", ["history", "deduplicate", "selection", "story_plan", "publish"]
+)
 def test_local_critical_nodes_cannot_silently_continue_after_failure(kind):
     value = recipe()
     role(value, kind)["on_error"] = "continue"
@@ -162,9 +200,17 @@ def test_local_critical_nodes_cannot_silently_continue_after_failure(kind):
 
 
 @pytest.mark.parametrize(
-    "kind,maximum", [("story_brief", 7), ("story_brief", 13), ("story_deep", 3), ("story_deep", 5)]
+    "kind,maximum",
+    [
+        ("story_brief", 7),
+        ("story_brief", 13),
+        ("story_deep", 3),
+        ("story_deep", 5),
+    ],
 )
-def test_capacity_cannot_silently_omit_selected_briefs_or_exceed_deep_budget(kind, maximum):
+def test_capacity_cannot_silently_omit_selected_briefs_or_exceed_deep_budget(
+    kind, maximum
+):
     value = recipe()
     role(value, kind)["map"]["max_items"] = maximum
     with pytest.raises(DefinitionError):
@@ -190,7 +236,9 @@ def test_capacity_cannot_silently_omit_selected_briefs_or_exceed_deep_budget(kin
         ("discovery", "model", "untrusted"),
     ],
 )
-def test_parameters_are_registered_literals_with_explicit_bounds(kind, key, value):
+def test_parameters_are_registered_literals_with_explicit_bounds(
+    kind, key, value
+):
     value_recipe = recipe()
     role(value_recipe, kind)["params"][key] = value
     with pytest.raises(DefinitionError):
@@ -229,7 +277,9 @@ def test_extra_discovery_must_also_feed_the_candidate_pool():
 
 def test_renaming_node_ids_preserves_semantics_and_all_map_sources():
     value = recipe()
-    identities = {node["id"]: "renamed-" + node["id"] for node in value["nodes"]}
+    identities = {
+        node["id"]: "renamed-" + node["id"] for node in value["nodes"]
+    }
     for node in value["nodes"]:
         node["id"] = identities[node["id"]]
         node["needs"] = [identities[dep] for dep in node["needs"]]
@@ -245,8 +295,12 @@ def test_zero_deep_budget_still_keeps_all_briefs_and_publish_gate():
     validate(value)
 
 
-@pytest.mark.parametrize("kind", ["review", "revision", "composition", "research"])
-def test_old_global_review_types_cannot_be_inserted_into_new_publication_recipe(kind):
+@pytest.mark.parametrize(
+    "kind", ["review", "revision", "composition", "research"]
+)
+def test_old_global_review_types_cannot_be_inserted_into_new_publication_recipe(
+    kind,
+):
     value = recipe()
     value["nodes"].append({"id": "legacy-step", "type": kind})
     with pytest.raises(DefinitionError):
@@ -255,7 +309,11 @@ def test_old_global_review_types_cannot_be_inserted_into_new_publication_recipe(
 
 def test_partial_story_recipe_is_detected_even_without_story_plan():
     definition = parse_definition(
-        {"id": "partial", "version": 1, "nodes": [{"id": "publish", "type": "publish"}]}
+        {
+            "id": "partial",
+            "version": 1,
+            "nodes": [{"id": "publish", "type": "publish"}],
+        }
     )
     assert is_story_recipe(definition)
     with pytest.raises(DefinitionError):
@@ -265,7 +323,11 @@ def test_partial_story_recipe_is_detected_even_without_story_plan():
 def test_direct_dataclass_construction_does_not_bypass_syntax_or_edge_validation():
     definition = parse_definition(recipe())
     broken = replace(
-        definition, nodes=(replace(definition.nodes[0], needs=("missing",)), *definition.nodes[1:])
+        definition,
+        nodes=(
+            replace(definition.nodes[0], needs=("missing",)),
+            *definition.nodes[1:],
+        ),
     )
     with pytest.raises(DefinitionError):
         validate_story_recipe(broken)

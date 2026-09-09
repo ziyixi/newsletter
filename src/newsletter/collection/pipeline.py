@@ -22,7 +22,11 @@ class CollectionPipeline:
         max_packets: int,
     ) -> None:
         self.runs, self.collector = runs, collector
-        self.workspace, self.timeout, self.max_packets = workspace, timeout, max_packets
+        self.workspace, self.timeout, self.max_packets = (
+            workspace,
+            timeout,
+            max_packets,
+        )
 
     def has_priority_work(self) -> bool:
         """Legacy runs require projection first; newer policies may override."""
@@ -41,10 +45,16 @@ class CollectionPipeline:
                 self.runs.direction(run["id"], current, state="collecting")
                 async with asyncio.timeout(self.timeout):
                     result = await self.collector.collect(
-                        instruction, run["issue_date"], self.workspace / run["id"] / current
+                        instruction,
+                        run["issue_date"],
+                        self.workspace / run["id"] / current,
                     )
                 count += len(result.packets)
-                if count > self.max_packets or len(result.packets) > 2 or len(result.note) > 2000:
+                if (
+                    count > self.max_packets
+                    or len(result.packets) > 2
+                    or len(result.note) > 2000
+                ):
                     raise EditorError("invalid_output")
                 requests = []
                 for index, material in enumerate(result.packets):
@@ -58,7 +68,9 @@ class CollectionPipeline:
                     )
                     validate_request(request)
                     requests.append(to_dict(request))
-                self.runs.save_direction(run["id"], current, requests, result.note)
+                self.runs.save_direction(
+                    run["id"], current, requests, result.note
+                )
             self.runs.update(
                 run["id"],
                 state="projecting" if count else "blocked",
@@ -66,11 +78,15 @@ class CollectionPipeline:
             )
         except asyncio.CancelledError:
             self.runs.direction(run["id"], current, state="failed")
-            self.runs.update(run["id"], state="failed", error_code="collection_interrupted")
+            self.runs.update(
+                run["id"], state="failed", error_code="collection_interrupted"
+            )
             raise
         except TimeoutError:
             self.runs.direction(run["id"], current, state="failed")
-            self.runs.update(run["id"], state="failed", error_code="collection_timeout")
+            self.runs.update(
+                run["id"], state="failed", error_code="collection_timeout"
+            )
         except Exception as exc:
             self.runs.direction(run["id"], current, state="failed")
             code = (
@@ -108,7 +124,9 @@ class CollectionPipeline:
             states = self.runs.projection_states(packet_ids)
             if any(state in {"unknown", "failed"} for state in states):
                 self.runs.update(
-                    run["id"], state="blocked", error_code="notion_projection_unconfirmed"
+                    run["id"],
+                    state="blocked",
+                    error_code="notion_projection_unconfirmed",
                 )
                 changed = True
                 continue
@@ -130,9 +148,15 @@ class CollectionPipeline:
             except StoreError as exc:
                 if exc.code == "busy":
                     continue  # Existing queued editions will free capacity; no external retry.
-                self.runs.update(run["id"], state="failed", error_code="edition_enqueue_failed")
+                self.runs.update(
+                    run["id"],
+                    state="failed",
+                    error_code="edition_enqueue_failed",
+                )
                 changed = True
                 continue
-            self.runs.update(run["id"], state="editing", edition_id=edition["id"])
+            self.runs.update(
+                run["id"], state="editing", edition_id=edition["id"]
+            )
             changed = True
         return changed

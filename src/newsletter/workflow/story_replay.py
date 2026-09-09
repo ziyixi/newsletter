@@ -15,24 +15,42 @@ from ziyixi_protos.newsletter import editorial_pb2 as pb
 
 from newsletter.collection.instructions import Instruction
 from newsletter.collection.repository import RunRepository
-from newsletter.contracts import canonical_json, content_hash, parse_message, validate_request
+from newsletter.contracts import (
+    canonical_json,
+    content_hash,
+    parse_message,
+    validate_request,
+)
 from newsletter.editor import EditorError
 from newsletter.store import Store, StoreError, now
 from newsletter.types import Payload
 from newsletter.workflow.content import parse_plan
 from newsletter.workflow.definition import parse_definition
 from newsletter.workflow.engine import NodeContext
-from newsletter.workflow.publication import PublicationRepository, validate_result
+from newsletter.workflow.publication import (
+    PublicationRepository,
+    validate_result,
+)
 from newsletter.workflow.repository import WorkflowError, WorkflowRepository
 from newsletter.workflow.story_recipe import validate_story_recipe
 
 REUSABLE_TYPES = frozenset(
-    {"history", "api_feed", "discovery", "deduplicate", "selection", "story_plan"}
+    {
+        "history",
+        "api_feed",
+        "discovery",
+        "deduplicate",
+        "selection",
+        "story_plan",
+    }
 )
 
 
 def _conflict() -> StoreError:
-    return StoreError("conflict", "Story restart requires intact, eligible frozen source receipts")
+    return StoreError(
+        "conflict",
+        "Story restart requires intact, eligible frozen source receipts",
+    )
 
 
 class StoryReplay:
@@ -54,7 +72,8 @@ class StoryReplay:
         validate_request(parse_message(request, pb.StartRunRequest))
         with self.store.transaction():
             row = self.store.db.execute(
-                "SELECT * FROM workflow_story_replays WHERE parent_run_id=?", (parent_id,)
+                "SELECT * FROM workflow_story_replays WHERE parent_run_id=?",
+                (parent_id,),
             ).fetchone()
             if row is not None:
                 receipt = self._receipt(row)
@@ -64,7 +83,8 @@ class StoryReplay:
             if (
                 self.runs.existing(request) is not None
                 or self.store.db.execute(
-                    "SELECT 1 FROM workflow_story_replays WHERE child_run_id=?", (parent_id,)
+                    "SELECT 1 FROM workflow_story_replays WHERE child_run_id=?",
+                    (parent_id,),
                 ).fetchone()
             ):
                 raise _conflict()
@@ -72,9 +92,16 @@ class StoryReplay:
             if request["issue_date"] != snapshot["inputs"]["issue_date"]:
                 raise _conflict()
             child_snapshot = deepcopy(snapshot)
-            child_snapshot["inputs"].update(started_at=now(), story_replay=manifest)
-            instructions = [Instruction(**item) for item in snapshot["inputs"]["instructions"]]
-            child = self.runs._start(request, instructions, workflow_snapshot=child_snapshot)
+            child_snapshot["inputs"].update(
+                started_at=now(), story_replay=manifest
+            )
+            instructions = [
+                Instruction(**item)
+                for item in snapshot["inputs"]["instructions"]
+            ]
+            child = self.runs._start(
+                request, instructions, workflow_snapshot=child_snapshot
+            )
             receipt = {
                 "parent_run_id": parent_id,
                 "child_run_id": child["id"],
@@ -129,7 +156,8 @@ class StoryReplay:
             or parent["error_code"] != "no_publishable_content"
             or parent["edition_id"]
             or graph["state"] not in {"failed", "succeeded"}
-            or snapshot != {"definition": frozen["definition"], "inputs": frozen["inputs"]}
+            or snapshot
+            != {"definition": frozen["definition"], "inputs": frozen["inputs"]}
             or definition.digest != frozen["definition_hash"]
             or content_hash(frozen["inputs"]) != frozen["inputs_hash"]
             or graph["definition_hash"] != frozen["definition_hash"]
@@ -149,43 +177,68 @@ class StoryReplay:
         if (
             instructions != frozen["inputs"]["instructions"]
             or content_hash(instructions) != parent["instructions_hash"]
-            or any(content_hash(item["text"]) != item["digest"] for item in instructions)
+            or any(
+                content_hash(item["text"]) != item["digest"]
+                for item in instructions
+            )
         ):
             raise _conflict()
 
         roles = {node.type: node for node in definition.nodes}
-        upstream = {node.id: node for node in definition.nodes if node.type in REUSABLE_TYPES}
+        upstream = {
+            node.id: node
+            for node in definition.nodes
+            if node.type in REUSABLE_TYPES
+        }
         artifacts = self.workflows.artifacts(parent_id)
-        indexed = {(item["node_id"], item["item_id"]): item for item in artifacts}
+        indexed = {
+            (item["node_id"], item["item_id"]): item for item in artifacts
+        }
         attempts = self.workflows.attempts(parent_id)
-        attempt_map = {(item["node_id"], item["item_id"]): item for item in attempts}
+        attempt_map = {
+            (item["node_id"], item["item_id"]): item for item in attempts
+        }
         manifest_artifacts = []
         for node_id in sorted(upstream):
             node = upstream[node_id]
             state = graph["nodes"][node_id]
             if state["state"] != "succeeded" or state["degraded"]:
                 raise _conflict()
-            dependencies = {key: indexed[(key, "")]["value"] for key in node.needs}
+            dependencies = {
+                key: indexed[(key, "")]["value"] for key in node.needs
+            }
             if node.map is not None:
                 parts = node.map.source.split(".")
-                items = frozen["inputs"] if parts[0] == "run" else dependencies[parts[0]]
+                items = (
+                    frozen["inputs"]
+                    if parts[0] == "run"
+                    else dependencies[parts[0]]
+                )
                 for part in parts[1:]:
                     items = items[part]
                 if (
                     not state["map_expanded"]
                     or state["map_hash"] != content_hash(items)
                     or [item["value"] for item in state["items"]] != items
-                    or [item["id"] for item in state["items"]] != [item["id"] for item in items]
+                    or [item["id"] for item in state["items"]]
+                    != [item["id"] for item in items]
                 ):
                     raise _conflict()
             elif state["map_expanded"] or state["items"]:
                 raise _conflict()
-            targets = [("", state)] + [(item["id"], item) for item in state["items"]]
+            targets = [("", state)] + [
+                (item["id"], item) for item in state["items"]
+            ]
             for item_id, target in targets:
                 artifact = indexed[(node_id, item_id)]
                 digest = content_hash(artifact["value"])
                 identifier = content_hash(
-                    {"run": parent_id, "node": node_id, "item": item_id, "hash": digest}
+                    {
+                        "run": parent_id,
+                        "node": node_id,
+                        "item": item_id,
+                        "hash": digest,
+                    }
                 )
                 if (
                     target["state"] != "succeeded"
@@ -219,13 +272,18 @@ class StoryReplay:
                         "content_hash": digest,
                     }
                 )
-        candidates = indexed[(roles["deduplicate"].id, "")]["value"]["candidates"]
+        candidates = indexed[(roles["deduplicate"].id, "")]["value"][
+            "candidates"
+        ]
         for candidate in candidates:
             parse_message(candidate, pb.Candidate)
         selected = indexed[(roles["selection"].id, "")]["value"]
         tasks = parse_plan(
             canonical_json(
-                {"research_tasks": selected["research_tasks"], "note": selected["note"]}
+                {
+                    "research_tasks": selected["research_tasks"],
+                    "note": selected["note"],
+                }
             ),
             {item["id"] for item in candidates},
             {item["url"] for item in candidates},
@@ -267,7 +325,9 @@ class StoryReplay:
             ):
                 raise _conflict()
         story_ids = {roles[kind].id for kind in ("story_brief", "story_deep")}
-        story_attempts = [attempt for attempt in attempts if attempt["node_id"] in story_ids]
+        story_attempts = [
+            attempt for attempt in attempts if attempt["node_id"] in story_ids
+        ]
         configuration = (
             len(story_attempts) == 1
             and story_attempts[0]["state"] == "failed"
@@ -277,7 +337,9 @@ class StoryReplay:
         )
         unavailable = (
             bool(story_attempts)
-            and all(attempt["state"] == "succeeded" for attempt in story_attempts)
+            and all(
+                attempt["state"] == "succeeded" for attempt in story_attempts
+            )
             and {(value["story_id"], value["mode"]) for value in results}
             == {(task["id"], "brief") for task in tasks}
             | {(task["id"], "deep") for task in plan["deep_tasks"]}
@@ -313,7 +375,10 @@ class StoryReplay:
             ).fetchall()
             if (value := json.loads(row[0]))["stage"].split(":")[0] in story_ids
         ]
-        stages = {attempt["node_id"] + ":" + attempt["item_id"] for attempt in story_attempts}
+        stages = {
+            attempt["node_id"] + ":" + attempt["item_id"]
+            for attempt in story_attempts
+        }
         if (
             not (configuration or unavailable)
             or any(
@@ -338,7 +403,9 @@ class StoryReplay:
             "definition_hash": frozen["definition_hash"],
             "inputs_hash": frozen["inputs_hash"],
             "tasks_hash": content_hash(tasks),
-            "failure_hash": content_hash({"attempts": story_attempts, "results": results}),
+            "failure_hash": content_hash(
+                {"attempts": story_attempts, "results": results}
+            ),
             "artifacts": manifest_artifacts,
             "reason": "shared_writer_configuration"
             if configuration
@@ -349,7 +416,8 @@ class StoryReplay:
         """A real local attempt verifies and imports one exact upstream result."""
         with self.store.lock:
             row = self.store.db.execute(
-                "SELECT * FROM workflow_story_replays WHERE child_run_id=?", (ctx.run_id,)
+                "SELECT * FROM workflow_story_replays WHERE child_run_id=?",
+                (ctx.run_id,),
             ).fetchone()
             if row is None:
                 raise _conflict()
@@ -364,12 +432,16 @@ class StoryReplay:
             ):
                 raise _conflict()
             definition = parse_definition(snapshot["definition"])
-            node = next(node for node in definition.nodes if node.id == ctx.node_id)
+            node = next(
+                node for node in definition.nodes if node.id == ctx.node_id
+            )
             if node.type not in REUSABLE_TYPES:
                 raise _conflict()
             source = next(
                 item
-                for item in self.workflows.artifacts(receipt["parent_run_id"], ctx.node_id)
+                for item in self.workflows.artifacts(
+                    receipt["parent_run_id"], ctx.node_id
+                )
                 if item["item_id"] == ctx.item_id
             )
             value = deepcopy(source["value"])

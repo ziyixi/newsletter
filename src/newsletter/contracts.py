@@ -44,7 +44,9 @@ SECTION_KINDS = (
 CHART_KINDS = ("bar", "line")
 IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}"
 _IDENTIFIER = re.compile(IDENTIFIER_PATTERN + r"\Z")
-_DECIMAL = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\Z", re.ASCII)
+_DECIMAL = re.compile(
+    r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\Z", re.ASCII
+)
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 
@@ -77,10 +79,16 @@ def canonical_json(value: Any) -> str:
         value = to_dict(value)
     try:
         return json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
         )
     except (TypeError, ValueError, OverflowError) as exc:
-        raise ContractError("INVALID_JSON", "Value is not finite JSON data") from exc
+        raise ContractError(
+            "INVALID_JSON", "Value is not finite JSON data"
+        ) from exc
 
 
 def content_hash(value: Any) -> str:
@@ -106,32 +114,46 @@ def _check_names(data: Any, descriptor: Descriptor, depth: int = 0) -> None:
     for name, value in data.items():
         field = descriptor.fields_by_name.get(name)
         if field is None:
-            _fail("INVALID_ARGUMENT", f"Unknown or non-snake_case field in {descriptor.name}")
+            _fail(
+                "INVALID_ARGUMENT",
+                f"Unknown or non-snake_case field in {descriptor.name}",
+            )
         if field.type != FieldDescriptor.TYPE_MESSAGE or value is None:
             continue
         if field.is_repeated:
             if not isinstance(value, list):
                 _fail("INVALID_ARGUMENT", f"{name} must be a JSON array")
             for item in value:
-                _check_names(item, cast(Descriptor, field.message_type), depth + 1)
+                _check_names(
+                    item, cast(Descriptor, field.message_type), depth + 1
+                )
         else:
             _check_names(value, cast(Descriptor, field.message_type), depth + 1)
 
 
-def parse_message(data: Mapping[str, Any] | str | bytes, message_type: type[M]) -> M:
+def parse_message(
+    data: Mapping[str, Any] | str | bytes, message_type: type[M]
+) -> M:
     """Parse only declared snake_case fields; semantic checks are explicit below."""
     try:
         if isinstance(data, (str, bytes)):
-            if len(data.encode("utf-8") if isinstance(data, str) else data) > MAX_MESSAGE_BYTES:
+            if (
+                len(data.encode("utf-8") if isinstance(data, str) else data)
+                > MAX_MESSAGE_BYTES
+            ):
                 _fail("TOO_LARGE", "Message exceeds the byte limit")
             data = json.loads(
-                data, object_pairs_hook=_unique_object, parse_constant=_reject_constant
+                data,
+                object_pairs_hook=_unique_object,
+                parse_constant=_reject_constant,
             )
         _check_names(data, cast(Descriptor, message_type.DESCRIPTOR))
         if len(canonical_json(data).encode("utf-8")) > MAX_MESSAGE_BYTES:
             _fail("TOO_LARGE", "Message exceeds the byte limit")
         return json_format.ParseDict(
-            dict(cast(Mapping[str, Any], data)), message_type(), ignore_unknown_fields=False
+            dict(cast(Mapping[str, Any], data)),
+            message_type(),
+            ignore_unknown_fields=False,
         )
     except ContractError:
         raise
@@ -143,7 +165,9 @@ def parse_message(data: Mapping[str, Any] | str | bytes, message_type: type[M]) 
         RecursionError,
         json_format.ParseError,
     ) as exc:
-        raise ContractError("INVALID_ARGUMENT", "Invalid ProtoJSON message") from exc
+        raise ContractError(
+            "INVALID_ARGUMENT", "Invalid ProtoJSON message"
+        ) from exc
 
 
 def _coerce(value: Mapping[str, Any] | Message, message_type: type[M]) -> M:
@@ -155,13 +179,21 @@ def _coerce(value: Mapping[str, Any] | Message, message_type: type[M]) -> M:
 
 
 def _text(
-    value: str, name: str, maximum: int, *, required: bool = True, single_line: bool = False
+    value: str,
+    name: str,
+    maximum: int,
+    *,
+    required: bool = True,
+    single_line: bool = False,
 ) -> None:
     if required and not value.strip():
         _fail("INVALID_ARGUMENT", f"{name} is required")
     if len(value) > maximum:
         _fail("TOO_LARGE", f"{name} exceeds its length limit")
-    if any((ord(char) < 32 and char not in "\t\n\r") or ord(char) == 127 for char in value):
+    if any(
+        (ord(char) < 32 and char not in "\t\n\r") or ord(char) == 127
+        for char in value
+    ):
         _fail("INVALID_ARGUMENT", f"{name} contains control characters")
     if single_line and any(char in value for char in "\r\n\t"):
         _fail("INVALID_ARGUMENT", f"{name} must be a single line")
@@ -175,7 +207,10 @@ def _identifier(value: str, name: str) -> None:
 def _request_key(value: str) -> None:
     _text(value, "request_key", 128, single_line=True)
     if value != value.strip():
-        _fail("INVALID_ARGUMENT", "request_key must not have surrounding whitespace")
+        _fail(
+            "INVALID_ARGUMENT",
+            "request_key must not have surrounding whitespace",
+        )
 
 
 def validate_issue_date(value: str) -> None:
@@ -219,21 +254,32 @@ def validate_public_url(value: str) -> None:
         except ValueError:
             ascii_host = host.encode("idna").decode("ascii")
             numeric_host = all(
-                re.fullmatch(r"(?:0x[0-9a-f]+|[0-9]+)", label) for label in ascii_host.split(".")
+                re.fullmatch(r"(?:0x[0-9a-f]+|[0-9]+)", label)
+                for label in ascii_host.split(".")
             )
             if len(ascii_host) > 253 or "." not in ascii_host or numeric_host:
                 raise ValueError
             if ascii_host.endswith(
-                (".localhost", ".local", ".internal", ".home.arpa", ".localdomain")
+                (
+                    ".localhost",
+                    ".local",
+                    ".internal",
+                    ".home.arpa",
+                    ".localdomain",
+                )
             ):
                 raise ValueError
-            if not all(_HOST_LABEL.fullmatch(label) for label in ascii_host.split(".")):
+            if not all(
+                _HOST_LABEL.fullmatch(label) for label in ascii_host.split(".")
+            ):
                 raise ValueError
         else:
             if not address.is_global:
                 raise ValueError
     except (TypeError, ValueError, UnicodeError, AttributeError) as exc:
-        raise ContractError("INVALID_URL", "Source URL must use a public HTTP(S) host") from exc
+        raise ContractError(
+            "INVALID_URL", "Source URL must use a public HTTP(S) host"
+        ) from exc
 
 
 def validate_packet_body(body: Mapping[str, Any] | Message) -> None:
@@ -248,7 +294,9 @@ def validate_packet_body(body: Mapping[str, Any] | Message) -> None:
     for source in packet.sources:
         _identifier(source.id, "source.id")
         if source.id in seen:
-            _fail("INVALID_ARGUMENT", "Source IDs must be unique within a packet")
+            _fail(
+                "INVALID_ARGUMENT", "Source IDs must be unique within a packet"
+            )
         seen.add(source.id)
         _text(source.title, "source.title", 500, single_line=True)
         validate_public_url(source.url)
@@ -259,9 +307,13 @@ def validate_packet_body(body: Mapping[str, Any] | Message) -> None:
             try:
                 if len(source.published_at) > 40:
                     raise ValueError
-                datetime.fromisoformat(source.published_at.replace("Z", "+00:00"))
+                datetime.fromisoformat(
+                    source.published_at.replace("Z", "+00:00")
+                )
             except ValueError as exc:
-                raise ContractError("INVALID_ARGUMENT", "Invalid source published_at") from exc
+                raise ContractError(
+                    "INVALID_ARGUMENT", "Invalid source published_at"
+                ) from exc
     if len(packet.tags) > 32:
         _fail("TOO_LARGE", "Too many packet tags")
     for tag in packet.tags:
@@ -275,7 +327,10 @@ def _citations(values: Sequence[str], known: set[str]) -> None:
         _fail("INVALID_CITATION", "Duplicate citations in one element")
     for value in values:
         if value not in known:
-            _fail("INVALID_CITATION", "Citation does not identify an available packet/source")
+            _fail(
+                "INVALID_CITATION",
+                "Citation does not identify an available packet/source",
+            )
 
 
 def validate_decimal(value: str) -> Decimal:
@@ -293,7 +348,8 @@ def validate_decimal(value: str) -> Decimal:
 
 
 def validate_draft(
-    draft: Mapping[str, Any] | Message, packets: Sequence[Mapping[str, Any] | Message]
+    draft: Mapping[str, Any] | Message,
+    packets: Sequence[Mapping[str, Any] | Message],
 ) -> None:
     article = _coerce(draft, pb.Draft)
     if not 1 <= len(packets) <= MAX_PACKETS:
@@ -307,7 +363,9 @@ def validate_draft(
             _fail("INVALID_ARGUMENT", "Duplicate packet IDs")
         packet_ids.add(packet.id)
         validate_packet_body(packet.content)
-        known.update(f"{packet.id}/{source.id}" for source in packet.content.sources)
+        known.update(
+            f"{packet.id}/{source.id}" for source in packet.content.sources
+        )
     _text(article.subject, "subject", 200, single_line=True)
     _text(article.title, "title", 300, single_line=True)
     _text(article.introduction, "introduction", 4000, required=False)
@@ -328,7 +386,14 @@ def validate_draft(
         chart = article.chart
         if chart.kind not in CHART_KINDS:
             _fail("INVALID_ARGUMENT", "Unsupported chart kind")
-        for name in ("question", "metric", "unit", "period", "caption", "alt_text"):
+        for name in (
+            "question",
+            "metric",
+            "unit",
+            "period",
+            "caption",
+            "alt_text",
+        ):
             _text(getattr(chart, name), f"chart.{name}", 1000)
         _text(chart.limitations, "chart.limitations", 4000, required=False)
         if not 1 <= len(chart.points) <= MAX_CHART_POINTS:
@@ -340,12 +405,18 @@ def validate_draft(
             if point.WhichOneof("observation") == "decimal_value":
                 validate_decimal(point.decimal_value)
                 if not point.citations:
-                    _fail("INVALID_CITATION", "Numeric chart points require a citation")
+                    _fail(
+                        "INVALID_CITATION",
+                        "Numeric chart points require a citation",
+                    )
                 has_value = True
             elif point.WhichOneof("observation") == "missing_reason":
                 _text(point.missing_reason, "missing_reason", 500)
             else:
-                _fail("INVALID_NUMBER", "Chart point needs a value or a missing reason")
+                _fail(
+                    "INVALID_NUMBER",
+                    "Chart point needs a value or a missing reason",
+                )
         if not has_value:
             _fail("INVALID_NUMBER", "A chart must contain a non-missing value")
     if article.HasField("recommended_reading"):
@@ -356,7 +427,11 @@ def validate_draft(
             ],
             known,
         )
-        _text(article.recommended_reading.reason, "recommended_reading.reason", 1000)
+        _text(
+            article.recommended_reading.reason,
+            "recommended_reading.reason",
+            1000,
+        )
     if article.ByteSize() > MAX_PACKET_BYTES:
         _fail("TOO_LARGE", "Draft exceeds the byte limit")
 
@@ -378,30 +453,54 @@ def validate_personal_digest(value: Mapping[str, Any] | Message) -> None:
     _text(digest.title, "personal_digest.title", 200, single_line=True)
     _text(digest.summary, "personal_digest.summary", 12000, required=False)
     _text(
-        digest.source_label, "personal_digest.source_label", 200, required=False, single_line=True
+        digest.source_label,
+        "personal_digest.source_label",
+        200,
+        required=False,
+        single_line=True,
     )
-    _text(digest.limitations, "personal_digest.limitations", 2000, required=False)
-    _text(digest.error_code, "personal_digest.error_code", 100, required=False, single_line=True)
+    _text(
+        digest.limitations, "personal_digest.limitations", 2000, required=False
+    )
+    _text(
+        digest.error_code,
+        "personal_digest.error_code",
+        100,
+        required=False,
+        single_line=True,
+    )
     if len(digest.items) > 10 or digest.time_window_hours > 168:
         _fail("INVALID_ARGUMENT", "Personal digest exceeds limits")
     seen = set()
     for item in digest.items:
         if not 1 <= item.rank <= 100 or item.rank in seen:
-            _fail("INVALID_ARGUMENT", "Invalid or duplicate personal event rank")
+            _fail(
+                "INVALID_ARGUMENT", "Invalid or duplicate personal event rank"
+            )
         seen.add(item.rank)
         _text(item.title, "personal_event.title", 500, single_line=True)
         _text(item.detail, "personal_event.detail", 4000)
-    if digest.state == "current" and not (digest.summary.strip() or digest.items):
+    if digest.state == "current" and not (
+        digest.summary.strip() or digest.items
+    ):
         _fail("INVALID_ARGUMENT", "Current personal digest requires content")
     if digest.state != "current" and digest.items:
-        _fail("INVALID_ARGUMENT", "Unavailable or empty personal digest cannot contain events")
+        _fail(
+            "INVALID_ARGUMENT",
+            "Unavailable or empty personal digest cannot contain events",
+        )
     if digest.fetched_at:
         try:
-            parsed = datetime.fromisoformat(digest.fetched_at.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(
+                digest.fetched_at.replace("Z", "+00:00")
+            )
             if len(digest.fetched_at) > 40 or parsed.tzinfo is None:
                 raise ValueError
         except ValueError:
-            _fail("INVALID_ARGUMENT", "Personal digest fetched_at must include timezone")
+            _fail(
+                "INVALID_ARGUMENT",
+                "Personal digest fetched_at must include timezone",
+            )
 
 
 def validate_request(message: Message) -> None:
@@ -423,7 +522,10 @@ def validate_request(message: Message) -> None:
         _request_key(message.request_key)
         validate_issue_date(message.issue_date)
         if not 1 <= len(message.packet_ids) <= MAX_PACKETS:
-            _fail("INVALID_ARGUMENT", f"Prepare requires 1..{MAX_PACKETS} packet IDs")
+            _fail(
+                "INVALID_ARGUMENT",
+                f"Prepare requires 1..{MAX_PACKETS} packet IDs",
+            )
         if len(set(message.packet_ids)) != len(message.packet_ids):
             _fail("INVALID_ARGUMENT", "Duplicate packet IDs")
         for packet_id in message.packet_ids:
@@ -436,7 +538,10 @@ def validate_request(message: Message) -> None:
         _identifier(message.id, "edition.id")
         _request_key(message.request_key)
         if not _HASH.fullmatch(message.expected_render_hash):
-            _fail("INVALID_ARGUMENT", "expected_render_hash must be a SHA-256 hex digest")
+            _fail(
+                "INVALID_ARGUMENT",
+                "expected_render_hash must be a SHA-256 hex digest",
+            )
     else:
         _fail("INVALID_ARGUMENT", "Unsupported request message")
 

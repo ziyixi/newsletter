@@ -60,7 +60,9 @@ def main() -> None:
         asyncio.run(check_startups(args.child_root.resolve()))
         return
 
-    with tempfile.TemporaryDirectory(prefix="newsletter-codex-startup-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="newsletter-codex-startup-"
+    ) as directory:
         root = Path(directory).resolve()
         for name in ("workspace", "codex-state", "isolated-user", "tmp"):
             (root / name).mkdir(mode=0o700)
@@ -79,7 +81,13 @@ def main() -> None:
             "RESEND_API_KEY": "synthetic-mail-key",
         }
         subprocess.run(
-            [sys.executable, "-I", str(Path(__file__).resolve()), "--child-root", str(root)],
+            [
+                sys.executable,
+                "-I",
+                str(Path(__file__).resolve()),
+                "--child-root",
+                str(root),
+            ],
             cwd=root,
             env=environment,
             timeout=30,

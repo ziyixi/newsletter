@@ -77,7 +77,9 @@ async def test_same_date_different_ready_edition_cannot_take_send_slot(
 ):
     first, _ = _queue(store, packet_request, "edition-one")
     second, _ = _queue(store, packet_request, "edition-two")
-    worker = Worker(store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10)
+    worker = Worker(
+        store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10
+    )
     assert await worker.step()
     assert await worker.step()
     first, second = store.get(first["id"]), store.get(second["id"])
@@ -97,7 +99,9 @@ async def test_concurrent_send_reservations_have_one_winner_across_sqlite_connec
     store, packet_request, tmp_path
 ):
     edition, _ = _queue(store, packet_request, "concurrent-edition")
-    worker = Worker(store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10)
+    worker = Worker(
+        store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10
+    )
     assert await worker.step()
     edition = store.get(edition["id"])
     workers = 6
@@ -109,7 +113,9 @@ async def test_concurrent_send_reservations_have_one_winner_across_sqlite_connec
         peer = Store(tmp_path / "newsletter.sqlite3", "mock")
         try:
             barrier.wait(timeout=5)
-            reserved, won = peer.reserve_send(_approval(edition, f"concurrent-send-{index}"))
+            reserved, won = peer.reserve_send(
+                _approval(edition, f"concurrent-send-{index}")
+            )
             return reserved["id"], won
         finally:
             peer.close()
@@ -181,12 +187,16 @@ async def test_supplements_persist_with_authoritative_metadata_and_resolved_cita
             )
 
     edition, original = _queue(store, packet_request, "supplement-edition")
-    worker = Worker(store, SupplementalEditor(), DisabledNotion(), tmp_path / "jobs", 10)
+    worker = Worker(
+        store, SupplementalEditor(), DisabledNotion(), tmp_path / "jobs", 10
+    )
     assert await worker.step()
     finished = store.get(edition["id"])
     assert finished["state"] == "ready", finished
     packets = store.read_inbox()["packets"]
-    saved = next(packet for packet in packets if packet["id"] == supplement["id"])
+    saved = next(
+        packet for packet in packets if packet["id"] == supplement["id"]
+    )
     assert saved["producer_id"] == "editor"
     assert saved["workflow_id"] == "editor-research"
     assert saved["is_fixture"] is True
@@ -194,12 +204,17 @@ async def test_supplements_persist_with_authoritative_metadata_and_resolved_cita
     assert saved["created_at"]
     assert finished["packet_ids"] == [original["id"], supplement["id"]]
     snapshot = json.loads(
-        store.db.execute("SELECT snapshot FROM editions WHERE id=?", (edition["id"],)).fetchone()[0]
+        store.db.execute(
+            "SELECT snapshot FROM editions WHERE id=?", (edition["id"],)
+        ).fetchone()[0]
     )
     assert snapshot == [original, saved]
     validate_draft(finished["draft"], snapshot)
     assert "[2] 补充模拟来源" in finished["rendered"]["text"]
-    assert "https://example.org/supplemental-fixture" in finished["rendered"]["html"]
+    assert (
+        "https://example.org/supplemental-fixture"
+        in finished["rendered"]["html"]
+    )
     store.recover()
     assert store.get(edition["id"])["packet_ids"] == finished["packet_ids"]
     assert len(store.read_inbox()["packets"]) == 2
@@ -302,7 +317,9 @@ async def test_workspace_write_error_fails_only_that_edition_and_worker_can_cont
     store, packet_request, tmp_path, monkeypatch
 ):
     edition, _ = _queue(store, packet_request, "disk-error-edition")
-    worker = Worker(store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10)
+    worker = Worker(
+        store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10
+    )
     original_write = Path.write_text
 
     def fail_history(path, *args, **kwargs):
@@ -319,7 +336,9 @@ async def test_workspace_write_error_fails_only_that_edition_and_worker_can_cont
     assert "private filesystem" not in json.dumps(failed)
 
     monkeypatch.setattr(Path, "write_text", original_write)
-    next_edition, _ = _queue(store, packet_request, "after-disk-error", "2026-09-06")
+    next_edition, _ = _queue(
+        store, packet_request, "after-disk-error", "2026-09-06"
+    )
     assert await worker.step() is True
     assert store.get(next_edition["id"])["state"] == "ready"
     assert store.get(edition["id"])["state"] == "failed"

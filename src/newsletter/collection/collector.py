@@ -8,7 +8,12 @@ from urllib.parse import urldefrag
 from ziyixi_protos.newsletter import editorial_pb2 as pb
 
 from newsletter.collection.instructions import Instruction
-from newsletter.contracts import canonical_json, parse_message, to_dict, validate_packet_body
+from newsletter.contracts import (
+    canonical_json,
+    parse_message,
+    to_dict,
+    validate_packet_body,
+)
 from newsletter.editor import CodexEditor
 from newsletter.errors import EditorError
 from newsletter.model_io import load_json, prepare_workspace
@@ -38,9 +43,15 @@ class Collector(Protocol):
     ) -> ResearchResult: ...
 
 
-def parse_research(text: str, opened: set[str], searched: bool) -> ResearchResult:
+def parse_research(
+    text: str, opened: set[str], searched: bool
+) -> ResearchResult:
     value = load_json(text)
-    if not isinstance(value, dict) or set(value) != {"state", "note", "packets"}:
+    if not isinstance(value, dict) or set(value) != {
+        "state",
+        "note",
+        "packets",
+    }:
         raise EditorError("invalid_output")
     state, note, packets = value["state"], value["note"], value["packets"]
     if (
@@ -50,7 +61,11 @@ def parse_research(text: str, opened: set[str], searched: bool) -> ResearchResul
         or len(note) > 2000
     ):
         raise EditorError("invalid_output")
-    if not isinstance(packets, list) or len(packets) > 2 or bool(packets) != (state == "collected"):
+    if (
+        not isinstance(packets, list)
+        or len(packets) > 2
+        or bool(packets) != (state == "collected")
+    ):
         raise EditorError("invalid_output")
     if not searched or (packets and not opened):
         raise EditorError("invalid_output")
@@ -58,7 +73,10 @@ def parse_research(text: str, opened: set[str], searched: bool) -> ResearchResul
     for packet in packets:
         validate_packet_body(packet)
         parsed = to_dict(parse_message(packet, pb.PacketBody))
-        if any(urldefrag(source["url"])[0] not in opened for source in parsed["sources"]):
+        if any(
+            urldefrag(source["url"])[0] not in opened
+            for source in parsed["sources"]
+        ):
             raise EditorError("invalid_output")
         normalized.append(parsed)
     return ResearchResult(normalized, note.strip())

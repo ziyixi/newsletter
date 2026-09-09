@@ -26,18 +26,29 @@ def check_package(expected: dict[str, str]) -> None:
     assert len(Path("/proc/net/route").read_text().splitlines()) == 1
     for _, name in socket.if_nameindex():
         if name != "lo":
-            assert not int(Path("/sys/class/net", name, "flags").read_text(), 16) & 1
+            assert (
+                not int(Path("/sys/class/net", name, "flags").read_text(), 16)
+                & 1
+            )
     package = files("newsletter")
     assert "site-packages/newsletter" in str(package)
     assert not Path("/opt/newsletter/src").exists()
     for relative, digest in expected.items():
-        assert hashlib.sha256(package.joinpath(relative).read_bytes()).hexdigest() == digest, (
-            relative
-        )
+        assert (
+            hashlib.sha256(package.joinpath(relative).read_bytes()).hexdigest()
+            == digest
+        ), relative
     assert not package.joinpath("generated").exists()
     assert all(
         importlib.util.find_spec(name) is None
-        for name in ("pytest", "ruff", "mypy", "build", "uv", "newsletter.generated")
+        for name in (
+            "pytest",
+            "ruff",
+            "mypy",
+            "build",
+            "uv",
+            "newsletter.generated",
+        )
     )
     assert shutil.which("uv") is None
     check_proto_dependency()
@@ -51,7 +62,9 @@ def check_http(root: Path) -> None:
     with socket.socket() as available:
         available.bind(("127.0.0.1", 0))
         port = available.getsockname()[1]
-    tokens = {role: secrets.token_urlsafe(32) for role in ("INGEST", "EDITOR", "SEND")}
+    tokens = {
+        role: secrets.token_urlsafe(32) for role in ("INGEST", "EDITOR", "SEND")
+    }
     environment = {
         "PATH": os.defpath,
         "HOME": str(root),
@@ -67,7 +80,15 @@ def check_http(root: Path) -> None:
         **{f"NEWSLETTER_{role}_TOKEN": value for role, value in tokens.items()},
     }
     process = subprocess.Popen(
-        [sys.executable, "-I", "-m", "newsletter.cli", "serve", "--port", str(port)],
+        [
+            sys.executable,
+            "-I",
+            "-m",
+            "newsletter.cli",
+            "serve",
+            "--port",
+            str(port),
+        ],
         cwd=root,
         env=environment,
         stdout=subprocess.DEVNULL,
@@ -96,7 +117,9 @@ def check_http(root: Path) -> None:
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                raise RuntimeError("Image smoke service exited before completion")
+                raise RuntimeError(
+                    "Image smoke service exited before completion"
+                )
             try:
                 result = request(path)
                 if predicate(result):
@@ -108,18 +131,29 @@ def check_http(root: Path) -> None:
 
     try:
         poll("/healthz", lambda value: value["status"] == "ok")
-        run = request("/v1/runs", {"request_key": "image-smoke", "issue_date": "2026-09-05"})
+        run = request(
+            "/v1/runs",
+            {"request_key": "image-smoke", "issue_date": "2026-09-05"},
+        )
         run = poll(
-            "/v1/runs/" + run["id"], lambda value: value["state"] in {"ready", "failed", "blocked"}
+            "/v1/runs/" + run["id"],
+            lambda value: value["state"] in {"ready", "failed", "blocked"},
         )
         assert run["state"] == "ready", run.get("error_code")
-        instruction_dir = Path(str(files("newsletter").joinpath("instructions")))
+        instruction_dir = Path(
+            str(files("newsletter").joinpath("instructions"))
+        )
         assert len(run["directions"]) == len(load_instructions(instruction_dir))
-        assert all(direction["state"] == "collected" for direction in run["directions"])
+        assert all(
+            direction["state"] == "collected" for direction in run["directions"]
+        )
         path = "/v1/editions/" + run["edition_id"]
         edition = request(path)
         assert edition["state"] == "ready" and edition["is_fixture"] is True
-        assert edition["delivery_state"] == "not_requested" and not edition["provider_message_id"]
+        assert (
+            edition["delivery_state"] == "not_requested"
+            and not edition["provider_message_id"]
+        )
         rendered = edition["rendered"]
         assert rendered["render_hash"] == content_hash(
             {key: rendered[key] for key in ("html", "text", "chart_png")}
@@ -139,19 +173,28 @@ def check_http(root: Path) -> None:
 
 def main(payload: dict) -> None:
     check_package(payload["source_hashes"])
-    with tempfile.TemporaryDirectory(prefix="newsletter-image-probe-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="newsletter-image-probe-"
+    ) as temporary:
         root = Path(temporary)
         startup = root / "startup.py"
         startup.write_text(payload["startup_source"])
         subprocess.run(
             [sys.executable, "-I", str(startup)],
             cwd=root,
-            env={"PATH": os.defpath, "HOME": str(root), "TMPDIR": str(root), "LANG": "C.UTF-8"},
+            env={
+                "PATH": os.defpath,
+                "HOME": str(root),
+                "TMPDIR": str(root),
+                "LANG": "C.UTF-8",
+            },
             check=True,
             timeout=40,
         )
         check_http(root)
-        assert not list(root.rglob("auth.json")) and not list(root.rglob("*.eml"))
+        assert not list(root.rglob("auth.json")) and not list(
+            root.rglob("*.eml")
+        )
     print(
         json.dumps(
             {

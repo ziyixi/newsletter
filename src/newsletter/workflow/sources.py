@@ -23,13 +23,19 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import httpx
 
-from newsletter.contracts import ContractError, validate_issue_date, validate_public_url
+from newsletter.contracts import (
+    ContractError,
+    validate_issue_date,
+    validate_public_url,
+)
 from newsletter.errors import EditorError
 from newsletter.model_io import load_json
 
 MAX_FEED_BYTES = 1_000_000
 _DOI = re.compile(r"10\.\d{4,9}/[^\s<>\"?#]+\Z", re.IGNORECASE)
-_ARXIV = re.compile(r"/(?:abs|pdf|html)/((?:\d{4}\.\d{4,5}|[a-z-]+/\d{7}))(v\d+)?(?:\.pdf)?/?\Z")
+_ARXIV = re.compile(
+    r"/(?:abs|pdf|html)/((?:\d{4}\.\d{4,5}|[a-z-]+/\d{7}))(v\d+)?(?:\.pdf)?/?\Z"
+)
 _TRACKING = {"fbclid", "gclid", "mc_cid", "mc_eid"}
 
 
@@ -61,7 +67,9 @@ def normalize_doi(value: str) -> str:
     value = value.strip()
     if value.lower().startswith("doi:"):
         value = value[4:].strip()
-    elif value.lower().startswith(("https://doi.org/", "http://doi.org/", "https://dx.doi.org/")):
+    elif value.lower().startswith(
+        ("https://doi.org/", "http://doi.org/", "https://dx.doi.org/")
+    ):
         value = unquote(urlsplit(value).path.lstrip("/"))
     return value.lower() if len(value) <= 256 and _DOI.fullmatch(value) else ""
 
@@ -80,14 +88,21 @@ def identity_keys(value: Mapping[str, object]) -> set[str]:
             if parsed.hostname in {"doi.org", "dx.doi.org"}:
                 if derived := normalize_doi(unquote(parsed.path.lstrip("/"))):
                     keys.add("doi:" + derived)
-            if parsed.hostname in {"arxiv.org", "www.arxiv.org", "export.arxiv.org"}:
+            if parsed.hostname in {
+                "arxiv.org",
+                "www.arxiv.org",
+                "export.arxiv.org",
+            }:
                 if arxiv := _ARXIV.fullmatch(parsed.path):
                     keys.add("arxiv:" + arxiv[1].lower())
             query = urlencode(
                 sorted(
                     (key, item)
-                    for key, item in parse_qsl(parsed.query, keep_blank_values=True)
-                    if not key.lower().startswith("utm_") and key.lower() not in _TRACKING
+                    for key, item in parse_qsl(
+                        parsed.query, keep_blank_values=True
+                    )
+                    if not key.lower().startswith("utm_")
+                    and key.lower() not in _TRACKING
                 )
             )
             keys.add(
@@ -158,7 +173,8 @@ def deduplicate_candidates(
                 (
                     re.fullmatch(r"v[0-9]+", candidate["version"])
                     and re.fullmatch(r"v[0-9]+", str(old.get("version", "")))
-                    and int(candidate["version"][1:]) > int(str(old["version"])[1:])
+                    and int(candidate["version"][1:])
+                    > int(str(old["version"])[1:])
                 )
                 or (
                     candidate["published_at"]
@@ -207,7 +223,9 @@ def _metadata_candidate(
     return candidate
 
 
-def parse_crossref(raw: bytes, issue_date: str, *, limit: int = 5) -> list[Candidate]:
+def parse_crossref(
+    raw: bytes, issue_date: str, *, limit: int = 5
+) -> list[Candidate]:
     validate_issue_date(issue_date)
     if not 1 <= limit <= 20:
         raise ValueError("Metadata limit must be 1..20")
@@ -221,7 +239,10 @@ def parse_crossref(raw: bytes, issue_date: str, *, limit: int = 5) -> list[Candi
     result = []
     for item in items:
         try:
-            if not isinstance(item, dict) or item.get("type") != "journal-article":
+            if (
+                not isinstance(item, dict)
+                or item.get("type") != "journal-article"
+            ):
                 continue
             doi = normalize_doi(item["DOI"])
             if not doi:
@@ -236,7 +257,11 @@ def parse_crossref(raw: bytes, issue_date: str, *, limit: int = 5) -> list[Candi
                 continue
             result.append(
                 _metadata_candidate(
-                    item["title"][0], "https://doi.org/" + doi, doi, published, "crossref_metadata"
+                    item["title"][0],
+                    "https://doi.org/" + doi,
+                    doi,
+                    published,
+                    "crossref_metadata",
                 )
             )
         except (KeyError, TypeError, ValueError, IndexError, AttributeError):
@@ -246,7 +271,9 @@ def parse_crossref(raw: bytes, issue_date: str, *, limit: int = 5) -> list[Candi
     return result
 
 
-def parse_rss(raw: bytes, issue_date: str, *, limit: int = 5) -> list[Candidate]:
+def parse_rss(
+    raw: bytes, issue_date: str, *, limit: int = 5
+) -> list[Candidate]:
     validate_issue_date(issue_date)
     if not 1 <= limit <= 20:
         raise ValueError("Metadata limit must be 1..20")
@@ -270,14 +297,20 @@ def parse_rss(raw: bytes, issue_date: str, *, limit: int = 5) -> list[Candidate]
                     try:
                         published = date.fromisoformat(stamp[:10]).isoformat()
                     except ValueError:
-                        published = parsedate_to_datetime(stamp).date().isoformat()
+                        published = (
+                            parsedate_to_datetime(stamp).date().isoformat()
+                        )
                     break
             if published and published > issue_date:
                 continue
             doi = values.get("doi")
             result.append(
                 _metadata_candidate(
-                    title, url, doi.text or "" if doi is not None else "", published, "rss_metadata"
+                    title,
+                    url,
+                    doi.text or "" if doi is not None else "",
+                    published,
+                    "rss_metadata",
                 )
             )
         except (KeyError, ValueError, TypeError, OverflowError):
@@ -295,17 +328,27 @@ class PublicMetadataFeed:
     Each stream is bounded after decompression; failures yield diagnostics, not facts.
     """
 
-    def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(
+        self, *, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
         self.transport = transport
 
     async def fetch(self, issue_date: str) -> MetadataResult:
         validate_issue_date(issue_date)
-        since = (date.fromisoformat(issue_date) - timedelta(days=14)).isoformat()
+        since = (
+            date.fromisoformat(issue_date) - timedelta(days=14)
+        ).isoformat()
         candidates = []
         diagnostics = []
         specs = [
-            ("crossref_nature", "https://api.crossref.org/journals/0028-0836/works"),
-            ("crossref_science", "https://api.crossref.org/journals/0036-8075/works"),
+            (
+                "crossref_nature",
+                "https://api.crossref.org/journals/0028-0836/works",
+            ),
+            (
+                "crossref_science",
+                "https://api.crossref.org/journals/0036-8075/works",
+            ),
             ("nature_rss", "https://www.nature.com/nature.rss"),
         ]
         async with httpx.AsyncClient(
@@ -320,7 +363,9 @@ class PublicMetadataFeed:
         ) as client:
             for index, (name, url) in enumerate(specs):
                 if index == 1:
-                    await asyncio.sleep(1.05)  # Public Crossref list pool, not concurrent.
+                    await asyncio.sleep(
+                        1.05
+                    )  # Public Crossref list pool, not concurrent.
                 params = (
                     {
                         "filter": f"from-pub-date:{since},until-pub-date:{issue_date},type:journal-article",
@@ -333,15 +378,23 @@ class PublicMetadataFeed:
                 )
                 try:
                     async with asyncio.timeout(10):
-                        async with client.stream("GET", url, params=params) as response:
+                        async with client.stream(
+                            "GET", url, params=params
+                        ) as response:
                             if response.status_code != 200:
                                 raise ValueError("Metadata unavailable")
                             raw = bytearray()
                             async for chunk in response.aiter_bytes():
                                 raw.extend(chunk)
                                 if len(raw) > MAX_FEED_BYTES:
-                                    raise ValueError("Metadata exceeds byte limit")
-                        parser = parse_crossref if name.startswith("crossref") else parse_rss
+                                    raise ValueError(
+                                        "Metadata exceeds byte limit"
+                                    )
+                        parser = (
+                            parse_crossref
+                            if name.startswith("crossref")
+                            else parse_rss
+                        )
                         candidates.extend(parser(bytes(raw), issue_date))
                     diagnostics.append(name + ":metadata_only")
                 except (

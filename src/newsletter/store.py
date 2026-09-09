@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Unpack, cast
 
 from newsletter.contracts import canonical_json, content_hash, validate_draft
-from newsletter.types import EditionPatch, EditionRecord, Payload, ProjectionState
+from newsletter.types import (
+    EditionPatch,
+    EditionRecord,
+    Payload,
+    ProjectionState,
+)
 
 
 class StoreError(Exception):
@@ -26,9 +31,13 @@ def now() -> str:
 
 
 class Store:
-    def __init__(self, path: Path, mode: str, max_pending_jobs: int = 8) -> None:
+    def __init__(
+        self, path: Path, mode: str, max_pending_jobs: int = 8
+    ) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        self.db = sqlite3.connect(
+            path, check_same_thread=False, isolation_level=None
+        )
         self.db.row_factory = sqlite3.Row
         self.lock = threading.RLock()
         self.max_pending_jobs = max_pending_jobs
@@ -59,7 +68,10 @@ class Store:
         """)
         with self.transaction():
             verification_columns = {
-                row["name"]: row for row in self.db.execute("PRAGMA table_info(verification_sends)")
+                row["name"]: row
+                for row in self.db.execute(
+                    "PRAGMA table_info(verification_sends)"
+                )
             }
             if verification_columns["issue_date"]["pk"]:
                 # Preserve every receipt while allowing an explicitly approved
@@ -85,17 +97,26 @@ class Store:
                 "CREATE INDEX IF NOT EXISTS verification_sends_date ON verification_sends(issue_date)"
             )
             columns = {
-                row["name"] for row in self.db.execute("PRAGMA table_info(workflow_editions)")
+                row["name"]
+                for row in self.db.execute(
+                    "PRAGMA table_info(workflow_editions)"
+                )
             }
             if "projection_required" not in columns:
                 self.db.execute(
                     "ALTER TABLE workflow_editions ADD COLUMN "
                     "projection_required INTEGER NOT NULL DEFAULT 1"
                 )
-            row = self.db.execute("SELECT value FROM metadata WHERE key='mode'").fetchone()
+            row = self.db.execute(
+                "SELECT value FROM metadata WHERE key='mode'"
+            ).fetchone()
             if row and row[0] != mode:
-                raise ValueError("Do not reuse mock storage for live publication")
-            self.db.execute("INSERT OR IGNORE INTO metadata VALUES ('mode', ?)", (mode,))
+                raise ValueError(
+                    "Do not reuse mock storage for live publication"
+                )
+            self.db.execute(
+                "INSERT OR IGNORE INTO metadata VALUES ('mode', ?)", (mode,)
+            )
         self.mode = mode
 
     @contextmanager
@@ -120,9 +141,12 @@ class Store:
                 "SELECT value FROM metadata WHERE key='delivery_target'"
             ).fetchone()
             if row and row[0] != digest:
-                raise ValueError("Delivery target changed; use a new data directory")
+                raise ValueError(
+                    "Delivery target changed; use a new data directory"
+                )
             self.db.execute(
-                "INSERT OR IGNORE INTO metadata VALUES ('delivery_target', ?)", (digest,)
+                "INSERT OR IGNORE INTO metadata VALUES ('delivery_target', ?)",
+                (digest,),
             )
 
     def save_supplements(self, edition_id: str, packets: list[Payload]) -> None:
@@ -134,8 +158,12 @@ class Store:
             snapshot = json.loads(row[0])
             edition = self.get(edition_id)
             for packet in packets:
-                if self.db.execute("SELECT 1 FROM packets WHERE id=?", (packet["id"],)).fetchone():
-                    raise StoreError("conflict", "Supplemental packet ID is already in use")
+                if self.db.execute(
+                    "SELECT 1 FROM packets WHERE id=?", (packet["id"],)
+                ).fetchone():
+                    raise StoreError(
+                        "conflict", "Supplemental packet ID is already in use"
+                    )
                 self.db.execute(
                     "INSERT INTO packets(id,principal,request_key,digest,body) VALUES(?,?,?,?,?)",
                     (
@@ -149,15 +177,20 @@ class Store:
                 snapshot.append(packet)
                 edition["packet_ids"].append(packet["id"])
             self.db.execute(
-                "UPDATE editions SET snapshot=? WHERE id=?", (canonical_json(snapshot), edition_id)
+                "UPDATE editions SET snapshot=? WHERE id=?",
+                (canonical_json(snapshot), edition_id),
             )
             self._write(edition)
 
-    def put_packet(self, request: Payload, principal: str = "producer") -> Payload:
+    def put_packet(
+        self, request: Payload, principal: str = "producer"
+    ) -> Payload:
         with self.transaction():
             return self._put_packet(request, principal)
 
-    def save_workflow_supplements(self, run_id: str, packets: list[Payload]) -> None:
+    def save_workflow_supplements(
+        self, run_id: str, packets: list[Payload]
+    ) -> None:
         """Preserve validated editor citation IDs before the DAG artifact is finalized."""
         with self.transaction():
             for packet in packets:
@@ -167,7 +200,9 @@ class Store:
                 body = canonical_json(packet)
                 if previous is not None:
                     if previous[0] != body:
-                        raise StoreError("conflict", "Research packet identity cannot change")
+                        raise StoreError(
+                            "conflict", "Research packet identity cannot change"
+                        )
                     continue
                 self.db.execute(
                     "INSERT INTO packets(id,principal,request_key,digest,body) VALUES(?,?,?,?,?)",
@@ -189,7 +224,9 @@ class Store:
         ).fetchone()
         if row:
             if row["digest"] != digest:
-                raise StoreError("conflict", "request_key was used for different material")
+                raise StoreError(
+                    "conflict", "request_key was used for different material"
+                )
             return json.loads(row["body"])
         packet = {
             "id": str(uuid.uuid4()),
@@ -202,21 +239,34 @@ class Store:
         }
         self.db.execute(
             "INSERT INTO packets(id,principal,request_key,digest,body) VALUES(?,?,?,?,?)",
-            (packet["id"], principal, request["request_key"], digest, canonical_json(packet)),
+            (
+                packet["id"],
+                principal,
+                request["request_key"],
+                digest,
+                canonical_json(packet),
+            ),
         )
         return packet
 
     def read_inbox(self, limit: int = 20, cursor: str = "") -> Payload:
         with self.lock:
-            top = self.db.execute("SELECT COALESCE(MAX(seq),0) FROM packets").fetchone()[0]
+            top = self.db.execute(
+                "SELECT COALESCE(MAX(seq),0) FROM packets"
+            ).fetchone()[0]
             before = top + 1
             if cursor:
                 try:
                     top, before = json.loads(base64.urlsafe_b64decode(cursor))
-                    if any(type(v) is not int or not 0 <= v <= 2**63 - 1 for v in (top, before)):
+                    if any(
+                        type(v) is not int or not 0 <= v <= 2**63 - 1
+                        for v in (top, before)
+                    ):
                         raise ValueError()
                 except (ValueError, TypeError, KeyError):
-                    raise StoreError("invalid_argument", "Invalid inbox cursor") from None
+                    raise StoreError(
+                        "invalid_argument", "Invalid inbox cursor"
+                    ) from None
             rows = self.db.execute(
                 "SELECT seq,body FROM packets WHERE seq<=? AND seq<? ORDER BY seq DESC LIMIT ?",
                 (top, before, limit + 1),
@@ -238,16 +288,23 @@ class Store:
         digest = content_hash(request)
         if (
             workflow_binding is not None
-            and type(workflow_binding.get("projection_required", True)) is not bool
+            and type(workflow_binding.get("projection_required", True))
+            is not bool
         ):
-            raise StoreError("invalid_argument", "Projection policy must be an explicit boolean")
+            raise StoreError(
+                "invalid_argument",
+                "Projection policy must be an explicit boolean",
+            )
         with self.transaction():
             row = self.db.execute(
-                "SELECT digest,body FROM editions WHERE request_key=?", (request["request_key"],)
+                "SELECT digest,body FROM editions WHERE request_key=?",
+                (request["request_key"],),
             ).fetchone()
             if row:
                 if row["digest"] != digest:
-                    raise StoreError("conflict", "request_key was used for another edition")
+                    raise StoreError(
+                        "conflict", "request_key was used for another edition"
+                    )
                 existing = cast(EditionRecord, json.loads(row["body"]))
                 if workflow_binding is not None:
                     binding = self.db.execute(
@@ -258,11 +315,15 @@ class Store:
                     expected = (
                         workflow_binding["run_id"],
                         canonical_json(workflow_binding["result"]),
-                        canonical_json(sorted(set(workflow_binding["required_packets"]))),
+                        canonical_json(
+                            sorted(set(workflow_binding["required_packets"]))
+                        ),
                         int(workflow_binding.get("projection_required", True)),
                     )
                     if binding is None or tuple(binding) != expected:
-                        raise StoreError("conflict", "Frozen workflow edition cannot change")
+                        raise StoreError(
+                            "conflict", "Frozen workflow edition cannot change"
+                        )
                 return existing
             if (
                 self.db.execute(
@@ -277,7 +338,9 @@ class Store:
                     "SELECT body FROM packets WHERE id=?", (packet_id,)
                 ).fetchone()
                 if not row:
-                    raise StoreError("not_found", "One or more packets do not exist")
+                    raise StoreError(
+                        "not_found", "One or more packets do not exist"
+                    )
                 packets.append(json.loads(row[0]))
             at = now()
             edition: EditionRecord = {
@@ -310,7 +373,9 @@ class Store:
                         edition["id"],
                         workflow_binding["run_id"],
                         canonical_json(workflow_binding["result"]),
-                        canonical_json(sorted(set(workflow_binding["required_packets"]))),
+                        canonical_json(
+                            sorted(set(workflow_binding["required_packets"]))
+                        ),
                         int(workflow_binding.get("projection_required", True)),
                     ),
                 )
@@ -318,7 +383,9 @@ class Store:
 
     def get(self, edition_id: str) -> EditionRecord:
         with self.lock:
-            row = self.db.execute("SELECT body FROM editions WHERE id=?", (edition_id,)).fetchone()
+            row = self.db.execute(
+                "SELECT body FROM editions WHERE id=?", (edition_id,)
+            ).fetchone()
             if not row:
                 raise StoreError("not_found", "Edition not found")
             # Only this store writes edition records, after boundary validation.
@@ -347,7 +414,9 @@ class Store:
             self._write(edition)
             return edition, json.loads(row["snapshot"])
 
-    def finish(self, edition_id: str, **fields: Unpack[EditionPatch]) -> EditionRecord:
+    def finish(
+        self, edition_id: str, **fields: Unpack[EditionPatch]
+    ) -> EditionRecord:
         with self.transaction():
             edition = self.get(edition_id)
             edition.update(fields)
@@ -357,21 +426,32 @@ class Store:
     def recover(self) -> None:
         """Interrupted research is reported; ambiguous mail is never auto-resubmitted."""
         with self.transaction():
-            for row in self.db.execute("SELECT body,snapshot FROM editions").fetchall():
+            for row in self.db.execute(
+                "SELECT body,snapshot FROM editions"
+            ).fetchall():
                 edition = cast(EditionRecord, json.loads(row["body"]))
                 changed = False
                 if edition["state"] == "running":
                     if self._recoverable_local_render(edition, row["snapshot"]):
                         edition.update({"state": "queued", "error_code": ""})
                     else:
-                        edition.update({"state": "failed", "error_code": "interrupted"})
+                        edition.update(
+                            {"state": "failed", "error_code": "interrupted"}
+                        )
                     changed = True
                 if edition["delivery_state"] == "submitting":
-                    edition.update({"delivery_state": "unknown", "error_code": "delivery_unknown"})
+                    edition.update(
+                        {
+                            "delivery_state": "unknown",
+                            "error_code": "delivery_unknown",
+                        }
+                    )
                     changed = True
                 if changed:
                     self._write(edition)
-            self.db.execute("UPDATE packets SET projection='unknown' WHERE projection='submitting'")
+            self.db.execute(
+                "UPDATE packets SET projection='unknown' WHERE projection='submitting'"
+            )
 
     def interrupt_preparation(self, edition_id: str) -> None:
         """Graceful cancellation uses the same narrow local-only recovery policy.
@@ -395,7 +475,9 @@ class Store:
                 edition.update({"state": "failed", "error_code": "interrupted"})
             self._write(edition)
 
-    def _recoverable_local_render(self, edition: EditionRecord, snapshot_json: str) -> bool:
+    def _recoverable_local_render(
+        self, edition: EditionRecord, snapshot_json: str
+    ) -> bool:
         """Read-only checks inside the caller's transaction, fail closed on drift."""
         if (
             edition["delivery_state"] != "not_requested"
@@ -423,7 +505,10 @@ class Store:
             "SELECT issue_date,tasks,body,digest FROM publication_snapshots WHERE run_id=?",
             (binding["run_id"],),
         ).fetchone()
-        if publication is None or publication["issue_date"] != edition["issue_date"]:
+        if (
+            publication is None
+            or publication["issue_date"] != edition["issue_date"]
+        ):
             return False
         try:
             frozen = json.loads(publication["body"])
@@ -433,7 +518,8 @@ class Store:
                 frozen["notion_required"] is not False
                 or frozen["review"]["passed"] is not True
                 or canonical_json(expected) != binding["editor_result"]
-                or canonical_json(packets) != canonical_json(json.loads(snapshot_json))
+                or canonical_json(packets)
+                != canonical_json(json.loads(snapshot_json))
                 or [packet["id"] for packet in packets] != edition["packet_ids"]
                 or publication["digest"]
                 != content_hash(
@@ -450,11 +536,15 @@ class Store:
             if not required or any(key not in by_id for key in required):
                 return False
             for key in required:
-                saved = self.db.execute("SELECT body FROM packets WHERE id=?", (key,)).fetchone()
+                saved = self.db.execute(
+                    "SELECT body FROM packets WHERE id=?", (key,)
+                ).fetchone()
                 if (
                     saved is None
-                    or canonical_json(json.loads(saved["body"])) != canonical_json(by_id[key])
-                    or by_id[key]["content_hash"] != content_hash(by_id[key]["content"])
+                    or canonical_json(json.loads(saved["body"]))
+                    != canonical_json(by_id[key])
+                    or by_id[key]["content_hash"]
+                    != content_hash(by_id[key]["content"])
                 ):
                     return False
             validate_draft(frozen["draft"], [by_id[key] for key in required])
@@ -467,22 +557,34 @@ class Store:
             edition = self.get(request["id"])
             if edition["state"] != "ready":
                 raise StoreError("conflict", "Only a ready edition can be sent")
-            if edition["rendered"]["render_hash"] != request["expected_render_hash"]:
-                raise StoreError("conflict", "Approval does not match the frozen preview")
+            if (
+                edition["rendered"]["render_hash"]
+                != request["expected_render_hash"]
+            ):
+                raise StoreError(
+                    "conflict", "Approval does not match the frozen preview"
+                )
             row = self.db.execute(
-                "SELECT * FROM sends WHERE request_key=?", (request["request_key"],)
+                "SELECT * FROM sends WHERE request_key=?",
+                (request["request_key"],),
             ).fetchone()
             if row and (
                 row["edition_id"] != request["id"]
                 or row["render_hash"] != request["expected_render_hash"]
             ):
-                raise StoreError("conflict", "Send request_key was used for a different approval")
+                raise StoreError(
+                    "conflict",
+                    "Send request_key was used for a different approval",
+                )
             row = self.db.execute(
-                "SELECT * FROM sends WHERE issue_date=?", (edition["issue_date"],)
+                "SELECT * FROM sends WHERE issue_date=?",
+                (edition["issue_date"],),
             ).fetchone()
             if row:
                 if row["edition_id"] != edition["id"]:
-                    raise StoreError("conflict", "This issue already has a delivery attempt")
+                    raise StoreError(
+                        "conflict", "This issue already has a delivery attempt"
+                    )
                 return edition, False
             self.assert_workflow_research(edition["id"])
             self.db.execute(
@@ -511,34 +613,61 @@ class Store:
         with self.transaction():
             edition = self.get(request["id"])
             if edition["state"] != "ready":
-                raise StoreError("conflict", "Only a ready edition can be verified")
-            if edition["rendered"]["render_hash"] != request["expected_render_hash"]:
-                raise StoreError("conflict", "Approval does not match the frozen preview")
+                raise StoreError(
+                    "conflict", "Only a ready edition can be verified"
+                )
+            if (
+                edition["rendered"]["render_hash"]
+                != request["expected_render_hash"]
+            ):
+                raise StoreError(
+                    "conflict", "Approval does not match the frozen preview"
+                )
             reused = self.db.execute(
                 "SELECT edition_id,render_hash FROM verification_sends WHERE request_key=?",
                 (request["request_key"],),
             ).fetchone()
-            if reused and tuple(reused) != (request["id"], request["expected_render_hash"]):
-                raise StoreError("conflict", "Verification key belongs to another approval")
+            if reused and tuple(reused) != (
+                request["id"],
+                request["expected_render_hash"],
+            ):
+                raise StoreError(
+                    "conflict", "Verification key belongs to another approval"
+                )
             existing = self.db.execute(
                 "SELECT render_hash,previous_edition_id FROM verification_sends WHERE edition_id=?",
                 (edition["id"],),
             ).fetchone()
             if existing:
-                if existing["render_hash"] != request["expected_render_hash"] or (
+                if existing["render_hash"] != request[
+                    "expected_render_hash"
+                ] or (
                     previous_verification_id is not None
-                    and existing["previous_edition_id"] != previous_verification_id
+                    and existing["previous_edition_id"]
+                    != previous_verification_id
                 ):
-                    raise StoreError("conflict", "Verification receipt belongs to another approval")
+                    raise StoreError(
+                        "conflict",
+                        "Verification receipt belongs to another approval",
+                    )
                 return edition, False
             previous = self.db.execute(
-                "SELECT edition_id FROM sends WHERE issue_date=?", (edition["issue_date"],)
+                "SELECT edition_id FROM sends WHERE issue_date=?",
+                (edition["issue_date"],),
             ).fetchone()
             if previous is None or previous[0] == edition["id"]:
-                raise StoreError("conflict", "Verification requires a distinct delivered issue")
-            accepted = "simulated" if self.mode == "mock" else "provider_accepted"
+                raise StoreError(
+                    "conflict",
+                    "Verification requires a distinct delivered issue",
+                )
+            accepted = (
+                "simulated" if self.mode == "mock" else "provider_accepted"
+            )
             if self.get(previous[0])["delivery_state"] != accepted:
-                raise StoreError("conflict", "Original delivery must have confirmed acceptance")
+                raise StoreError(
+                    "conflict",
+                    "Original delivery must have confirmed acceptance",
+                )
             rows = self.db.execute(
                 "SELECT edition_id,render_hash,previous_edition_id FROM verification_sends "
                 "WHERE issue_date=?",
@@ -547,13 +676,22 @@ class Store:
             predecessor = previous[0]
             if previous_verification_id is None:
                 if rows:
-                    raise StoreError("conflict", "This date already has a verification attempt")
+                    raise StoreError(
+                        "conflict",
+                        "This date already has a verification attempt",
+                    )
             else:
                 predecessor = self._verification_extension(
-                    rows, previous[0], previous_verification_id, edition["issue_date"], accepted
+                    rows,
+                    previous[0],
+                    previous_verification_id,
+                    edition["issue_date"],
+                    accepted,
                 )
             if edition["delivery_state"] != "not_requested":
-                raise StoreError("conflict", "Edition already has a delivery attempt")
+                raise StoreError(
+                    "conflict", "Edition already has a delivery attempt"
+                )
             self.assert_workflow_research(edition["id"])
             self.db.execute(
                 "INSERT INTO verification_sends "
@@ -587,7 +725,9 @@ class Store:
         while cursor in successors:
             row = successors[cursor]
             if row["edition_id"] in visited:
-                raise StoreError("conflict", "Verification receipt chain is inconsistent")
+                raise StoreError(
+                    "conflict", "Verification receipt chain is inconsistent"
+                )
             prior = self.get(row["edition_id"])
             if (
                 prior["issue_date"] != issue_date
@@ -595,12 +735,20 @@ class Store:
                 or prior["rendered"]["render_hash"] != row["render_hash"]
             ):
                 raise StoreError(
-                    "conflict", "Prior verification must have confirmed frozen acceptance"
+                    "conflict",
+                    "Prior verification must have confirmed frozen acceptance",
                 )
             visited.add(row["edition_id"])
             cursor = row["edition_id"]
-        if not rows or len(visited) != len(rows) or cursor != approved_predecessor:
-            raise StoreError("conflict", "Approval must name the latest same-date verification")
+        if (
+            not rows
+            or len(visited) != len(rows)
+            or cursor != approved_predecessor
+        ):
+            raise StoreError(
+                "conflict",
+                "Approval must name the latest same-date verification",
+            )
         return cursor
 
     def assert_workflow_research(self, edition_id: str) -> None:
@@ -621,16 +769,19 @@ class Store:
             required = json.loads(binding["required_packets"])
             rows = {
                 packet_id: self.db.execute(
-                    "SELECT body,projection FROM packets WHERE id=?", (packet_id,)
+                    "SELECT body,projection FROM packets WHERE id=?",
+                    (packet_id,),
                 ).fetchone()
                 for packet_id in required
             }
             if binding["projection_required"]:
                 if not required or any(
-                    row is None or row["projection"] != "done" for row in rows.values()
+                    row is None or row["projection"] != "done"
+                    for row in rows.values()
                 ):
                     raise StoreError(
-                        "conflict", "Adopted research must be confirmed in Notion before sending"
+                        "conflict",
+                        "Adopted research must be confirmed in Notion before sending",
                     )
                 return
             frozen = self.db.execute(
@@ -641,16 +792,25 @@ class Store:
             if not required or any(
                 row is None
                 or packet_id not in packets
-                or canonical_json(json.loads(row["body"])) != canonical_json(packets[packet_id])
-                or packets[packet_id]["content_hash"] != content_hash(packets[packet_id]["content"])
+                or canonical_json(json.loads(row["body"]))
+                != canonical_json(packets[packet_id])
+                or packets[packet_id]["content_hash"]
+                != content_hash(packets[packet_id]["content"])
                 for packet_id, row in rows.items()
             ):
-                raise StoreError("conflict", "Publication requires intact frozen local research")
+                raise StoreError(
+                    "conflict",
+                    "Publication requires intact frozen local research",
+                )
             try:
-                validate_draft(self.get(edition_id)["draft"], [packets[key] for key in required])
+                validate_draft(
+                    self.get(edition_id)["draft"],
+                    [packets[key] for key in required],
+                )
             except (KeyError, ValueError):
                 raise StoreError(
-                    "conflict", "Publication references do not match frozen research"
+                    "conflict",
+                    "Publication references do not match frozen research",
                 ) from None
 
     def claim_projection(self) -> Payload | None:
@@ -660,12 +820,17 @@ class Store:
             ).fetchone()
             if not row:
                 return None
-            self.db.execute("UPDATE packets SET projection='submitting' WHERE id=?", (row["id"],))
+            self.db.execute(
+                "UPDATE packets SET projection='submitting' WHERE id=?",
+                (row["id"],),
+            )
             return json.loads(row["body"])
 
     def projection_result(self, packet_id: str, state: ProjectionState) -> None:
         with self.transaction():
-            self.db.execute("UPDATE packets SET projection=? WHERE id=?", (state, packet_id))
+            self.db.execute(
+                "UPDATE packets SET projection=? WHERE id=?", (state, packet_id)
+            )
 
     def recent_history(self) -> list[EditionRecord]:
         with self.lock:

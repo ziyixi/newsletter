@@ -22,7 +22,9 @@ from newsletter.workflow.repository import MAX_ARTIFACT_BYTES
 
 
 def definition(*nodes):
-    return parse_definition({"version": 1, "id": "daily-newsletter", "nodes": list(nodes)})
+    return parse_definition(
+        {"version": 1, "id": "daily-newsletter", "nodes": list(nodes)}
+    )
 
 
 def node(identifier="discover", kind="discovery", **fields):
@@ -47,7 +49,10 @@ nodes:
     params:
       direction: "literal-${DO_NOT_EXPAND}-$(do_not_execute)"
 """)
-    assert loaded.nodes[0].params["direction"] == "literal-${DO_NOT_EXPAND}-$(do_not_execute)"
+    assert (
+        loaded.nodes[0].params["direction"]
+        == "literal-${DO_NOT_EXPAND}-$(do_not_execute)"
+    )
     params = loaded.nodes[0].params
     params["direction"] = "changed"
     assert loaded.nodes[0].params != params
@@ -106,7 +111,10 @@ def test_unsafe_yaml_fails_with_safe_diagnostics(bad):
         [node("a", "composition", on_error="continue")],
         [node("a", on_error="retry_forever")],
         [node(f"node-{index}") for index in range(MAX_NODES + 1)],
-        [node(f"node-{index}", map={"from": "run.items", "max_items": 32}) for index in range(5)],
+        [
+            node(f"node-{index}", map={"from": "run.items", "max_items": 32})
+            for index in range(5)
+        ],
     ],
 )
 def test_invalid_graphs_rejected(nodes):
@@ -133,7 +141,10 @@ def test_repository_freezes_graph_and_inputs_with_idempotent_start(repo):
     first = repo.start("run-1", graph, inputs)
     assert repo.start("run-1", graph, inputs) == first
     inputs["instructions"][0]["text"] = "changed"
-    assert repo.snapshot("run-1")["inputs"]["instructions"][0]["text"] == "original"
+    assert (
+        repo.snapshot("run-1")["inputs"]["instructions"][0]["text"]
+        == "original"
+    )
     with pytest.raises(WorkflowError) as caught:
         repo.start("run-1", graph, inputs)
     assert caught.value.code == "conflict"
@@ -142,7 +153,9 @@ def test_repository_freezes_graph_and_inputs_with_idempotent_start(repo):
 
 
 async def test_serial_dependencies_persist_outputs_before_next_handler(repo):
-    graph = definition(node("later", "selection", needs=["first"]), node("first"))
+    graph = definition(
+        node("later", "selection", needs=["first"]), node("first")
+    )
     repo.start("run", graph, {"issue_date": "2026-09-06"})
     seen = []
     external = object()
@@ -158,7 +171,9 @@ async def test_serial_dependencies_persist_outputs_before_next_handler(repo):
         seen.append("later")
         return {"selected": True}
 
-    engine = WorkflowEngine(repo, {"discovery": first, "selection": later}, external)
+    engine = WorkflowEngine(
+        repo, {"discovery": first, "selection": later}, external
+    )
     result = await engine.run("run")
     assert result["state"] == "succeeded" and seen == ["first", "later"]
     assert len(repo.artifacts("run")) == 2
@@ -168,8 +183,12 @@ async def test_serial_dependencies_persist_outputs_before_next_handler(repo):
     assert seen == ["first", "later"]
 
 
-async def test_dynamic_fanout_preserves_input_order_and_runs_each_item_once(repo):
-    graph = definition(node("discover", map={"from": "run.instructions", "max_items": 3}))
+async def test_dynamic_fanout_preserves_input_order_and_runs_each_item_once(
+    repo,
+):
+    graph = definition(
+        node("discover", map={"from": "run.instructions", "max_items": 3})
+    )
     pinned = [{"id": "z", "text": "first"}, {"id": "a", "text": "second"}]
     repo.start("run", graph, {"instructions": pinned})
     seen = []
@@ -198,7 +217,9 @@ async def test_dynamic_fanout_preserves_input_order_and_runs_each_item_once(repo
     assert repo.attempts("run") == attempts and seen == ["z", "a"]
 
 
-async def test_engine_runs_selected_research_by_frozen_priority_not_item_id(repo):
+async def test_engine_runs_selected_research_by_frozen_priority_not_item_id(
+    repo,
+):
     repo.start(
         "run",
         definition(
@@ -222,7 +243,9 @@ async def test_engine_runs_selected_research_by_frozen_priority_not_item_id(repo
         seen.append((context.item_id, context.item["priority"]))
         return context.item
 
-    engine = WorkflowEngine(repo, {"selection": selection, "research": research})
+    engine = WorkflowEngine(
+        repo, {"selection": selection, "research": research}
+    )
     assert await engine.step("run") is True  # Selection result persisted.
     assert await engine.step("run") is True  # Map expansion persisted.
     assert await engine.step("run") is True  # Highest priority runs first.
@@ -236,7 +259,9 @@ async def test_existing_expanded_map_order_is_not_migrated_or_recomputed(repo):
     original = [{"id": "z", "priority": 1}, {"id": "a", "priority": 2}]
     old_order = list(reversed(original))
     repo.start(
-        "run", definition(node(map={"from": "run.items", "max_items": 2})), {"items": original}
+        "run",
+        definition(node(map={"from": "run.items", "max_items": 2})),
+        {"items": original},
     )
     # Simulate an already persisted expansion from the old ID-sorting executor.
     repo.expand_map("run", "discover", old_order)
@@ -247,7 +272,9 @@ async def test_existing_expanded_map_order_is_not_migrated_or_recomputed(repo):
         seen.append(context.item_id)
         return context.item
 
-    assert (await WorkflowEngine(repo, {"discovery": handler}).run("run"))["state"] == "succeeded"
+    assert (await WorkflowEngine(repo, {"discovery": handler}).run("run"))[
+        "state"
+    ] == "succeeded"
     assert seen == ["a", "z"] and repo.output("run", "discover") == old_order
     assert repo.get("run")["nodes"]["discover"]["map_hash"] == frozen_hash
     assert repo.snapshot("run")["inputs"]["items"] == original
@@ -313,11 +340,18 @@ async def test_invalid_map_input_fails_without_handler_call(repo, items):
 async def test_explicit_optional_map_failure_preserves_failed_children(repo):
     graph = definition(
         node(
-            "research", "research", on_error="continue", map={"from": "run.items", "max_items": 3}
+            "research",
+            "research",
+            on_error="continue",
+            map={"from": "run.items", "max_items": 3},
         ),
         node("compose", "composition", needs=["research"]),
     )
-    repo.start("run", graph, {"items": [{"id": "bad"}, {"id": "good"}, {"id": "uncertain"}]})
+    repo.start(
+        "run",
+        graph,
+        {"items": [{"id": "bad"}, {"id": "good"}, {"id": "uncertain"}]},
+    )
 
     async def research(context):
         if context.item_id == "bad":
@@ -327,13 +361,21 @@ async def test_explicit_optional_map_failure_preserves_failed_children(repo):
         return {"id": "good", "evidence": "verified"}
 
     async def compose(context):
-        assert context.inputs["research"] == [{"id": "good", "evidence": "verified"}]
+        assert context.inputs["research"] == [
+            {"id": "good", "evidence": "verified"}
+        ]
         status = context.dependency_states["research"]
         assert status["degraded"] and status["error_code"] == "partial_failure"
-        assert [item["state"] for item in status["items"]] == ["failed", "succeeded", "unknown"]
+        assert [item["state"] for item in status["items"]] == [
+            "failed",
+            "succeeded",
+            "unknown",
+        ]
         return {"coverage_checked": True}
 
-    result = await WorkflowEngine(repo, {"research": research, "composition": compose}).run("run")
+    result = await WorkflowEngine(
+        repo, {"research": research, "composition": compose}
+    ).run("run")
     assert result["state"] == "succeeded"
     attempts = repo.attempts("run")
     assert sorted(item["state"] for item in attempts) == [
@@ -344,8 +386,12 @@ async def test_explicit_optional_map_failure_preserves_failed_children(repo):
     ]
 
 
-async def test_nonmapped_optional_provider_failure_has_explicit_empty_artifact(repo):
-    repo.start("run", definition(node(kind="api_feed", on_error="continue")), {})
+async def test_nonmapped_optional_provider_failure_has_explicit_empty_artifact(
+    repo,
+):
+    repo.start(
+        "run", definition(node(kind="api_feed", on_error="continue")), {}
+    )
 
     async def fail(context):
         raise NodeFailure("unavailable")
@@ -354,15 +400,25 @@ async def test_nonmapped_optional_provider_failure_has_explicit_empty_artifact(r
     assert result["state"] == "succeeded"
     status = result["nodes"]["discover"]
     assert (
-        status["state"] == "skipped" and status["degraded"] and status["failure_state"] == "failed"
+        status["state"] == "skipped"
+        and status["degraded"]
+        and status["failure_state"] == "failed"
     )
     assert repo.output("run", "discover") is None
     assert repo.attempts("run")[0]["state"] == "failed"
 
 
-@pytest.mark.parametrize("ambiguous,expected", [(False, "failed"), (True, "unknown")])
-async def test_required_failure_blocks_downstream_and_does_not_retry(repo, ambiguous, expected):
-    repo.start("run", definition(node("first"), node("review", "review", needs=["first"])), {})
+@pytest.mark.parametrize(
+    "ambiguous,expected", [(False, "failed"), (True, "unknown")]
+)
+async def test_required_failure_blocks_downstream_and_does_not_retry(
+    repo, ambiguous, expected
+):
+    repo.start(
+        "run",
+        definition(node("first"), node("review", "review", needs=["first"])),
+        {},
+    )
     calls = []
 
     async def fail(context):
@@ -398,7 +454,10 @@ async def test_restart_recovers_inflight_to_unknown_without_replaying(tmp_path):
     async def forbidden(context):
         calls.append(context)
 
-    assert await WorkflowEngine(repo, {"discovery": forbidden}).step("run") is False
+    assert (
+        await WorkflowEngine(repo, {"discovery": forbidden}).step("run")
+        is False
+    )
     assert not calls
     with pytest.raises(WorkflowError):
         repo.finish(inflight, "succeeded", {"id": "b"})
@@ -417,24 +476,30 @@ async def test_cancellation_records_unknown_before_propagating(repo):
     assert repo.attempts("run")[0]["error_code"] == "interrupted"
 
 
-async def test_generic_errors_and_invalid_artifacts_never_persist_exception_text(repo, capsys):
+async def test_generic_errors_and_invalid_artifacts_never_persist_exception_text(
+    repo, capsys
+):
     sentinel = "SECRET_SENTINEL_DO_NOT_LOG"
     repo.start("failure", definition(node()), {})
 
     async def bad(context):
         raise ValueError(sentinel)
 
-    assert (await WorkflowEngine(repo, {"discovery": bad}).run("failure"))["state"] == "failed"
-    assert sentinel not in json.dumps(repo.get("failure")) + json.dumps(repo.attempts("failure"))
+    assert (await WorkflowEngine(repo, {"discovery": bad}).run("failure"))[
+        "state"
+    ] == "failed"
+    assert sentinel not in json.dumps(repo.get("failure")) + json.dumps(
+        repo.attempts("failure")
+    )
     assert sentinel not in str(capsys.readouterr())
     repo.start("oversized", definition(node()), {})
 
     async def oversized(context):
         return "x" * (MAX_ARTIFACT_BYTES + 1)
 
-    assert (await WorkflowEngine(repo, {"discovery": oversized}).run("oversized"))[
-        "state"
-    ] == "failed"
+    assert (
+        await WorkflowEngine(repo, {"discovery": oversized}).run("oversized")
+    )["state"] == "failed"
     assert not repo.artifacts("oversized")
 
 
@@ -445,12 +510,19 @@ async def test_explicit_skip_differs_from_failure(repo):
         return NodeResult.skipped({"candidates": []}, "no_findings")
 
     result = await WorkflowEngine(repo, {"discovery": skip}).run("run")
-    assert result["state"] == "succeeded" and result["nodes"]["discover"]["state"] == "skipped"
+    assert (
+        result["state"] == "succeeded"
+        and result["nodes"]["discover"]["state"] == "skipped"
+    )
     assert repo.attempts("run")[0]["state"] == "skipped"
 
 
-def test_claims_are_serialized_across_engine_instances_and_respect_dependencies(repo):
-    repo.start("run", definition(node("a"), node("b"), node("c", needs=["a"])), {})
+def test_claims_are_serialized_across_engine_instances_and_respect_dependencies(
+    repo,
+):
+    repo.start(
+        "run", definition(node("a"), node("b"), node("c", needs=["a"])), {}
+    )
     assert repo.claim("run", "c", "", {}) is None
     attempt = repo.claim("run", "a", "", {})
     assert attempt and repo.claim("run", "b", "", {}) is None
@@ -463,10 +535,16 @@ def test_unknown_handler_registry_type_rejected(repo):
         WorkflowEngine(repo, {"send": lambda _: None})
 
 
-async def test_invalid_map_does_not_spin_when_another_run_holds_execution_claim(repo):
+async def test_invalid_map_does_not_spin_when_another_run_holds_execution_claim(
+    repo,
+):
     repo.start("active", definition(node()), {})
     assert repo.claim("active", "discover", "", {})
-    repo.start("invalid", definition(node(map={"from": "run.items", "max_items": 2})), {})
+    repo.start(
+        "invalid",
+        definition(node(map={"from": "run.items", "max_items": 2})),
+        {},
+    )
 
     async def forbidden(context):
         pytest.fail("An unclaimed node must not invoke its handler")
@@ -482,7 +560,11 @@ def test_map_aggregate_cannot_bypass_children_or_unmet_dependencies(repo):
         "run",
         definition(
             node("first"),
-            node("mapped", needs=["first"], map={"from": "run.items", "max_items": 2}),
+            node(
+                "mapped",
+                needs=["first"],
+                map={"from": "run.items", "max_items": 2},
+            ),
         ),
         {"items": [{"id": "one"}]},
     )
@@ -495,10 +577,14 @@ def test_map_aggregate_cannot_bypass_children_or_unmet_dependencies(repo):
     assert repo.claim("run", "mapped", "one", {})
 
 
-@pytest.mark.parametrize("code", ["authentication", "configuration", "rate_limit"])
+@pytest.mark.parametrize(
+    "code", ["authentication", "configuration", "rate_limit"]
+)
 @pytest.mark.parametrize("mapped", [False, True])
 @pytest.mark.parametrize("ambiguous", [False, True])
-async def test_shared_prerequisite_failures_cannot_continue(repo, code, mapped, ambiguous):
+async def test_shared_prerequisite_failures_cannot_continue(
+    repo, code, mapped, ambiguous
+):
     options = {"map": {"from": "run.items", "max_items": 2}} if mapped else {}
     repo.start(
         "run",

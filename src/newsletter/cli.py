@@ -11,7 +11,12 @@ from pathlib import Path
 from ziyixi_protos.newsletter import editorial_pb2 as pb
 
 from newsletter.adapters import FakeMail, FakeNotion
-from newsletter.contracts import canonical_json, parse_message, to_dict, validate_request
+from newsletter.contracts import (
+    canonical_json,
+    parse_message,
+    to_dict,
+    validate_request,
+)
 from newsletter.editor import MockEditor
 from newsletter.rendering import preview_html
 from newsletter.store import Store
@@ -26,7 +31,9 @@ async def demo(output: Path) -> Path:
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     store = Store(output / "newsletter.sqlite3", "mock")
     try:
-        fixtures = json.loads(files("newsletter").joinpath("fixtures/packets.json").read_text())
+        fixtures = json.loads(
+            files("newsletter").joinpath("fixtures/packets.json").read_text()
+        )
         packets = []
         for request in fixtures:
             message = parse_message(request, pb.PutPacketRequest)
@@ -52,19 +59,29 @@ async def demo(output: Path) -> Path:
         edition = store.get(edition["id"])
         if edition["state"] != "ready":
             raise RuntimeError("Offline demo did not produce a ready preview")
-        (output / "preview.html").write_text(preview_html(edition["rendered"]), encoding="utf-8")
-        (output / "preview.txt").write_text(edition["rendered"]["text"], encoding="utf-8")
+        (output / "preview.html").write_text(
+            preview_html(edition["rendered"]), encoding="utf-8"
+        )
+        (output / "preview.txt").write_text(
+            edition["rendered"]["text"], encoding="utf-8"
+        )
         if edition["rendered"].get("chart_png"):
-            (output / "chart.png").write_bytes(base64.b64decode(edition["rendered"]["chart_png"]))
+            (output / "chart.png").write_bytes(
+                base64.b64decode(edition["rendered"]["chart_png"])
+            )
         request = {
             "id": edition["id"],
             "request_key": "demo-send-v1",
             "expected_render_hash": edition["rendered"]["render_hash"],
         }
         reserved, _ = store.reserve_send(request)
-        result = await FakeMail(output / "outbox").send(reserved, "demo-" + edition["id"])
+        result = await FakeMail(output / "outbox").send(
+            reserved, "demo-" + edition["id"]
+        )
         edition = store.finish(edition["id"], **result)
-        (output / "edition.json").write_text(canonical_json(edition), encoding="utf-8")
+        (output / "edition.json").write_text(
+            canonical_json(edition), encoding="utf-8"
+        )
     finally:
         store.close()
     return output / "preview.html"
@@ -81,7 +98,8 @@ def main() -> None:
     )
     sample.add_argument("--output", type=Path)
     commands.add_parser(
-        "token", help="Print one new random service token; run three times for roles"
+        "token",
+        help="Print one new random service token; run three times for roles",
     )
     args = parser.parse_args()
     if args.command == "serve":
@@ -99,7 +117,9 @@ def main() -> None:
             timeout_graceful_shutdown=40,
         )
     elif args.command == "demo":
-        output = args.output or Path(".artifacts") / ("demo-" + secrets.token_hex(4))
+        output = args.output or Path(".artifacts") / (
+            "demo-" + secrets.token_hex(4)
+        )
         print(asyncio.run(demo(output)))
         print("MOCK only: no model, Notion, or email network calls.")
     else:

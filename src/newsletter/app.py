@@ -17,9 +17,17 @@ from ziyixi_protos.newsletter import editorial_pb2 as pb
 
 from newsletter.adapters import AdapterError, MailAdapter, NotionAdapter
 from newsletter.collection.collector import Collector
-from newsletter.collection.instructions import InstructionError, load_instructions
+from newsletter.collection.instructions import (
+    InstructionError,
+    load_instructions,
+)
 from newsletter.collection.repository import RunRepository
-from newsletter.contracts import ContractError, parse_message, to_dict, validate_request
+from newsletter.contracts import (
+    ContractError,
+    parse_message,
+    to_dict,
+    validate_request,
+)
 from newsletter.editor import Editor
 from newsletter.lifecycle import service_lifespan
 from newsletter.rendering import preview_html as preview_html
@@ -74,16 +82,22 @@ def create_app(
             token = header[7:] if header.startswith("Bearer ") else ""
             accepted = [getattr(settings, f"{role}_token") for role in roles]
             if not any(
-                secrets.compare_digest(token.encode(), value.encode()) for value in accepted
+                secrets.compare_digest(token.encode(), value.encode())
+                for value in accepted
             ):
                 raise HTTPException(
-                    401, "Valid bearer token required", headers={"WWW-Authenticate": "Bearer"}
+                    401,
+                    "Valid bearer token required",
+                    headers={"WWW-Authenticate": "Bearer"},
                 )
 
         return check
 
     async def body(request: Request, message_type: type[Message]) -> Payload:
-        if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+        if (
+            request.headers.get("content-type", "").split(";")[0].strip()
+            != "application/json"
+        ):
             raise HTTPException(415, "Use application/json ProtoJSON")
         data = bytearray()
         async for chunk in request.stream():
@@ -97,10 +111,14 @@ def create_app(
     def response(
         value: Mapping[str, Any], message_type: type[Message], status: int = 200
     ) -> JSONResponse:
-        return JSONResponse(to_dict(parse_message(value, message_type)), status_code=status)
+        return JSONResponse(
+            to_dict(parse_message(value, message_type)), status_code=status
+        )
 
     @app.middleware("http")
-    async def private_responses(request: Request, call_next: RequestResponseEndpoint) -> Response:
+    async def private_responses(
+        request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         result = await call_next(request)
         result.headers["Cache-Control"] = "no-store"
         result.headers["X-Content-Type-Options"] = "nosniff"
@@ -113,16 +131,28 @@ def create_app(
 
     @app.exception_handler(ContractError)
     @app.exception_handler(StoreError)
-    async def known_error(request: Request, exc: ContractError | StoreError) -> JSONResponse:
+    async def known_error(
+        request: Request, exc: ContractError | StoreError
+    ) -> JSONResponse:
         code = exc.code.lower()
-        status = {"not_found": 404, "conflict": 409, "busy": 429, "too_large": 413}.get(code, 400)
-        return JSONResponse({"error": {"code": code, "message": str(exc)}}, status_code=status)
+        status = {
+            "not_found": 404,
+            "conflict": 409,
+            "busy": 429,
+            "too_large": 413,
+        }.get(code, 400)
+        return JSONResponse(
+            {"error": {"code": code, "message": str(exc)}}, status_code=status
+        )
 
     @app.get("/healthz")
     async def health() -> JSONResponse:
         worker_ok = not start_worker or task_healthy(app)
         return JSONResponse(
-            {"status": "ok" if worker_ok else "degraded", "mode": settings.mode},
+            {
+                "status": "ok" if worker_ok else "degraded",
+                "mode": settings.mode,
+            },
             status_code=200 if worker_ok else 503,
         )
 
@@ -145,7 +175,9 @@ def create_app(
                 previous = pipeline.receipt(previous["id"])
             return response(previous, pb.CollectionRun, 202)
         if settings.mode == "live" and settings.notion_backend != "notion":
-            raise HTTPException(409, "Full live collection requires Notion persistence")
+            raise HTTPException(
+                409, "Full live collection requires Notion persistence"
+            )
         try:
             workflow_snapshot = None
             if isinstance(_worker(app).pipeline, DagPipeline):
@@ -155,18 +187,27 @@ def create_app(
             else:
                 instructions = load_instructions(settings.instructions_dir)
         except (InstructionError, DefinitionError, OSError, ValueError):
-            raise HTTPException(503, "Collection instructions are invalid") from None
-        run = runs.start(value, instructions, workflow_snapshot=workflow_snapshot)
+            raise HTTPException(
+                503, "Collection instructions are invalid"
+            ) from None
+        run = runs.start(
+            value, instructions, workflow_snapshot=workflow_snapshot
+        )
         _worker(app).wake.set()
         return response(run, pb.CollectionRun, 202)
 
-    @app.post("/v1/runs/{run_id}/retry-stories", dependencies=[Depends(auth("editor"))])
+    @app.post(
+        "/v1/runs/{run_id}/retry-stories",
+        dependencies=[Depends(auth("editor"))],
+    )
     async def retry_stories(run_id: str, request: Request) -> JSONResponse:
         if start_worker and not task_healthy(app):
             raise HTTPException(503, "Collection worker is unavailable")
         pipeline = _worker(app).pipeline
         if not isinstance(pipeline, DagPipeline):
-            raise HTTPException(409, "Story continuation requires the topic workflow")
+            raise HTTPException(
+                409, "Story continuation requires the topic workflow"
+            )
         value = await body(request, pb.StartRunRequest)
         child = StoryReplay(_store(app)).start(run_id, value)
         _worker(app).wake.set()
@@ -187,7 +228,8 @@ def create_app(
     async def read_inbox(request: Request) -> JSONResponse:
         value = await body(request, pb.ReadInboxRequest)
         return response(
-            _store(app).read_inbox(value["limit"] or 20, value["cursor"]), pb.ReadInboxResponse
+            _store(app).read_inbox(value["limit"] or 20, value["cursor"]),
+            pb.ReadInboxResponse,
         )
 
     @app.post("/v1/editions", dependencies=[Depends(auth("editor"))])
@@ -196,19 +238,29 @@ def create_app(
             raise HTTPException(503, "Editor worker is unavailable")
         value = await body(request, pb.PrepareEditionRequest)
         if value["request_key"].startswith("collection:"):
-            raise HTTPException(400, "request_key uses a reserved internal prefix")
+            raise HTTPException(
+                400, "request_key uses a reserved internal prefix"
+            )
         if len(value["packet_ids"]) > settings.max_packets:
             raise HTTPException(400, "Too many packets for one editor job")
         edition = _store(app).prepare(value)
         _worker(app).wake.set()
         return response(edition, pb.Edition, 202)
 
-    @app.get("/v1/editions/{edition_id}", dependencies=[Depends(auth("editor", "send"))])
+    @app.get(
+        "/v1/editions/{edition_id}",
+        dependencies=[Depends(auth("editor", "send"))],
+    )
     async def get_edition(edition_id: str) -> JSONResponse:
-        validate_request(parse_message({"id": edition_id}, pb.GetEditionRequest))
+        validate_request(
+            parse_message({"id": edition_id}, pb.GetEditionRequest)
+        )
         return response(_store(app).get(edition_id), pb.Edition)
 
-    @app.get("/v1/editions/{edition_id}/preview", dependencies=[Depends(auth("editor", "send"))])
+    @app.get(
+        "/v1/editions/{edition_id}/preview",
+        dependencies=[Depends(auth("editor", "send"))],
+    )
     async def preview(edition_id: str) -> HTMLResponse:
         edition = _store(app).get(edition_id)
         if edition["state"] != "ready":
@@ -233,14 +285,20 @@ def create_app(
         value = await body(request, pb.SendEditionRequest)
         if value["id"] != edition_id:
             raise StoreError("conflict", "Body ID must match the resource path")
-        if settings.mail_backend == "resend" and _store(app).get(edition_id)["is_fixture"]:
+        if (
+            settings.mail_backend == "resend"
+            and _store(app).get(edition_id)["is_fixture"]
+        ):
             raise StoreError("conflict", "Fixtures cannot be published")
-        predecessors = request.headers.getlist("x-newsletter-verification-after")
+        predecessors = request.headers.getlist(
+            "x-newsletter-verification-after"
+        )
         predecessor = None
         if predecessors:
             if not verification or len(predecessors) != 1:
                 raise StoreError(
-                    "invalid_argument", "Use one predecessor header on verification only"
+                    "invalid_argument",
+                    "Use one predecessor header on verification only",
                 )
             predecessor = predecessors[0]
             try:
@@ -248,7 +306,8 @@ def create_app(
                     raise ValueError
             except ValueError:
                 raise StoreError(
-                    "invalid_argument", "Verification predecessor must be a canonical UUID"
+                    "invalid_argument",
+                    "Verification predecessor must be a canonical UUID",
                 ) from None
         if verification:
             edition, first_attempt = _store(app).reserve_verification_send(
@@ -259,8 +318,14 @@ def create_app(
         if first_attempt:
             try:
                 async with asyncio.timeout(35):
-                    prefix = "newsletter-verification-" if verification else "newsletter-"
-                    result = await _mail(app).send(edition, prefix + edition["id"])
+                    prefix = (
+                        "newsletter-verification-"
+                        if verification
+                        else "newsletter-"
+                    )
+                    result = await _mail(app).send(
+                        edition, prefix + edition["id"]
+                    )
                 edition = _store(app).finish(edition_id, **result)
             except AdapterError as exc:
                 edition = _store(app).finish(
@@ -270,18 +335,27 @@ def create_app(
                 )
             except BaseException as exc:
                 edition = _store(app).finish(
-                    edition_id, delivery_state="unknown", error_code="delivery_unknown"
+                    edition_id,
+                    delivery_state="unknown",
+                    error_code="delivery_unknown",
                 )
                 if isinstance(exc, asyncio.CancelledError):
                     raise
         return response(edition, pb.Edition)
 
-    @app.post("/v1/editions/{edition_id}/send", dependencies=[Depends(auth("send"))])
+    @app.post(
+        "/v1/editions/{edition_id}/send", dependencies=[Depends(auth("send"))]
+    )
     async def send(edition_id: str, request: Request) -> JSONResponse:
         return await dispatch(edition_id, request)
 
-    @app.post("/v1/editions/{edition_id}/send-verification", dependencies=[Depends(auth("send"))])
-    async def send_verification(edition_id: str, request: Request) -> JSONResponse:
+    @app.post(
+        "/v1/editions/{edition_id}/send-verification",
+        dependencies=[Depends(auth("send"))],
+    )
+    async def send_verification(
+        edition_id: str, request: Request
+    ) -> JSONResponse:
         # Same strict public SendEditionRequest, but a distinct explicit purpose.
         # Normal trigger/cron never calls this explicit approval route. Without
         # an exact predecessor header it remains one verification per date.
@@ -305,5 +379,7 @@ def _mail(app: FastAPI) -> MailAdapter:
 
 def task_healthy(app: FastAPI) -> bool:
     # The lifespan owns the worker; no queue can be silently accepted after it dies.
-    task = cast(asyncio.Task[None] | None, getattr(app.state, "worker_task", None))
+    task = cast(
+        asyncio.Task[None] | None, getattr(app.state, "worker_task", None)
+    )
     return task is not None and not task.done()

@@ -113,7 +113,9 @@ class PersonalSelection:
     risk_limit_omitted: int
 
 
-def select_personal_items(items: Sequence[PersonalItem], maximum: int) -> PersonalSelection:
+def select_personal_items(
+    items: Sequence[PersonalItem], maximum: int
+) -> PersonalSelection:
     """Keep at most maximum, never fill slots, and never mutate upstream input."""
     if type(maximum) is not int or not 1 <= maximum <= CANDIDATE_LIMIT:
         raise ValueError("Invalid personal selection limit")

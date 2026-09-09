@@ -45,7 +45,13 @@ from newsletter.workflow.story_editor import _validate_content
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 BODY_FIELDS = {"story_id", "title", "kind", "paragraphs", "limitations"}
-STOP_ERRORS = {"authentication", "configuration", "rate_limit", "cancelled", "artifact_error"}
+STOP_ERRORS = {
+    "authentication",
+    "configuration",
+    "rate_limit",
+    "cancelled",
+    "artifact_error",
+}
 MAX_CASES = 40
 RUNNER_VERSION = 1
 
@@ -55,7 +61,10 @@ class EvaluationError(ValueError):
 
 
 def _identifier(value: object) -> bool:
-    return isinstance(value, str) and re.fullmatch(IDENTIFIER_PATTERN, value) is not None
+    return (
+        isinstance(value, str)
+        and re.fullmatch(IDENTIFIER_PATTERN, value) is not None
+    )
 
 
 def validate_suite(value: Any) -> dict[str, Any]:
@@ -67,9 +76,25 @@ def validate_suite(value: Any) -> dict[str, Any]:
     for case in value["cases"]:
         if (
             not isinstance(case, dict)
-            or not {"id", "kind", "prompt", "instructions", "schema", "validation"} <= case.keys()
+            or not {
+                "id",
+                "kind",
+                "prompt",
+                "instructions",
+                "schema",
+                "validation",
+            }
+            <= case.keys()
             or case.keys()
-            - {"id", "kind", "prompt", "instructions", "schema", "validation", "allow_web"}
+            - {
+                "id",
+                "kind",
+                "prompt",
+                "instructions",
+                "schema",
+                "validation",
+                "allow_web",
+            }
             or not _identifier(case["id"])
             or case["id"] in ids
             or case["kind"] not in {"selection", "summary", "discovery"}
@@ -90,7 +115,10 @@ def validate_suite(value: Any) -> dict[str, Any]:
         if case["kind"] == "selection":
             if set(validation) != {"candidate_ids", "source_urls", "max_tasks"}:
                 raise EvaluationError("invalid_suite")
-            candidate_ids, urls = validation["candidate_ids"], validation["source_urls"]
+            candidate_ids, urls = (
+                validation["candidate_ids"],
+                validation["source_urls"],
+            )
             if (
                 not isinstance(candidate_ids, list)
                 or len(candidate_ids) > 60
@@ -107,7 +135,12 @@ def validate_suite(value: Any) -> dict[str, Any]:
             for url in urls:
                 validate_public_url(url)
         elif case["kind"] == "discovery":
-            if set(validation) != {"direction", "issue_date", "seeds", "history"}:
+            if set(validation) != {
+                "direction",
+                "issue_date",
+                "seeds",
+                "history",
+            }:
                 raise EvaluationError("invalid_suite")
             if (
                 not _identifier(validation["direction"])
@@ -149,7 +182,9 @@ def validate_suite(value: Any) -> dict[str, Any]:
 
 def _absolute(path: Path) -> Path:
     path = path.absolute()
-    if ".." in path.parts or any(parent.is_symlink() for parent in (path, *path.parents)):
+    if ".." in path.parts or any(
+        parent.is_symlink() for parent in (path, *path.parents)
+    ):
         raise EvaluationError("unsafe_path")
     return path
 
@@ -168,7 +203,10 @@ def private_output(output: Path, codex_home: Path) -> tuple[Path, Path]:
         or output.is_relative_to(user_home / "Library" / "Mobile Documents")
         or output.is_relative_to(REPOSITORY)
         or any((parent / ".git").exists() for parent in output.parents)
-        or any(parent.name in {".codex", "codex-auth", ".codex-auth"} for parent in output.parents)
+        or any(
+            parent.name in {".codex", "codex-auth", ".codex-auth"}
+            for parent in output.parents
+        )
     ):
         raise EvaluationError("unsafe_path")
     output.mkdir(mode=0o700, exist_ok=False)
@@ -176,7 +214,12 @@ def private_output(output: Path, codex_home: Path) -> tuple[Path, Path]:
 
 
 def _write(path: Path, text: str, *, append: bool = False) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | (os.O_APPEND if append else os.O_EXCL)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_NOFOLLOW
+        | (os.O_APPEND if append else os.O_EXCL)
+    )
     descriptor = os.open(path, flags, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as target:
         target.write(text)
@@ -209,12 +252,15 @@ def _versions() -> dict[str, Any]:
         "python": platform.python_version(),
         "packages": packages,
         "code_sha256": {
-            name: hashlib.sha256((REPOSITORY / name).read_bytes()).hexdigest() for name in paths
+            name: hashlib.sha256((REPOSITORY / name).read_bytes()).hexdigest()
+            for name in paths
         },
     }
 
 
-def _validate_output(text: str, case: dict[str, Any], opened: set[str], searched: bool) -> Any:
+def _validate_output(
+    text: str, case: dict[str, Any], opened: set[str], searched: bool
+) -> Any:
     validation = case["validation"]
     if case["kind"] == "selection":
         return asdict(
@@ -241,7 +287,10 @@ def _validate_output(text: str, case: dict[str, Any], opened: set[str], searched
     if not isinstance(value, dict) or set(value) != BODY_FIELDS:
         raise EditorError("invalid_output")
     return _validate_content(
-        value, validation["packets"], validation["story_id"], validation["paragraph_limit"]
+        value,
+        validation["packets"],
+        validation["story_id"],
+        validation["paragraph_limit"],
     )
 
 
@@ -322,7 +371,9 @@ async def evaluate(
             # Capture SDK/Python diagnostics privately as well; never echo vendor
             # text, source URLs, raw answers, suite content or auth paths.
             descriptor = os.open(
-                directory / "diagnostics.log", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+                directory / "diagnostics.log",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
             )
             with os.fdopen(descriptor, "w", encoding="utf-8") as diagnostics:
                 with (
@@ -330,7 +381,9 @@ async def evaluate(
                     contextlib.redirect_stderr(diagnostics),
                 ):
                     try:
-                        editor = editor_factory(codex_home, model, timeout_seconds=timeout)
+                        editor = editor_factory(
+                            codex_home, model, timeout_seconds=timeout
+                        )
                         with usage_scope(observe, f"evaluation:{index}"):
                             async with asyncio.timeout(timeout):
                                 text, opened, searched = await editor.execute(
@@ -345,9 +398,12 @@ async def evaluate(
                             "searched": searched,
                             "opened_urls": sorted(opened),
                         }
-                        if not case.get("allow_web", False) and (opened or searched):
+                        if not case.get("allow_web", False) and (
+                            opened or searched
+                        ):
                             outcome.update(
-                                status="observation_failure", error_code="unexpected_web"
+                                status="observation_failure",
+                                error_code="unexpected_web",
                             )
                         else:
                             _json(
@@ -362,11 +418,17 @@ async def evaluate(
                     except EditorError as error:
                         outcome.update(status="failed", error_code=error.code)
                     except OSError:
-                        outcome.update(status="failed", error_code="artifact_error")
+                        outcome.update(
+                            status="failed", error_code="artifact_error"
+                        )
                     except (ValueError, TypeError, KeyError, AttributeError):
-                        outcome.update(status="failed", error_code="invalid_output")
+                        outcome.update(
+                            status="failed", error_code="invalid_output"
+                        )
                     except Exception:
-                        outcome.update(status="failed", error_code="unavailable")
+                        outcome.update(
+                            status="failed", error_code="unavailable"
+                        )
             outcome["elapsed_seconds"] = round(time.monotonic() - start, 6)
             if outcome["error_code"] in STOP_ERRORS:
                 stopped = outcome["error_code"]
@@ -389,7 +451,9 @@ async def evaluate(
         "usage": summarize_usage(list(all_records.values())),
         "stopped_reason": stopped,
         "completed_at": datetime.now(UTC).isoformat(),
-        "all_structurally_valid": all(item["status"] == "valid" for item in results),
+        "all_structurally_valid": all(
+            item["status"] == "valid" for item in results
+        ),
     }
     _json(output / "summary.json", summary)
     return summary
@@ -405,7 +469,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-model-calls", action="store_true")
     args = parser.parse_args(argv)
     if not args.allow_model_calls:
-        parser.error("Explicit --allow-model-calls is required; this uses model allowance.")
+        parser.error(
+            "Explicit --allow-model-calls is required; this uses model allowance."
+        )
     try:
         path = _absolute(args.suite)
         if not path.is_file() or path.stat().st_size > MAX_JSON_BYTES:
@@ -423,8 +489,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if result["all_structurally_valid"] else 1
     except EvaluationError:
-        print("Evaluation refused: invalid suite, configuration or output location.")
-    except (EditorError, OSError, ValueError, TypeError, KeyError, RecursionError):
+        print(
+            "Evaluation refused: invalid suite, configuration or output location."
+        )
+    except (
+        EditorError,
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        RecursionError,
+    ):
         print("Evaluation failed safely; no issue or email was created.")
     except KeyboardInterrupt:
         print("Evaluation interrupted; no issue or email was created.")

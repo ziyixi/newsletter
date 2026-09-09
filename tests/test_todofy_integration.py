@@ -30,7 +30,9 @@ def test_personal_fetch_has_separate_budget_from_editor(settings):
 
     with TestClient(
         create_app(
-            replace(settings, job_timeout_seconds=0.04), todofy=SlowerTodofy(), start_worker=False
+            replace(settings, job_timeout_seconds=0.04),
+            todofy=SlowerTodofy(),
+            start_worker=False,
         )
     ) as client:
         packet = put_packet(client)
@@ -50,11 +52,16 @@ def settings(tmp_path):
 
 
 def auth(role="editor"):
-    return {"Authorization": "Bearer " + {"ingest": "i", "editor": "e", "send": "s"}[role] * 32}
+    return {
+        "Authorization": "Bearer "
+        + {"ingest": "i", "editor": "e", "send": "s"}[role] * 32
+    }
 
 
 def put_packet(client):
-    request = json.loads(files("newsletter").joinpath("fixtures/packets.json").read_text())[0]
+    request = json.loads(
+        files("newsletter").joinpath("fixtures/packets.json").read_text()
+    )[0]
     # These tests exercise personal-event rendering, not PNG rasterization.
     request["content"]["tags"] = []
     response = client.post("/v1/packets", json=request, headers=auth("ingest"))
@@ -63,7 +70,11 @@ def put_packet(client):
 
 
 def prepare(client, packet, key="edition"):
-    request = {"request_key": key, "issue_date": TODAY, "packet_ids": [packet["id"]]}
+    request = {
+        "request_key": key,
+        "issue_date": TODAY,
+        "packet_ids": [packet["id"]],
+    }
     response = client.post("/v1/editions", json=request, headers=auth())
     assert response.status_code == 202
     return response.json()
@@ -87,8 +98,12 @@ class PrivateTodofy:
     async def fetch(self, issue_date):
         self.calls.append(issue_date)
         digest = await FakeTodofy().fetch(issue_date)
-        digest["summary"] = PRIVATE + " · private personal overview · " + self.content_version
-        digest["items"][0]["detail"] = PRIVATE + " · preserve this full event explanation"
+        digest["summary"] = (
+            PRIVATE + " · private personal overview · " + self.content_version
+        )
+        digest["items"][0]["detail"] = (
+            PRIVATE + " · preserve this full event explanation"
+        )
         return digest
 
 
@@ -98,7 +113,9 @@ class ObservingEditor:
 
     async def prepare(self, packets, issue_date, workspace):
         self.inputs.append(copy.deepcopy(packets))
-        self.history.append(json.loads((workspace / "recent-history.json").read_text()))
+        self.history.append(
+            json.loads((workspace / "recent-history.json").read_text())
+        )
         self.workspaces.append(workspace)
         return await MockEditor().prepare(packets, issue_date, workspace)
 
@@ -112,9 +129,19 @@ class ObservingNotion:
 
 
 def test_private_events_never_reach_editor_history_inbox_or_notion(settings):
-    editor, notion, todofy = ObservingEditor(), ObservingNotion(), PrivateTodofy()
+    editor, notion, todofy = (
+        ObservingEditor(),
+        ObservingNotion(),
+        PrivateTodofy(),
+    )
     with TestClient(
-        create_app(settings, editor=editor, notion=notion, todofy=todofy, start_worker=False)
+        create_app(
+            settings,
+            editor=editor,
+            notion=notion,
+            todofy=todofy,
+            start_worker=False,
+        )
     ) as client:
         packet = put_packet(client)
         edition = prepare(client, packet)
@@ -128,11 +155,17 @@ def test_private_events_never_reach_editor_history_inbox_or_notion(settings):
 
         # Simulate earlier accepted publication in this test DB only, so the
         # next editor receives historical metadata without the personal column.
-        client.app.state.store.finish(edition["id"], delivery_state="provider_accepted")
+        client.app.state.store.finish(
+            edition["id"], delivery_state="provider_accepted"
+        )
         prepare(client, packet, "next-edition")
         assert step(client)
         assert len(editor.history[1]) == 1
-        assert set(editor.history[1][0]) == {"issue_date", "title", "delivery_state"}
+        assert set(editor.history[1][0]) == {
+            "issue_date",
+            "title",
+            "delivery_state",
+        }
         while step(client):
             pass
         inbox = client.post("/v1/inbox/query", json={}, headers=auth()).json()
@@ -147,13 +180,23 @@ def test_private_events_never_reach_editor_history_inbox_or_notion(settings):
                 assert PRIVATE not in artifact.read_text()
 
 
-def test_local_candidate_filter_stays_private_and_does_not_call_editor_or_notion(settings):
+def test_local_candidate_filter_stays_private_and_does_not_call_editor_or_notion(
+    settings,
+):
     editor, notion = ObservingEditor(), ObservingNotion()
     calls = []
     source = {
         "tasks": [
-            {"rank": 1, "title": "信用卡账单已出", "reason": "例行电子账单可查看。"},
-            {"rank": 2, "title": "待确认会议", "reason": PRIVATE + " 请回复具体时段。"},
+            {
+                "rank": 1,
+                "title": "信用卡账单已出",
+                "reason": "例行电子账单可查看。",
+            },
+            {
+                "rank": 2,
+                "title": "待确认会议",
+                "reason": PRIVATE + " 请回复具体时段。",
+            },
             {
                 "rank": 3,
                 "title": "Autopay failed",
@@ -178,7 +221,11 @@ def test_local_candidate_filter_stays_private_and_does_not_call_editor_or_notion
     )
     with TestClient(
         create_app(
-            settings, editor=editor, notion=notion, todofy=private_adapter, start_worker=False
+            settings,
+            editor=editor,
+            notion=notion,
+            todofy=private_adapter,
+            start_worker=False,
         )
     ) as client:
         edition = prepare(client, put_packet(client))
@@ -193,11 +240,20 @@ def test_local_candidate_filter_stays_private_and_does_not_call_editor_or_notion
             "待确认会议",
         ]
         assert "信用卡账单已出" not in final["rendered"]["html"]
-        assert PRIVATE in final["rendered"]["html"] and PRIVATE in final["rendered"]["text"]
+        assert (
+            PRIVATE in final["rendered"]["html"]
+            and PRIVATE in final["rendered"]["text"]
+        )
         while step(client):
             pass
         inbox = client.post("/v1/inbox/query", json={}, headers=auth()).json()
-        for public in (editor.inputs, editor.history, notion.packets, inbox, final["draft"]):
+        for public in (
+            editor.inputs,
+            editor.history,
+            notion.packets,
+            inbox,
+            final["draft"],
+        ):
             assert PRIVATE not in json.dumps(public)
         for workspace in editor.workspaces:
             for artifact in workspace.glob("*.json"):
@@ -206,16 +262,22 @@ def test_local_candidate_filter_stays_private_and_does_not_call_editor_or_notion
 
 def test_fetched_once_frozen_in_json_preview_mime_and_idempotent_send(settings):
     todofy = PrivateTodofy()
-    with TestClient(create_app(settings, todofy=todofy, start_worker=False)) as client:
+    with TestClient(
+        create_app(settings, todofy=todofy, start_worker=False)
+    ) as client:
         packet = put_packet(client)
         edition = prepare(client, packet)
         assert step(client)
         frozen = current(client, edition)
         assert frozen["state"] == "ready"
         assert todofy.calls == [TODAY]
-        assert frozen["personal_digest"]["items"][0]["detail"].endswith("full event explanation")
+        assert frozen["personal_digest"]["items"][0]["detail"].endswith(
+            "full event explanation"
+        )
         assert "TODOFY / 与你有关" in frozen["rendered"]["text"]
-        preview = client.get(f"/v1/editions/{edition['id']}/preview", headers=auth())
+        preview = client.get(
+            f"/v1/editions/{edition['id']}/preview", headers=auth()
+        )
         assert PRIVATE in preview.text
 
         todofy.content_version = "would change if fetched again"
@@ -230,19 +292,30 @@ def test_fetched_once_frozen_in_json_preview_mime_and_idempotent_send(settings):
         sent = client.post(url, json=request, headers=auth("send"))
         assert sent.status_code == 200
         assert sent.json()["delivery_state"] == "simulated"
-        assert client.post(url, json=request, headers=auth("send")).json() == sent.json()
+        assert (
+            client.post(url, json=request, headers=auth("send")).json()
+            == sent.json()
+        )
         while step(client):
             pass
         assert todofy.calls == [TODAY]
         assert current(client, edition)["rendered"] == frozen["rendered"]
         outbox = list((settings.data_dir / "outbox").glob("*.eml"))
         assert len(outbox) == 1
-        message = BytesParser(policy=policy.default).parsebytes(outbox[0].read_bytes())
-        assert PRIVATE in message.get_body(preferencelist=("plain",)).get_content()
-        assert PRIVATE in message.get_body(preferencelist=("html",)).get_content()
+        message = BytesParser(policy=policy.default).parsebytes(
+            outbox[0].read_bytes()
+        )
+        assert (
+            PRIVATE in message.get_body(preferencelist=("plain",)).get_content()
+        )
+        assert (
+            PRIVATE in message.get_body(preferencelist=("html",)).get_content()
+        )
 
     # A restart must not re-fetch or replace the frozen personal snapshot.
-    with TestClient(create_app(settings, todofy=todofy, start_worker=False)) as client:
+    with TestClient(
+        create_app(settings, todofy=todofy, start_worker=False)
+    ) as client:
         assert not step(client)
         assert current(client, edition)["rendered"] == frozen["rendered"]
         assert todofy.calls == [TODAY]
@@ -256,9 +329,15 @@ def test_personal_failure_does_not_drop_or_fail_the_edition(settings, behavior):
                 raise RuntimeError(PRIVATE)
             if behavior == "timeout":
                 raise TimeoutError(PRIVATE)
-            return {"state": "current", "title": "invalid", "private_secret": PRIVATE}
+            return {
+                "state": "current",
+                "title": "invalid",
+                "private_secret": PRIVATE,
+            }
 
-    with TestClient(create_app(settings, todofy=FailingTodofy(), start_worker=False)) as client:
+    with TestClient(
+        create_app(settings, todofy=FailingTodofy(), start_worker=False)
+    ) as client:
         packet = put_packet(client)
         edition = prepare(client, packet)
         step(client)
@@ -274,11 +353,15 @@ def test_no_personal_fetch_when_editorial_review_blocks(settings):
     class BlockedEditor:
         async def prepare(self, packets, issue_date, workspace):
             result = await MockEditor().prepare(packets, issue_date, workspace)
-            return EditorResult(result.draft, {"passed": False, "findings": ["Not ready"]})
+            return EditorResult(
+                result.draft, {"passed": False, "findings": ["Not ready"]}
+            )
 
     todofy = PrivateTodofy()
     with TestClient(
-        create_app(settings, editor=BlockedEditor(), todofy=todofy, start_worker=False)
+        create_app(
+            settings, editor=BlockedEditor(), todofy=todofy, start_worker=False
+        )
     ) as client:
         edition = prepare(client, put_packet(client))
         step(client)
@@ -288,10 +371,13 @@ def test_no_personal_fetch_when_editorial_review_blocks(settings):
 
 def test_live_issue_rejects_injected_fake_personal_content(settings):
     todofy = PrivateTodofy()
-    with TestClient(create_app(settings, todofy=todofy, start_worker=False)) as client:
+    with TestClient(
+        create_app(settings, todofy=todofy, start_worker=False)
+    ) as client:
         # Exercise the worker's live-issue guard without starting a real editor.
         result = client.portal.call(
-            client.app.state.worker.personal_digest, {"issue_date": TODAY, "is_fixture": False}
+            client.app.state.worker.personal_digest,
+            {"issue_date": TODAY, "is_fixture": False},
         )
         assert result["state"] == "unavailable"
         assert not result["is_fixture"]
@@ -301,12 +387,19 @@ def test_live_issue_rejects_injected_fake_personal_content(settings):
 def test_mock_settings_cannot_enable_real_todofy(settings):
     with pytest.raises(ValueError, match="Mock mode forbids real Todofy"):
         create_app(
-            replace(settings, todofy_backend="todofy", todofy_user="test", todofy_password="secret")
+            replace(
+                settings,
+                todofy_backend="todofy",
+                todofy_user="test",
+                todofy_password="secret",
+            )
         )
 
 
 def test_live_settings_cannot_enable_fake_events(settings):
-    with pytest.raises(ValueError, match="Live mode forbids fake personal events"):
+    with pytest.raises(
+        ValueError, match="Live mode forbids fake personal events"
+    ):
         create_app(replace(settings, mode="live", todofy_backend="fake"))
 
 
@@ -323,7 +416,9 @@ def render_body(client, edition, packet):
 
 def test_render_utility_accepts_personal_digest_and_hash_covers_it(settings):
     todofy = PrivateTodofy()
-    with TestClient(create_app(settings, todofy=todofy, start_worker=False)) as client:
+    with TestClient(
+        create_app(settings, todofy=todofy, start_worker=False)
+    ) as client:
         packet = put_packet(client)
         edition = prepare(client, packet)
         step(client)
@@ -340,7 +435,12 @@ def test_render_utility_accepts_personal_digest_and_hash_covers_it(settings):
         assert "The event changed." in changed.json()["text"]
         assert todofy.calls == [TODAY]
         assert current(client, edition)["rendered"] == original.json()
-        assert client.post("/v1/render", json=body, headers=auth("ingest")).status_code == 401
+        assert (
+            client.post(
+                "/v1/render", json=body, headers=auth("ingest")
+            ).status_code
+            == 401
+        )
 
 
 @pytest.mark.parametrize(
@@ -351,11 +451,15 @@ def test_render_utility_accepts_personal_digest_and_hash_covers_it(settings):
         {"task_count": -1},
         {"fetched_at": "2026-09-05T12:00:00"},
         {"items": [{"rank": 1, "title": "Only title", "detail": ""}]},
-        {"state": "unavailable"},  # Cannot preserve current event rows in a failed result.
+        {
+            "state": "unavailable"
+        },  # Cannot preserve current event rows in a failed result.
     ],
 )
 def test_render_personal_shape_is_strict(settings, invalid):
-    with TestClient(create_app(settings, todofy=PrivateTodofy(), start_worker=False)) as client:
+    with TestClient(
+        create_app(settings, todofy=PrivateTodofy(), start_worker=False)
+    ) as client:
         packet = put_packet(client)
         edition = prepare(client, packet)
         step(client)
@@ -366,12 +470,16 @@ def test_render_personal_shape_is_strict(settings, invalid):
 
 
 def test_personal_text_is_escaped_in_email_html(settings):
-    with TestClient(create_app(settings, todofy=PrivateTodofy(), start_worker=False)) as client:
+    with TestClient(
+        create_app(settings, todofy=PrivateTodofy(), start_worker=False)
+    ) as client:
         packet = put_packet(client)
         edition = prepare(client, packet)
         step(client)
         body = render_body(client, current(client, edition), packet)
-        payload = '<img src="https://tracker.example.org/private" onerror="steal()">'
+        payload = (
+            '<img src="https://tracker.example.org/private" onerror="steal()">'
+        )
         body["personal_digest"]["items"][0]["detail"] = payload
         response = client.post("/v1/render", json=body, headers=auth())
         assert response.status_code == 200

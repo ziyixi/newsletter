@@ -30,7 +30,9 @@ def load_json(text: str) -> Any:
     if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_JSON_BYTES:
         raise EditorError("invalid_output")
     try:
-        return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
+        return json.loads(
+            text, object_pairs_hook=pairs, parse_constant=constant
+        )
     except (ValueError, RecursionError):
         raise EditorError("invalid_output") from None
 

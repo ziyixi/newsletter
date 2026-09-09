@@ -18,7 +18,11 @@ def make_chart(kind, values):
         "points": [
             {
                 "label": f"观察项 {index}",
-                **({"decimal_value": value} if value is not None else {"missing_reason": "未公布"}),
+                **(
+                    {"decimal_value": value}
+                    if value is not None
+                    else {"missing_reason": "未公布"}
+                ),
             }
             for index, value in enumerate(values)
         ],
@@ -72,19 +76,21 @@ def test_chart_draws_its_own_question_explanation_metadata_limits_and_source(
     for field in ("question", "caption", "limitations", "source_note"):
         assert compact(chart[field]) in compact(drawn), field
     assert compact(chart_metadata(chart)) in compact(drawn)
-    assert compact(drawn).index(compact(chart["question"])) < compact(drawn).index(
-        compact(chart["caption"])
-    )
-    assert compact(drawn).index(compact(chart["limitations"])) < compact(drawn).index(
-        compact(chart["source_note"])
-    )
+    assert compact(drawn).index(compact(chart["question"])) < compact(
+        drawn
+    ).index(compact(chart["caption"]))
+    assert compact(drawn).index(compact(chart["limitations"])) < compact(
+        drawn
+    ).index(compact(chart["source_note"]))
     assert ("模拟数据 · 试刊样张" in drawn) is is_fixture
     assert "小效应" not in drawn and "大效应" not in drawn
     assert chart == original
 
 
 @pytest.mark.parametrize("kind", ["bar", "line"])
-@pytest.mark.parametrize("field", ["question", "caption", "metadata", "limitations", "source_note"])
+@pytest.mark.parametrize(
+    "field", ["question", "caption", "metadata", "limitations", "source_note"]
+)
 def test_long_cjk_and_unbroken_latin_chart_copy_is_drawn_in_full_inside_png(
     monkeypatch, kind, field
 ):
@@ -95,7 +101,9 @@ def test_long_cjk_and_unbroken_latin_chart_copy_is_drawn_in_full_inside_png(
         limitations="",
         source_note="",
     )
-    long_copy = ("中英混排边界检查UnbrokenLatinToken0123456789" * 18) + "终点END"
+    long_copy = (
+        "中英混排边界检查UnbrokenLatinToken0123456789" * 18
+    ) + "终点END"
     if field == "metadata":
         chart["metric"] = long_copy
         expected = chart_metadata(chart)
@@ -105,7 +113,9 @@ def test_long_cjk_and_unbroken_latin_chart_copy_is_drawn_in_full_inside_png(
     records = record_draw_text(monkeypatch)
     image = Image.open(io.BytesIO(render_chart_png(chart, True)))
     final = final_text(records, image)
-    assert compact(expected) in compact("".join(record["text"] for record in final))
+    assert compact(expected) in compact(
+        "".join(record["text"] for record in final)
+    )
     assert all(
         0 <= left <= right <= image.width and 0 <= top <= bottom <= image.height
         for record in final
@@ -116,8 +126,12 @@ def test_long_cjk_and_unbroken_latin_chart_copy_is_drawn_in_full_inside_png(
     assert image.width == 1280
 
 
-@pytest.mark.parametrize("limitations", ["甲条限制。\n乙条限制。", ["甲条限制。", "乙条限制。"]])
-def test_raw_and_rendering_normalized_limitations_remain_drawn(monkeypatch, limitations):
+@pytest.mark.parametrize(
+    "limitations", ["甲条限制。\n乙条限制。", ["甲条限制。", "乙条限制。"]]
+)
+def test_raw_and_rendering_normalized_limitations_remain_drawn(
+    monkeypatch, limitations
+):
     chart = make_chart("bar", ["-1", "1"])
     chart["limitations"] = limitations
     records = record_draw_text(monkeypatch)
@@ -127,7 +141,9 @@ def test_raw_and_rendering_normalized_limitations_remain_drawn(monkeypatch, limi
 
 
 @pytest.mark.parametrize("kind", ["bar", "line"])
-def test_fixture_watermark_anchors_actual_glyph_bounds_above_canvas_bottom(monkeypatch, kind):
+def test_fixture_watermark_anchors_actual_glyph_bounds_above_canvas_bottom(
+    monkeypatch, kind
+):
     # Run with the platform's actual font (Noto CJK in Linux, Hiragino on macOS).
     # In particular, Noto's 40px glyph bottom is below y + 48; fixed y offsets clip.
     chart = make_chart(kind, ["-1", "0", "1"])
@@ -136,21 +152,34 @@ def test_fixture_watermark_anchors_actual_glyph_bounds_above_canvas_bottom(monke
     records = record_draw_text(monkeypatch)
     image = Image.open(io.BytesIO(render_chart_png(chart, True)))
     final = final_text(records, image)
-    markers = [record for record in final if record["text"] == "模拟数据 · 试刊样张"]
+    markers = [
+        record for record in final if record["text"] == "模拟数据 · 试刊样张"
+    ]
     assert len(markers) == 1
     left, top, right, bottom = markers[0]["bbox"]
     assert image.height - bottom == 24
     assert image.width - right == 50
     assert left >= 0 and top >= 0
-    assert max(record["bbox"][3] for record in final if record is not markers[0]) < top
+    assert (
+        max(record["bbox"][3] for record in final if record is not markers[0])
+        < top
+    )
 
 
 @pytest.mark.parametrize(
     "metric,unit,expected",
     [
         ("Cohen's d", "Cohen's d", "指标：Cohen's d · 范围：离线时点"),
-        ("标准化差异（Cohen's d）", "Cohen's d", "指标：标准化差异（Cohen's d） · 范围：离线时点"),
-        ("Difference (Cohen's d)", "Cohen's d", "指标：Difference (Cohen's d) · 范围：离线时点"),
+        (
+            "标准化差异（Cohen's d）",
+            "Cohen's d",
+            "指标：标准化差异（Cohen's d） · 范围：离线时点",
+        ),
+        (
+            "Difference (Cohen's d)",
+            "Cohen's d",
+            "指标：Difference (Cohen's d) · 范围：离线时点",
+        ),
         (
             "Cohen's d sensitivity",
             "Cohen's d",
@@ -159,8 +188,13 @@ def test_fixture_watermark_anchors_actual_glyph_bounds_above_canvas_bottom(monke
         ("响应占比", "%", "指标：响应占比（%） · 范围：离线时点"),
     ],
 )
-def test_metadata_deduplicates_only_identical_or_parenthesized_unit(metric, unit, expected):
-    assert chart_metadata({"metric": metric, "unit": unit, "period": "离线时点"}) == expected
+def test_metadata_deduplicates_only_identical_or_parenthesized_unit(
+    metric, unit, expected
+):
+    assert (
+        chart_metadata({"metric": metric, "unit": unit, "period": "离线时点"})
+        == expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -175,7 +209,9 @@ def test_metadata_deduplicates_only_identical_or_parenthesized_unit(metric, unit
     ],
 )
 @pytest.mark.parametrize("is_fixture", [False, True])
-def test_chart_boundary_is_deterministic_and_does_not_mutate_input(kind, values, is_fixture):
+def test_chart_boundary_is_deterministic_and_does_not_mutate_input(
+    kind, values, is_fixture
+):
     chart = make_chart(kind, values)
     before = copy.deepcopy(chart)
     first = render_chart_png(chart, is_fixture)
@@ -198,7 +234,9 @@ def test_chart_requires_at_least_one_finite_observation(values):
         render_chart_png(make_chart("bar", values), False)
 
 
-def test_configured_missing_font_does_not_silently_fall_back(monkeypatch, tmp_path):
+def test_configured_missing_font_does_not_silently_fall_back(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("NEWSLETTER_CHART_FONT", str(tmp_path / "missing.ttf"))
     with pytest.raises(ValueError, match="CHART_FONT_UNAVAILABLE"):
         load_font(24)

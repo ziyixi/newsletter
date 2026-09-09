@@ -42,7 +42,9 @@ _KEYWORDS = frozenset(
         "maxItems",
     }
 )
-_TYPES = frozenset({"object", "array", "string", "number", "integer", "boolean", "null"})
+_TYPES = frozenset(
+    {"object", "array", "string", "number", "integer", "boolean", "null"}
+)
 
 
 def validate_output_schema(schema: Payload) -> None:
@@ -57,7 +59,9 @@ def validate_output_schema(schema: Payload) -> None:
         if not isinstance(node, dict) or depth > 100 or set(node) - _KEYWORDS:
             raise EditorError("configuration")
         kind = node.get("type")
-        if kind is not None and (not isinstance(kind, str) or kind not in _TYPES):
+        if kind is not None and (
+            not isinstance(kind, str) or kind not in _TYPES
+        ):
             raise EditorError("configuration")
         if kind == "object":
             props = node.get("properties")
@@ -97,9 +101,16 @@ def production_output_schemas() -> dict[str, Payload]:
     nonempty identifiers exercise dynamic enum and citation-pattern construction;
     the actual request is independently checked by CodexEditor.execute.
     """
-    from newsletter.model_schema import editor_schema, legacy_review_schema, research_schema
+    from newsletter.model_schema import (
+        editor_schema,
+        legacy_review_schema,
+        research_schema,
+    )
     from newsletter.workflow.schema import discovery_schema, planning_schema
-    from newsletter.workflow.story_editor import story_review_schema, story_writer_schema
+    from newsletter.workflow.story_editor import (
+        story_review_schema,
+        story_writer_schema,
+    )
 
     packets: list[Payload] = [
         {
@@ -113,8 +124,12 @@ def production_output_schemas() -> dict[str, Payload]:
     ]
     schemas = {
         "discovery": discovery_schema(),
-        "planning": planning_schema(["schema-candidate"], ["https://example.com/source"], 12),
-        "gaps": planning_schema([], ["https://example.com/source"], 12, gaps=True),
+        "planning": planning_schema(
+            ["schema-candidate"], ["https://example.com/source"], 12
+        ),
+        "gaps": planning_schema(
+            [], ["https://example.com/source"], 12, gaps=True
+        ),
         "research": research_schema(),
         "legacy_editor": editor_schema(packets),
         "legacy_review": legacy_review_schema(),
@@ -123,8 +138,13 @@ def production_output_schemas() -> dict[str, Payload]:
     modes: tuple[Literal["brief", "deep"], ...] = ("brief", "deep")
     for mode in modes:
         for repair in (False, True):
-            schemas[f"story_{mode}" + ("_repair" if repair else "")] = story_writer_schema(
-                mode, repair=repair, story_id="schema-acceptance", packets=packets
+            schemas[f"story_{mode}" + ("_repair" if repair else "")] = (
+                story_writer_schema(
+                    mode,
+                    repair=repair,
+                    story_id="schema-acceptance",
+                    packets=packets,
+                )
             )
     return schemas
 

@@ -57,7 +57,10 @@ def draft():
                 "kind": "feature",
                 "heading": "测量与解释",
                 "paragraphs": [
-                    {"text": "原始材料说明了测量方法。", "citations": ["packet-1/official"]}
+                    {
+                        "text": "原始材料说明了测量方法。",
+                        "citations": ["packet-1/official"],
+                    }
                 ],
                 "limitations": "不能从这次测量推断因果。",
             }
@@ -72,11 +75,22 @@ def draft():
             "alt_text": "A 为 12.5，B 数据缺失。",
             "limitations": "B 没有报告。",
             "points": [
-                {"label": "A", "decimal_value": "12.5", "citations": ["packet-1/official"]},
-                {"label": "B", "missing_reason": "Not reported", "citations": []},
+                {
+                    "label": "A",
+                    "decimal_value": "12.5",
+                    "citations": ["packet-1/official"],
+                },
+                {
+                    "label": "B",
+                    "missing_reason": "Not reported",
+                    "citations": [],
+                },
             ],
         },
-        "recommended_reading": {"citation": "packet-1/official", "reason": "阅读原始方法。"},
+        "recommended_reading": {
+            "citation": "packet-1/official",
+            "reason": "阅读原始方法。",
+        },
         "limitations": "结构检查不证明研究结论正确。",
     }
 
@@ -97,7 +111,9 @@ def test_descriptor_exposes_one_service_with_external_trigger_and_editor_methods
     assert pb.DESCRIPTOR.package == "newsletter.v1"
 
 
-def test_reading_has_one_primary_link_and_validated_supporting_citations(draft, packets):
+def test_reading_has_one_primary_link_and_validated_supporting_citations(
+    draft, packets
+):
     packets[0]["content"]["sources"].append(
         {**packets[0]["content"]["sources"][0], "id": "journal"}
     )
@@ -105,7 +121,9 @@ def test_reading_has_one_primary_link_and_validated_supporting_citations(draft, 
     validate_draft(draft, packets)
     normalized = to_dict(parse_message(draft, pb.Draft))
     assert normalized["recommended_reading"]["citation"] == "packet-1/official"
-    assert normalized["recommended_reading"]["supporting_citations"] == ["packet-1/journal"]
+    assert normalized["recommended_reading"]["supporting_citations"] == [
+        "packet-1/journal"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -117,7 +135,9 @@ def test_reading_has_one_primary_link_and_validated_supporting_citations(draft, 
         ["packet-1/journal"] * 33,
     ],
 )
-def test_reading_rejects_unknown_duplicate_or_unbounded_support(draft, packets, citations):
+def test_reading_rejects_unknown_duplicate_or_unbounded_support(
+    draft, packets, citations
+):
     packets[0]["content"]["sources"].append(
         {**packets[0]["content"]["sources"][0], "id": "journal"}
     )
@@ -128,7 +148,8 @@ def test_reading_rejects_unknown_duplicate_or_unbounded_support(draft, packets, 
 
 def test_snake_case_round_trip_and_default_values(packet_body):
     request = parse_message(
-        {"request_key": "k", "workflow_id": "research", "content": packet_body}, pb.PutPacketRequest
+        {"request_key": "k", "workflow_id": "research", "content": packet_body},
+        pb.PutPacketRequest,
     )
     validate_request(request)
     value = to_dict(request)
@@ -169,7 +190,10 @@ def test_oneof_preserves_missing_not_zero(draft):
 
 def test_proto_bytes_round_trip():
     rendered = pb.RenderedEdition(
-        html="<p>中文</p>", text="中文", chart_png=b"\x89PNG", render_hash="a" * 64
+        html="<p>中文</p>",
+        text="中文",
+        chart_png=b"\x89PNG",
+        render_hash="a" * 64,
     )
     assert to_dict(rendered)["chart_png"] == "iVBORw=="
     assert parse_message(to_dict(rendered), pb.RenderedEdition) == rendered
@@ -177,7 +201,9 @@ def test_proto_bytes_round_trip():
 
 def test_canonical_hash_is_key_order_independent_and_preserves_unicode():
     assert canonical_json({"z": "中文", "a": 1}) == '{"a":1,"z":"中文"}'
-    assert content_hash({"a": 1, "z": "中文"}) == content_hash({"z": "中文", "a": 1})
+    assert content_hash({"a": 1, "z": "中文"}) == content_hash(
+        {"z": "中文", "a": 1}
+    )
     assert content_hash({"a": 1}) != content_hash({"a": "1"})
     with pytest.raises(ContractError):
         canonical_json({"bad": float("inf")})
@@ -238,7 +264,9 @@ def test_packet_validation_accepts_dict_and_proto(packet_body):
     validate_packet_body(parse_message(packet_body, pb.PacketBody))
 
 
-@pytest.mark.parametrize("mutation", ["duplicate", "slash", "scope", "large", "no_sources"])
+@pytest.mark.parametrize(
+    "mutation", ["duplicate", "slash", "scope", "large", "no_sources"]
+)
 def test_packet_limits_and_source_identity(packet_body, mutation):
     bad = deepcopy(packet_body)
     if mutation == "duplicate":
@@ -257,14 +285,24 @@ def test_packet_limits_and_source_identity(packet_body, mutation):
 
 def test_draft_and_render_validate_with_real_reference_mapping(draft, packets):
     validate_draft(draft, packets)
-    validate_draft(parse_message(draft, pb.Draft), [parse_message(p, pb.Packet) for p in packets])
+    validate_draft(
+        parse_message(draft, pb.Draft),
+        [parse_message(p, pb.Packet) for p in packets],
+    )
     validate_render_request(
-        {"draft": draft, "packets": packets, "issue_date": "2026-09-05", "is_fixture": True}
+        {
+            "draft": draft,
+            "packets": packets,
+            "issue_date": "2026-09-05",
+            "is_fixture": True,
+        }
     )
 
 
 @pytest.mark.parametrize("location", ["paragraph", "chart", "reading"])
-def test_all_citation_positions_validate_packet_and_source(draft, packets, location):
+def test_all_citation_positions_validate_packet_and_source(
+    draft, packets, location
+):
     bad = deepcopy(draft)
     if location == "paragraph":
         bad["sections"][0]["paragraphs"][0]["citations"] = ["missing/official"]
@@ -277,18 +315,24 @@ def test_all_citation_positions_validate_packet_and_source(draft, packets, locat
     assert error.value.code == "INVALID_CITATION"
 
 
-@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "1e101", "1e-101", "", "1/2"])
+@pytest.mark.parametrize(
+    "value", ["NaN", "Infinity", "-Infinity", "1e101", "1e-101", "", "1/2"]
+)
 def test_chart_numbers_are_finite_and_bounded(value):
     with pytest.raises(ContractError):
         validate_decimal(value)
 
 
 def test_valid_decimal_precision_is_not_rounded():
-    assert validate_decimal("0.10000000000000000001") == Decimal("0.10000000000000000001")
+    assert validate_decimal("0.10000000000000000001") == Decimal(
+        "0.10000000000000000001"
+    )
     assert validate_decimal("1.2e6") == Decimal("1200000")
 
 
-def test_missing_point_needs_reason_and_numeric_point_needs_source(draft, packets):
+def test_missing_point_needs_reason_and_numeric_point_needs_source(
+    draft, packets
+):
     draft["chart"]["points"][1]["missing_reason"] = ""
     with pytest.raises(ContractError):
         validate_draft(draft, packets)
@@ -318,10 +362,16 @@ def test_one_section_per_topic_fits_the_operator_topic_ceiling(draft, packets):
     "message",
     [
         pb.ReadInboxRequest(limit=101),
-        pb.PrepareEditionRequest(request_key="k", issue_date="2026-02-30", packet_ids=["p"]),
-        pb.PrepareEditionRequest(request_key="k", issue_date="2026-09-05", packet_ids=["p", "p"]),
+        pb.PrepareEditionRequest(
+            request_key="k", issue_date="2026-02-30", packet_ids=["p"]
+        ),
+        pb.PrepareEditionRequest(
+            request_key="k", issue_date="2026-09-05", packet_ids=["p", "p"]
+        ),
         pb.GetEditionRequest(id="../../etc"),
-        pb.SendEditionRequest(id="edition-1", request_key="k", expected_render_hash="not-a-hash"),
+        pb.SendEditionRequest(
+            id="edition-1", request_key="k", expected_render_hash="not-a-hash"
+        ),
     ],
 )
 def test_request_semantic_failures(message):
@@ -337,7 +387,9 @@ def test_valid_request_shapes():
         ),
         pb.GetEditionRequest(id="edition-1"),
         pb.SendEditionRequest(
-            id="edition-1", request_key="send/one", expected_render_hash="a" * 64
+            id="edition-1",
+            request_key="send/one",
+            expected_render_hash="a" * 64,
         ),
     ]:
         validate_request(request)

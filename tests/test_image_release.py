@@ -30,8 +30,12 @@ def source_root(tmp_path):
     (package / "__init__.py").write_text('"""Synthetic source."""\n')
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    (scripts / "smoke_codex_startup.py").write_text("# Synthetic startup fixture\n")
-    (scripts / "smoke_image_probe.py").write_text("# Synthetic container fixture\n")
+    (scripts / "smoke_codex_startup.py").write_text(
+        "# Synthetic startup fixture\n"
+    )
+    (scripts / "smoke_image_probe.py").write_text(
+        "# Synthetic container fixture\n"
+    )
     return tmp_path
 
 
@@ -40,7 +44,12 @@ def docker(smoke, monkeypatch):
     state = SimpleNamespace(
         calls=[],
         failure=None,
-        metadata={"id": IMAGE_ID, "os": "linux", "architecture": "amd64", "user": "newsletter"},
+        metadata={
+            "id": IMAGE_ID,
+            "os": "linux",
+            "architecture": "amd64",
+            "user": "newsletter",
+        },
     )
 
     def run(command, **kwargs):
@@ -58,7 +67,9 @@ def docker(smoke, monkeypatch):
 def test_smoke_uses_fixed_inspected_id_without_mounts_network_or_credentials(
     smoke, source_root, docker
 ):
-    assert smoke.verify("mutable:tag", "linux/amd64", root=source_root) == IMAGE_ID
+    assert (
+        smoke.verify("mutable:tag", "linux/amd64", root=source_root) == IMAGE_ID
+    )
     inspect, run, cleanup = docker.calls
     assert inspect[0][-2:] == ["--", "mutable:tag"]
     command, options = run
@@ -72,15 +83,23 @@ def test_smoke_uses_fixed_inspected_id_without_mounts_network_or_credentials(
     ):
         assert command[command.index(option) + 1] == value
     assert "--read-only" in command and "--rm" in command
-    assert not {"--mount", "--volume", "-v", "--env", "--env-file", "-e"} & set(command)
+    assert not {"--mount", "--volume", "-v", "--env", "--env-file", "-e"} & set(
+        command
+    )
     assert IMAGE_ID in command and "mutable:tag" not in command
     assert options["timeout"] == 120 and options["check"] is True
-    assert set(json.loads(options["input"])) == {"source_hashes", "startup_source"}
+    assert set(json.loads(options["input"])) == {
+        "source_hashes",
+        "startup_source",
+    }
     name = command[command.index("--name") + 1]
     assert name.startswith("newsletter-image-smoke-")
     assert cleanup[0] == ["docker", "rm", "--force", name]
     assert cleanup[1]["timeout"] == 15
-    assert all(call[0][1] not in {"build", "pull", "push", "login"} for call in docker.calls)
+    assert all(
+        call[0][1] not in {"build", "pull", "push", "login"}
+        for call in docker.calls
+    )
 
 
 @pytest.mark.parametrize(
@@ -105,9 +124,14 @@ def test_wrong_image_metadata_is_rejected_before_container_start(
 
 @pytest.mark.parametrize(
     "failure",
-    [subprocess.TimeoutExpired("docker", 120), subprocess.CalledProcessError(1, "docker")],
+    [
+        subprocess.TimeoutExpired("docker", 120),
+        subprocess.CalledProcessError(1, "docker"),
+    ],
 )
-def test_failed_probe_still_removes_only_its_unique_container(smoke, source_root, docker, failure):
+def test_failed_probe_still_removes_only_its_unique_container(
+    smoke, source_root, docker, failure
+):
     docker.failure = failure
     with pytest.raises(type(failure)):
         smoke.verify("fixture", "linux/amd64", root=source_root)
@@ -150,12 +174,17 @@ def test_source_audit_rejects_symlinks(smoke, source_root):
         smoke.source_hashes(source_root)
 
 
-def test_source_audit_hashes_package_inputs_but_ignores_bytecode(smoke, source_root):
+def test_source_audit_hashes_package_inputs_but_ignores_bytecode(
+    smoke, source_root
+):
     package = source_root / "src/newsletter"
     (package / "fixture.json").write_text('{"synthetic":true}')
     (package / "__pycache__").mkdir()
     (package / "__pycache__/cache.pyc").write_bytes(b"synthetic")
-    assert set(smoke.source_hashes(source_root)) == {"__init__.py", "fixture.json"}
+    assert set(smoke.source_hashes(source_root)) == {
+        "__init__.py",
+        "fixture.json",
+    }
 
 
 def test_ci_builds_native_amd64_then_smokes_before_login_and_push_without_rebuild():
@@ -163,24 +192,45 @@ def test_ci_builds_native_amd64_then_smokes_before_login_and_push_without_rebuil
     image = ci.split("\n  image:", 1)[1]
     assert "runs-on: ubuntu-24.04" in image and "needs: test" in image
     assert 'test "$(uname -m)" = x86_64' in image
-    assert image.index("--audit-source") < image.index("docker build --platform linux/amd64")
-    assert image.index("docker build") < image.index("scripts/smoke_image.py --image")
-    assert image.index("scripts/smoke_image.py --image") < image.index("docker/login-action")
+    assert image.index("--audit-source") < image.index(
+        "docker build --platform linux/amd64"
+    )
+    assert image.index("docker build") < image.index(
+        "scripts/smoke_image.py --image"
+    )
+    assert image.index("scripts/smoke_image.py --image") < image.index(
+        "docker/login-action"
+    )
     assert image.index("docker/login-action") < image.index("docker push")
-    assert image.count("docker build ") == 1 and "docker/build-push-action" not in image
+    assert (
+        image.count("docker build ") == 1
+        and "docker/build-push-action" not in image
+    )
     assert 'docker tag "$TESTED_IMAGE"' in image
     assert "service-${GITHUB_SHA}" in image and ' = "$TESTED_IMAGE"' in image
-    assert image.count("if: github.ref == 'refs/heads/main' && github.event_name == 'push'") == 2
+    assert (
+        image.count(
+            "if: github.ref == 'refs/heads/main' && github.event_name == 'push'"
+        )
+        == 2
+    )
 
 
 def test_daily_workflow_never_schedules_or_sends():
     workflow = (ROOT / ".github/workflows/daily.yml").read_text()
     assert "schedule:" not in workflow and "cron:" not in workflow
-    assert "workflow_dispatch:" in workflow and "repository_dispatch:" in workflow
+    assert (
+        "workflow_dispatch:" in workflow and "repository_dispatch:" in workflow
+    )
     assert "NEWSLETTER_EDITOR_TOKEN" in workflow
     assert all(
         value not in workflow
-        for value in ("NEWSLETTER_SEND_TOKEN", "RESEND_API_KEY", "latest send", "/send")
+        for value in (
+            "NEWSLETTER_SEND_TOKEN",
+            "RESEND_API_KEY",
+            "latest send",
+            "/send",
+        )
     )
 
 

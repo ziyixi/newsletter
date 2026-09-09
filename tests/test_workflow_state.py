@@ -68,7 +68,9 @@ def request(key, packets):
 def ready(store, key, packets, required=None, run=None):
     edition = store.prepare(
         request(key, packets),
-        workflow_binding=binding(run or key, packets if required is None else required),
+        workflow_binding=binding(
+            run or key, packets if required is None else required
+        ),
     )
     # This tests the reservation boundary, not the already-covered model/renderer.
     return store.finish(
@@ -92,13 +94,17 @@ def approval(edition, key="send-fixture"):
     }
 
 
-def test_usage_ledger_upserts_latest_cumulative_snapshot_not_each_notification(store):
+def test_usage_ledger_upserts_latest_cumulative_snapshot_not_each_notification(
+    store,
+):
     state = WorkflowState(store)
     sink = state.usage_sink("run-one")
     records = record_one()
     for row in records + [records[-1]]:
         sink(row)
-    assert store.db.execute("SELECT COUNT(*) FROM model_usage").fetchone()[0] == 1
+    assert (
+        store.db.execute("SELECT COUNT(*) FROM model_usage").fetchone()[0] == 1
+    )
     assert state.usage("run-one")["usage"]["total_tokens"] == 120
     assert state.usage("run-one")["invocations"] == 1
     assert not state.usage("run-one")["partial"]
@@ -117,7 +123,9 @@ def test_usage_scope_cannot_be_reassigned_after_recording(store):
 
 
 @pytest.mark.parametrize("snapshot", [0, 1, -1])
-def test_usage_survives_restart_including_unknown_and_in_flight_snapshots(tmp_path, snapshot):
+def test_usage_survives_restart_including_unknown_and_in_flight_snapshots(
+    tmp_path, snapshot
+):
     path = tmp_path / "restart.sqlite3"
     before = Store(path, "mock")
     row = record_one()[snapshot]
@@ -129,7 +137,10 @@ def test_usage_survives_restart_including_unknown_and_in_flight_snapshots(tmp_pa
         assert WorkflowState(after).usage("run-one") == expected
         assert expected["partial"] is (snapshot != -1)
         if snapshot == 0:
-            assert expected["usage"] is None and expected["missing_invocations"] == 1
+            assert (
+                expected["usage"] is None
+                and expected["missing_invocations"] == 1
+            )
     finally:
         after.close()
 
@@ -159,7 +170,10 @@ def test_prepare_writes_edition_and_frozen_workflow_binding_atomically(store):
         "projection_required": True,
     }
     assert (
-        store.prepare(request("edition", [source]), workflow_binding=copy.deepcopy(bound)) == first
+        store.prepare(
+            request("edition", [source]), workflow_binding=copy.deepcopy(bound)
+        )
+        == first
     )
     assert store.db.execute("SELECT COUNT(*) FROM editions").fetchone()[0] == 1
 
@@ -170,12 +184,14 @@ def test_binding_insert_failure_rolls_back_new_edition_and_queue_slot(store):
     state.bind_edition("existing-binding", "occupied-run", {}, [source["id"]])
     with pytest.raises((sqlite3.IntegrityError, StoreError)):
         store.prepare(
-            request("edition", [source]), workflow_binding=binding("occupied-run", [source])
+            request("edition", [source]),
+            workflow_binding=binding("occupied-run", [source]),
         )
     assert store.db.execute("SELECT COUNT(*) FROM editions").fetchone()[0] == 0
     assert store.claim() is None
     assert store.prepare(
-        request("edition", [source]), workflow_binding=binding("other-run", [source])
+        request("edition", [source]),
+        workflow_binding=binding("other-run", [source]),
     )
 
 
@@ -184,7 +200,9 @@ def test_idempotent_prepare_cannot_change_frozen_workflow_binding(store, field):
     state = WorkflowState(store)
     source = packet(store, "adopted")
     original = binding("run-one", [source])
-    first = store.prepare(request("edition", [source]), workflow_binding=original)
+    first = store.prepare(
+        request("edition", [source]), workflow_binding=original
+    )
     changed = copy.deepcopy(original)
     changed[field] = {
         "run_id": "run-two",
@@ -197,16 +215,25 @@ def test_idempotent_prepare_cannot_change_frozen_workflow_binding(store, field):
     assert state.edition(first["id"])["result"] == original["result"]
 
 
-def test_existing_unbound_edition_cannot_silently_ignore_new_workflow_binding(store):
+def test_existing_unbound_edition_cannot_silently_ignore_new_workflow_binding(
+    store,
+):
     source = packet(store, "adopted")
     store.prepare(request("edition", [source]))
     with pytest.raises(StoreError) as caught:
-        store.prepare(request("edition", [source]), workflow_binding=binding("new-run", [source]))
+        store.prepare(
+            request("edition", [source]),
+            workflow_binding=binding("new-run", [source]),
+        )
     assert caught.value.code == "conflict"
 
 
-@pytest.mark.parametrize("projection", ["pending", "submitting", "unknown", "failed"])
-def test_adopted_projection_must_be_done_before_send_reservation(store, projection):
+@pytest.mark.parametrize(
+    "projection", ["pending", "submitting", "unknown", "failed"]
+)
+def test_adopted_projection_must_be_done_before_send_reservation(
+    store, projection
+):
     source = packet(store, "adopted")
     edition = ready(store, "edition", [source])
     store.projection_result(source["id"], projection)
@@ -230,8 +257,12 @@ def test_empty_or_missing_adopted_material_is_not_publishable(store, required):
         store.reserve_send(approval(edition))
 
 
-@pytest.mark.parametrize("unused_state", ["pending", "submitting", "failed", "unknown"])
-def test_unused_projection_does_not_block_adopted_confirmed_material(store, unused_state):
+@pytest.mark.parametrize(
+    "unused_state", ["pending", "submitting", "failed", "unknown"]
+)
+def test_unused_projection_does_not_block_adopted_confirmed_material(
+    store, unused_state
+):
     adopted, unused = packet(store, "adopted"), packet(store, "unused")
     edition = ready(store, "edition", [adopted, unused], required=[adopted])
     store.projection_result(adopted["id"], "done")
@@ -248,7 +279,9 @@ def test_dag_advance_ignores_unused_projection_failures(store, tmp_path):
         workflow_snapshot={"fixture": "not executed by this state-only test"},
     )
     adopted, unused = packet(store, "adopted"), packet(store, "unused")
-    edition = ready(store, "edition", [adopted, unused], required=[adopted], run=run["id"])
+    edition = ready(
+        store, "edition", [adopted, unused], required=[adopted], run=run["id"]
+    )
     store.projection_result(adopted["id"], "done")
     store.projection_result(unused["id"], "unknown")
     runs.update(run["id"], state="editing", edition_id=edition["id"])

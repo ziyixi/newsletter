@@ -37,7 +37,9 @@ DESTINATION = {
 def rig(tmp_path):
     store = Store(tmp_path / "newsletter.sqlite3", "live")
     journal = NotionJournal(store, DESTINATION)
-    journal.execute("INSERT INTO metadata VALUES('notion_v2_bootstrap_at',?)", (BOOTSTRAP,))
+    journal.execute(
+        "INSERT INTO metadata VALUES('notion_v2_bootstrap_at',?)", (BOOTSTRAP,)
+    )
     store.db.executescript("""
         CREATE TABLE workflow_runs(id TEXT PRIMARY KEY, definition TEXT NOT NULL);
         CREATE TABLE workflow_artifacts(
@@ -53,7 +55,9 @@ def rig(tmp_path):
         CREATE TABLE candidate_history(id TEXT PRIMARY KEY, body TEXT NOT NULL);
     """)
     value = SimpleNamespace(
-        store=store, journal=journal, intake=NotionIntake(journal, include_personal=False)
+        store=store,
+        journal=journal,
+        intake=NotionIntake(journal, include_personal=False),
     )
     yield value
     store.close()
@@ -87,16 +91,31 @@ def add_artifact(
     created_at=CURRENT,
 ):
     add_run(rig, run_id)
-    body = {"candidates": values, "coverage": [{"note": "Synthetic pipeline context only"}]}
+    body = {
+        "candidates": values,
+        "coverage": [{"note": "Synthetic pipeline context only"}],
+    }
     rig.journal.execute(
         "INSERT INTO workflow_artifacts VALUES(?,?,?,?,?,?,?)",
-        (artifact_id, run_id, node, item_id, canonical_json(body), content_hash(body), created_at),
+        (
+            artifact_id,
+            run_id,
+            node,
+            item_id,
+            canonical_json(body),
+            content_hash(body),
+            created_at,
+        ),
     )
 
 
 def add_edition(rig, value=None, *, run_id="run-one", snapshots=None):
     add_run(rig, run_id)
-    value = edition(created_at=CURRENT, updated_at=CURRENT) if value is None else value
+    value = (
+        edition(created_at=CURRENT, updated_at=CURRENT)
+        if value is None
+        else value
+    )
     snapshots = [packet()] if snapshots is None else snapshots
     rig.journal.execute(
         "INSERT INTO editions VALUES(?,?,?,?,?,?)",
@@ -116,7 +135,9 @@ def add_edition(rig, value=None, *, run_id="run-one", snapshots=None):
     return value
 
 
-def add_research(rig, candidate_ids, *, run_id="run-one", evidence=None, created_at=CURRENT):
+def add_research(
+    rig, candidate_ids, *, run_id="run-one", evidence=None, created_at=CURRENT
+):
     task = {"id": "story-one", "candidate_ids": candidate_ids}
     result = {"packets": [packet()] if evidence is None else evidence}
     digest = content_hash({"task": task, "result": result})
@@ -137,12 +158,15 @@ def add_research(rig, candidate_ids, *, run_id="run-one", evidence=None, created
 
 
 def entities(rig, kind="material"):
-    return rig.journal.rows("SELECT * FROM notion_entities WHERE kind=? ORDER BY key", (kind,))
+    return rig.journal.rows(
+        "SELECT * FROM notion_entities WHERE kind=? ORDER BY key", (kind,)
+    )
 
 
 def candidate_row(rig, candidate_id="candidate-fixture", run_id="run-one"):
     return rig.journal.rows(
-        "SELECT * FROM notion_candidates WHERE run_id=? AND candidate_id=?", (run_id, candidate_id)
+        "SELECT * FROM notion_candidates WHERE run_id=? AND candidate_id=?",
+        (run_id, candidate_id),
     )[0]
 
 
@@ -152,37 +176,66 @@ def properties(entity):
 
 def prop_text(entity, field):
     prop = properties(entity)[field]
-    return "".join(item["text"]["content"] for item in prop.get("rich_text", prop.get("title", [])))
+    return "".join(
+        item["text"]["content"]
+        for item in prop.get("rich_text", prop.get("title", []))
+    )
 
 
-def test_iso_artifact_timestamp_becomes_first_seen_date_without_losing_original_snapshot(rig):
+def test_iso_artifact_timestamp_becomes_first_seen_date_without_losing_original_snapshot(
+    rig,
+):
     source = candidate(published_at="2026-09-06T23:45:00Z")
     add_artifact(rig, [source])
     assert rig.intake.scan() > 0
     material = entities(rig)[0]
     assert properties(material)["first_seen"] == {"date": {"start": DAY}}
-    assert properties(material)["published_at"] == {"date": {"start": source["published_at"]}}
+    assert properties(material)["published_at"] == {
+        "date": {"start": source["published_at"]}
+    }
     saved = candidate_row(rig)
     assert saved["first_seen"] == CURRENT
     assert json.loads(saved["body"]) == source
     assert rig.journal.summary()["import_errors"] == []
 
 
-def test_only_top_level_deduplicate_output_creates_one_entity_per_candidate(rig):
-    first = candidate(id="first", url="https://example.org/one", doi="10.1234/one", event_key="one")
+def test_only_top_level_deduplicate_output_creates_one_entity_per_candidate(
+    rig,
+):
+    first = candidate(
+        id="first",
+        url="https://example.org/one",
+        doi="10.1234/one",
+        event_key="one",
+    )
     second = candidate(
-        id="second", url="https://example.org/two", doi="10.1234/two", event_key="two"
+        id="second",
+        url="https://example.org/two",
+        doi="10.1234/two",
+        event_key="two",
     )
     decoy = candidate(
-        id="decoy", url="https://example.org/decoy", doi="10.1234/decoy", event_key="decoy"
+        id="decoy",
+        url="https://example.org/decoy",
+        doi="10.1234/decoy",
+        event_key="decoy",
     )
     add_artifact(rig, [decoy], node="discovery", artifact_id="raw-discovery")
     add_artifact(rig, [decoy], node="feed", artifact_id="raw-feed")
-    add_artifact(rig, [decoy], node="pool", item_id="unexpected-map-item", artifact_id="map-item")
+    add_artifact(
+        rig,
+        [decoy],
+        node="pool",
+        item_id="unexpected-map-item",
+        artifact_id="map-item",
+    )
     add_artifact(rig, [first, second], artifact_id="final-pool")
     rig.intake.scan()
     assert len(entities(rig)) == 2
-    assert {row["candidate_id"] for row in rig.journal.rows("SELECT * FROM notion_candidates")} == {
+    assert {
+        row["candidate_id"]
+        for row in rig.journal.rows("SELECT * FROM notion_candidates")
+    } == {
         "first",
         "second",
     }
@@ -191,20 +244,24 @@ def test_only_top_level_deduplicate_output_creates_one_entity_per_candidate(rig)
         second["title"],
     }
     assert all(
-        "Synthetic pipeline context" not in json.dumps(rig.journal.versions(e["key"]))
+        "Synthetic pipeline context"
+        not in json.dumps(rig.journal.versions(e["key"]))
         for e in entities(rig)
     )
 
 
 def test_frozen_run_candidate_is_used_instead_of_mutable_candidate_history(rig):
-    source = candidate(authors="Frozen Synthetic Author", contribution="Frozen contribution")
+    source = candidate(
+        authors="Frozen Synthetic Author", contribution="Frozen contribution"
+    )
     mutated = {
         **source,
         "authors": "Later history author",
         "contribution": "Later history contribution",
     }
     rig.journal.execute(
-        "INSERT INTO candidate_history VALUES(?,?)", (source["id"], canonical_json(mutated))
+        "INSERT INTO candidate_history VALUES(?,?)",
+        (source["id"], canonical_json(mutated)),
     )
     add_artifact(rig, [source])
     rig.intake.scan()
@@ -212,22 +269,34 @@ def test_frozen_run_candidate_is_used_instead_of_mutable_candidate_history(rig):
     assert prop_text(material, "authors") == source["authors"]
     assert prop_text(material, "value") == source["contribution"]
     assert json.loads(candidate_row(rig)["body"]) == source
-    assert "Later history" not in json.dumps(rig.journal.versions(material["key"]))
+    assert "Later history" not in json.dumps(
+        rig.journal.versions(material["key"])
+    )
 
 
-def test_research_keeps_candidate_metadata_and_complete_associated_public_packets(rig):
+def test_research_keeps_candidate_metadata_and_complete_associated_public_packets(
+    rig,
+):
     source = candidate(authors="", affiliations="")
     add_artifact(rig, [source])
     research = packet()
-    research["content"]["body"] = "OTHER SOURCE AUTHOR is not the candidate author. " * 200
+    research["content"]["body"] = (
+        "OTHER SOURCE AUTHOR is not the candidate author. " * 200
+    )
     add_research(rig, [source["id"]], evidence=[research])
     rig.intake.scan()
     material = entities(rig)[0]
-    assert prop_text(material, "authors") == prop_text(material, "affiliations") == ""
+    assert (
+        prop_text(material, "authors")
+        == prop_text(material, "affiliations")
+        == ""
+    )
     assert properties(material)["progress"] == {"select": {"name": "已研究"}}
     versions = rig.journal.versions(material["key"])
     assert len(versions) == 2
-    assert research["content"]["body"] in block_text(json.loads(versions[-1]["blocks"]))
+    assert research["content"]["body"] in block_text(
+        json.loads(versions[-1]["blocks"])
+    )
     assert rig.journal.summary()["import_errors"] == []
 
 
@@ -276,11 +345,14 @@ def test_adopted_relations_follow_actual_citations_not_all_selected_candidates_o
         {"edition_key": "edition:" + value["id"], "material_key": used}
     ]
     assert all(
-        row["material_key"] != unused for row in rig.journal.rows("SELECT * FROM notion_links")
+        row["material_key"] != unused
+        for row in rig.journal.rows("SELECT * FROM notion_links")
     )
 
 
-def test_edition_before_candidates_repairs_relations_without_new_edition_body(rig):
+def test_edition_before_candidates_repairs_relations_without_new_edition_body(
+    rig,
+):
     value, snapshots = edition_with_unused_selected_candidate()
     add_edition(rig, value, snapshots=snapshots)
     rig.intake.scan()
@@ -294,7 +366,9 @@ def test_edition_before_candidates_repairs_relations_without_new_edition_body(ri
     assert rig.intake.scan() == 0
 
 
-def test_delivery_update_refreshes_columns_without_appending_another_edition_version(rig):
+def test_delivery_update_refreshes_columns_without_appending_another_edition_version(
+    rig,
+):
     value = add_edition(rig)
     rig.intake.scan()
     key = "edition:" + value["id"]
@@ -305,33 +379,51 @@ def test_delivery_update_refreshes_columns_without_appending_another_edition_ver
         updated_at="2026-09-07T14:00:00Z",
     )
     rig.journal.execute(
-        "UPDATE editions SET body=? WHERE id=?", (canonical_json(value), value["id"])
+        "UPDATE editions SET body=? WHERE id=?",
+        (canonical_json(value), value["id"]),
     )
     assert rig.intake.scan() > 0
     assert rig.journal.versions(key) == before
-    assert properties(rig.journal.entity(key))["delivery"] == {"select": {"name": "已提交"}}
-    assert len(rig.journal.rows("SELECT * FROM notion_imports WHERE kind='edition'")) == 1
+    assert properties(rig.journal.entity(key))["delivery"] == {
+        "select": {"name": "已提交"}
+    }
+    assert (
+        len(
+            rig.journal.rows(
+                "SELECT * FROM notion_imports WHERE kind='edition'"
+            )
+        )
+        == 1
+    )
     assert rig.intake.scan() == 0
 
 
-def test_old_history_is_marked_test_without_rewriting_sqlite_or_creating_delivery(rig):
+def test_old_history_is_marked_test_without_rewriting_sqlite_or_creating_delivery(
+    rig,
+):
     add_artifact(rig, [candidate()], created_at=OLD)
     value = edition(created_at=OLD, updated_at=OLD)
     add_edition(rig, value)
     before = rig.journal.rows("SELECT body,snapshot FROM editions")
     rig.intake.scan()
     assert properties(entities(rig)[0])["fixture"] == {"checkbox": True}
-    assert properties(entities(rig, "edition")[0])["edition_type"] == {"select": {"name": "测试"}}
+    assert properties(entities(rig, "edition")[0])["edition_type"] == {
+        "select": {"name": "测试"}
+    }
     assert rig.journal.rows("SELECT body,snapshot FROM editions") == before
     assert rig.journal.rows("SELECT * FROM sends") == []
     assert rig.journal.rows("SELECT * FROM verification_sends") == []
 
 
-def test_same_date_multiple_editions_keep_distinct_keys_and_classify_manual_run_as_test(rig):
+def test_same_date_multiple_editions_keep_distinct_keys_and_classify_manual_run_as_test(
+    rig,
+):
     first = add_edition(rig)
     add_run(rig, "run-two", request_key="manual-preview-synthetic")
     second = add_edition(
-        rig, edition(id="second-edition", created_at=CURRENT, updated_at=CURRENT), run_id="run-two"
+        rig,
+        edition(id="second-edition", created_at=CURRENT, updated_at=CURRENT),
+        run_id="run-two",
     )
     rig.intake.scan()
     values = entities(rig, "edition")
@@ -339,52 +431,87 @@ def test_same_date_multiple_editions_keep_distinct_keys_and_classify_manual_run_
         "edition:" + first["id"],
         "edition:" + second["id"],
     }
-    assert properties(rig.journal.entity("edition:" + first["id"]))["edition_type"] == {
-        "select": {"name": "日常"}
-    }
-    assert properties(rig.journal.entity("edition:" + second["id"]))["edition_type"] == {
-        "select": {"name": "测试"}
-    }
+    assert properties(rig.journal.entity("edition:" + first["id"]))[
+        "edition_type"
+    ] == {"select": {"name": "日常"}}
+    assert properties(rig.journal.entity("edition:" + second["id"]))[
+        "edition_type"
+    ] == {"select": {"name": "测试"}}
 
 
 def test_explicit_verification_receipt_labels_revision_not_another_daily(rig):
     value = add_edition(rig)
     rig.journal.execute(
         "INSERT INTO verification_sends VALUES(?,?,?,?,?,?)",
-        (DAY, value["id"], "synthetic-verification", "a" * 64, "prior-edition", CURRENT),
+        (
+            DAY,
+            value["id"],
+            "synthetic-verification",
+            "a" * 64,
+            "prior-edition",
+            CURRENT,
+        ),
     )
     rig.intake.scan()
-    assert properties(entities(rig, "edition")[0])["edition_type"] == {"select": {"name": "修订"}}
+    assert properties(entities(rig, "edition")[0])["edition_type"] == {
+        "select": {"name": "修订"}
+    }
 
 
 def test_different_dois_with_same_event_are_separate_materials(rig):
     first = candidate(
-        id="one", doi="10.1234/one", url="https://example.org/one", event_key="shared-conference"
+        id="one",
+        doi="10.1234/one",
+        url="https://example.org/one",
+        event_key="shared-conference",
     )
     second = candidate(
-        id="two", doi="10.1234/two", url="https://example.org/two", event_key="shared-conference"
+        id="two",
+        doi="10.1234/two",
+        url="https://example.org/two",
+        event_key="shared-conference",
     )
     add_artifact(rig, [first, second])
     rig.intake.scan()
     assert len(entities(rig)) == 2
-    assert candidate_row(rig, "one")["entity_key"] != candidate_row(rig, "two")["entity_key"]
+    assert (
+        candidate_row(rig, "one")["entity_key"]
+        != candidate_row(rig, "two")["entity_key"]
+    )
     assert rig.journal.summary()["import_errors"] == []
 
 
 @pytest.mark.parametrize("bad_index", [0, 1])
-def test_one_invalid_candidate_is_diagnosed_without_losing_other_candidates(rig, bad_index):
+def test_one_invalid_candidate_is_diagnosed_without_losing_other_candidates(
+    rig, bad_index
+):
     first = candidate(
-        id="valid-one", doi="10.1234/one", url="https://example.org/one", event_key="one"
+        id="valid-one",
+        doi="10.1234/one",
+        url="https://example.org/one",
+        event_key="one",
     )
     second = candidate(
-        id="valid-two", doi="10.1234/two", url="https://example.org/two", event_key="two"
+        id="valid-two",
+        doi="10.1234/two",
+        url="https://example.org/two",
+        event_key="two",
     )
-    bad = candidate(id="bad", doi="", url="not a valid public URL", event_key="bad", summary="bad")
+    bad = candidate(
+        id="bad",
+        doi="",
+        url="not a valid public URL",
+        event_key="bad",
+        summary="bad",
+    )
     values = [first, second]
     values.insert(bad_index, bad)
     add_artifact(rig, values)
     rig.intake.scan()
-    assert {row["candidate_id"] for row in rig.journal.rows("SELECT * FROM notion_candidates")} == {
+    assert {
+        row["candidate_id"]
+        for row in rig.journal.rows("SELECT * FROM notion_candidates")
+    } == {
         "valid-one",
         "valid-two",
     }
@@ -415,7 +542,9 @@ def test_conflicting_snapshot_for_same_run_candidate_is_rejected_before_any_proj
     assert rig.journal.summary()["import_errors"]
 
 
-def test_two_run_snapshots_share_material_but_do_not_overwrite_the_old_run_body(rig):
+def test_two_run_snapshots_share_material_but_do_not_overwrite_the_old_run_body(
+    rig,
+):
     original = candidate()
     add_artifact(rig, [original], created_at=OLD)
     rig.intake.scan()
@@ -430,21 +559,29 @@ def test_two_run_snapshots_share_material_but_do_not_overwrite_the_old_run_body(
     assert json.loads(candidate_row(rig)["body"]) == original
     assert json.loads(candidate_row(rig, run_id="run-two")["body"]) == updated
     assert len(rig.journal.versions(entities(rig)[0]["key"])) == 2
-    assert properties(entities(rig)[0])["first_seen"] == {"date": {"start": "2026-09-06"}}
+    assert properties(entities(rig)[0])["first_seen"] == {
+        "date": {"start": "2026-09-06"}
+    }
 
 
-def test_journal_property_only_update_and_invalid_frozen_edition_body_are_atomic(rig):
+def test_journal_property_only_update_and_invalid_frozen_edition_body_are_atomic(
+    rig,
+):
     journal = rig.journal
     first = edition_projection(edition(), packets=[packet()])
     journal.enqueue("edition", first)
-    accepted = edition_projection(edition(delivery_state="provider_accepted"), packets=[packet()])
+    accepted = edition_projection(
+        edition(delivery_state="provider_accepted"), packets=[packet()]
+    )
     journal.enqueue("edition", accepted)
     before = journal.entity(first.key)
     assert len(journal.versions(first.key)) == 1
     changed = edition()
     changed["draft"]["introduction"] = "An altered frozen edition body."
     with pytest.raises(ValueError, match="frozen_edition_changed"):
-        journal.enqueue("edition", edition_projection(changed, packets=[packet()]))
+        journal.enqueue(
+            "edition", edition_projection(changed, packets=[packet()])
+        )
     assert journal.entity(first.key) == before
     assert len(journal.versions(first.key)) == 1
 
@@ -455,13 +592,19 @@ def test_journal_relations_resolve_only_after_both_pages_are_known(rig):
     journal = rig.journal
     journal.enqueue("material", material)
     journal.enqueue("edition", archived)
-    journal.execute("INSERT INTO notion_links VALUES(?,?)", (archived.key, material.key))
-    assert journal.desired(journal.entity(archived.key))["material_ids"] == {"relation": []}
     journal.execute(
-        "UPDATE notion_entities SET page_id='material-page' WHERE key=?", (material.key,)
+        "INSERT INTO notion_links VALUES(?,?)", (archived.key, material.key)
+    )
+    assert journal.desired(journal.entity(archived.key))["material_ids"] == {
+        "relation": []
+    }
+    journal.execute(
+        "UPDATE notion_entities SET page_id='material-page' WHERE key=?",
+        (material.key,),
     )
     journal.execute(
-        "UPDATE notion_entities SET page_id='edition-page' WHERE key=?", (archived.key,)
+        "UPDATE notion_entities SET page_id='edition-page' WHERE key=?",
+        (archived.key,),
     )
     assert journal.desired(journal.entity(archived.key))["material_ids"] == {
         "relation": [{"id": "material-page"}]
@@ -471,11 +614,16 @@ def test_journal_relations_resolve_only_after_both_pages_are_known(rig):
     assert desired["progress"] == {"select": {"name": "已刊出"}}
 
 
-def test_journal_restart_keeps_unknown_mutations_and_never_resets_them_to_new(rig):
+def test_journal_restart_keeps_unknown_mutations_and_never_resets_them_to_new(
+    rig,
+):
     journal = rig.journal
     value = project_material()
     journal.enqueue("material", value)
-    journal.execute("UPDATE notion_entities SET create_state='creating' WHERE key=?", (value.key,))
+    journal.execute(
+        "UPDATE notion_entities SET create_state='creating' WHERE key=?",
+        (value.key,),
+    )
     journal.execute(
         "UPDATE notion_versions SET state='appending',pending_chunk='[]' WHERE entity_key=?",
         (value.key,),
@@ -483,10 +631,15 @@ def test_journal_restart_keeps_unknown_mutations_and_never_resets_them_to_new(ri
     reopened = NotionJournal(rig.store, DESTINATION)
     assert reopened.entity(value.key)["create_state"] == "unknown"
     assert reopened.versions(value.key)[0]["state"] == "unknown"
-    assert NotionJournal(rig.store, DESTINATION).entity(value.key)["create_state"] == "unknown"
+    assert (
+        NotionJournal(rig.store, DESTINATION).entity(value.key)["create_state"]
+        == "unknown"
+    )
 
 
-def test_destination_or_privacy_change_requires_explicit_migration_without_ledger_mutation(rig):
+def test_destination_or_privacy_change_requires_explicit_migration_without_ledger_mutation(
+    rig,
+):
     value = project_material()
     rig.journal.enqueue("material", value)
     before = entities(rig)
@@ -495,7 +648,9 @@ def test_destination_or_privacy_change_requires_explicit_migration_without_ledge
     assert entities(rig) == before
 
 
-def test_candidate_import_does_not_touch_unrelated_legacy_packet_projection_receipts(rig):
+def test_candidate_import_does_not_touch_unrelated_legacy_packet_projection_receipts(
+    rig,
+):
     legacy = packet()
     rig.journal.execute(
         "INSERT INTO packets(id,principal,request_key,digest,body,projection) VALUES(?,?,?,?,?,?)",

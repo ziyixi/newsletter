@@ -16,16 +16,25 @@ from newsletter.store import Store
 def environment(tmp_path):
     store = Store(tmp_path / "data" / "newsletter.sqlite3", "mock")
     runs = RunRepository(store)
-    instruction = Instruction("science", "Synthetic research direction.", content_hash("fixture"))
-    run = runs.start({"request_key": "synthetic-run", "issue_date": "2026-09-05"}, [instruction])
-    pipeline = CollectionPipeline(runs, MockCollector(), tmp_path / "work", 1, 20)
+    instruction = Instruction(
+        "science", "Synthetic research direction.", content_hash("fixture")
+    )
+    run = runs.start(
+        {"request_key": "synthetic-run", "issue_date": "2026-09-05"},
+        [instruction],
+    )
+    pipeline = CollectionPipeline(
+        runs, MockCollector(), tmp_path / "work", 1, 20
+    )
     try:
         yield store, runs, pipeline, run
     finally:
         store.close()
 
 
-async def test_failed_second_packet_never_leaves_untracked_material(environment):
+async def test_failed_second_packet_never_leaves_untracked_material(
+    environment,
+):
     store, runs, pipeline, run = environment
 
     class PartlyInvalidCollector(MockCollector):
@@ -33,7 +42,9 @@ async def test_failed_second_packet_never_leaves_untracked_material(environment)
             result = await super().collect(*args)
             invalid = copy.deepcopy(result.packets[0])
             invalid["sources"] = []
-            return ResearchResult([*result.packets, invalid], "Synthetic invalid second packet.")
+            return ResearchResult(
+                [*result.packets, invalid], "Synthetic invalid second packet."
+            )
 
     pipeline.collector = PartlyInvalidCollector()
     assert await pipeline.collect_next()
@@ -41,14 +52,18 @@ async def test_failed_second_packet_never_leaves_untracked_material(environment)
     assert failed["state"] == "failed"
     persisted = {packet["id"] for packet in store.read_inbox()["packets"]}
     recorded = {
-        packet_id for direction in failed["directions"] for packet_id in direction["packet_ids"]
+        packet_id
+        for direction in failed["directions"]
+        for packet_id in direction["packet_ids"]
     }
     # Either roll back the direction atomically, or retain its saved IDs. A
     # pending packet must not escape to Notion without any run/direction link.
     assert persisted <= recorded
 
 
-async def test_internal_edition_key_conflict_blocks_run_instead_of_killing_worker(environment):
+async def test_internal_edition_key_conflict_blocks_run_instead_of_killing_worker(
+    environment,
+):
     store, runs, pipeline, run = environment
     assert await pipeline.collect_next()
     collected = runs.get(run["id"])
@@ -70,7 +85,9 @@ async def test_internal_edition_key_conflict_blocks_run_instead_of_killing_worke
     assert failed["error_code"]
 
 
-async def test_restart_does_not_reissue_uncertain_notion_projection(environment):
+async def test_restart_does_not_reissue_uncertain_notion_projection(
+    environment,
+):
     store, runs, pipeline, run = environment
     assert await pipeline.collect_next()
     packet = store.claim_projection()
@@ -88,7 +105,9 @@ async def test_restart_does_not_reissue_uncertain_notion_projection(environment)
     assert not pipeline.advance()
 
 
-async def test_crash_between_edition_creation_and_run_link_reuses_one_edition(environment):
+async def test_crash_between_edition_creation_and_run_link_reuses_one_edition(
+    environment,
+):
     store, runs, pipeline, run = environment
     assert await pipeline.collect_next()
     collected = runs.get(run["id"])

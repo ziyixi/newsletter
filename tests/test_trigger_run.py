@@ -61,7 +61,9 @@ def transport(trigger, monkeypatch):
     return client
 
 
-def test_only_authenticated_https_run_endpoint_is_called(trigger, transport, capsys):
+def test_only_authenticated_https_run_endpoint_is_called(
+    trigger, transport, capsys
+):
     trigger.main()
     assert len(transport.requests) == 1
     request = transport.requests[0]
@@ -82,10 +84,14 @@ def test_only_authenticated_https_run_endpoint_is_called(trigger, transport, cap
     assert "do-not-echo" not in json.dumps(printed)
 
 
-def test_redirect_and_ambient_proxy_handlers_are_explicitly_disabled(trigger, transport):
+def test_redirect_and_ambient_proxy_handlers_are_explicitly_disabled(
+    trigger, transport
+):
     trigger.main()
     redirects = [
-        handler for handler in transport.handlers if isinstance(handler, trigger.NoRedirect)
+        handler
+        for handler in transport.handlers
+        if isinstance(handler, trigger.NoRedirect)
     ]
     proxies = [
         handler
@@ -116,15 +122,21 @@ def test_redirect_and_ambient_proxy_handlers_are_explicitly_disabled(trigger, tr
         "https://newsletter.example.org#section",
     ],
 )
-def test_invalid_origin_fails_before_constructing_any_network_client(trigger, transport, origin):
+def test_invalid_origin_fails_before_constructing_any_network_client(
+    trigger, transport, origin
+):
     trigger.os.environ["NEWSLETTER_SERVICE_URL"] = origin
     with pytest.raises(SystemExit, match="fixed HTTPS origin"):
         trigger.main()
     assert not transport.requests and not transport.handlers
 
 
-@pytest.mark.parametrize("token", ["", "short", "a" * 23, "a" * 24 + " ", "a" * 24 + "\n"])
-def test_missing_short_or_whitespace_auth_fails_without_request(trigger, transport, token):
+@pytest.mark.parametrize(
+    "token", ["", "short", "a" * 23, "a" * 24 + " ", "a" * 24 + "\n"]
+)
+def test_missing_short_or_whitespace_auth_fails_without_request(
+    trigger, transport, token
+):
     trigger.os.environ["NEWSLETTER_EDITOR_TOKEN"] = token
     with pytest.raises(SystemExit, match="valid NEWSLETTER_EDITOR_TOKEN"):
         trigger.main()
@@ -132,17 +144,23 @@ def test_missing_short_or_whitespace_auth_fails_without_request(trigger, transpo
 
 
 @pytest.mark.parametrize("explicit_key", [None, "routine-A-20260905-revision1"])
-def test_repeated_invocations_preserve_idempotent_request_bytes(trigger, transport, explicit_key):
+def test_repeated_invocations_preserve_idempotent_request_bytes(
+    trigger, transport, explicit_key
+):
     if explicit_key is not None:
         trigger.os.environ["NEWSLETTER_REQUEST_KEY"] = explicit_key
     trigger.main()
     trigger.main()
     first, second = transport.requests
     assert first.data == second.data
-    assert json.loads(first.data)["request_key"] == (explicit_key or "daily-2026-09-05")
+    assert json.loads(first.data)["request_key"] == (
+        explicit_key or "daily-2026-09-05"
+    )
 
 
-@pytest.mark.parametrize("status", [301, 302, 307, 308, 401, 403, 409, 429, 500, 503])
+@pytest.mark.parametrize(
+    "status", [301, 302, 307, 308, 401, 403, 409, 429, 500, 503]
+)
 def test_http_failure_is_not_retried_and_never_echoes_vendor_response(
     trigger, transport, capsys, status
 ):
@@ -155,13 +173,20 @@ def test_http_failure_is_not_retried_and_never_echoes_vendor_response(
     )
     with pytest.raises(SystemExit) as error:
         trigger.main()
-    assert str(error.value) == f"Trigger rejected (HTTP {status}); no automatic retry"
+    assert (
+        str(error.value)
+        == f"Trigger rejected (HTTP {status}); no automatic retry"
+    )
     assert len(transport.requests) == 1
     assert capsys.readouterr().out == ""
 
 
 @pytest.mark.parametrize(
-    "failure", [TimeoutError("private-timeout"), urllib.error.URLError("private-network-error")]
+    "failure",
+    [
+        TimeoutError("private-timeout"),
+        urllib.error.URLError("private-network-error"),
+    ],
 )
 def test_ambiguous_transport_outcome_is_safe_and_requires_same_key(
     trigger, transport, capsys, failure
@@ -169,7 +194,10 @@ def test_ambiguous_transport_outcome_is_safe_and_requires_same_key(
     transport.failure = failure
     with pytest.raises(SystemExit) as error:
         trigger.main()
-    assert str(error.value) == "Trigger outcome unknown; retry only with the same request key"
+    assert (
+        str(error.value)
+        == "Trigger outcome unknown; retry only with the same request key"
+    )
     assert len(transport.requests) == 1
     assert capsys.readouterr().out == ""
 
@@ -179,7 +207,10 @@ def test_unusable_success_response_is_unknown_not_a_success_or_automatic_retry(
     trigger, transport, capsys, raw
 ):
     transport.raw = raw
-    with pytest.raises(SystemExit, match="outcome unknown; retry only with the same request key"):
+    with pytest.raises(
+        SystemExit,
+        match="outcome unknown; retry only with the same request key",
+    ):
         trigger.main()
     assert len(transport.requests) == 1
     assert capsys.readouterr().out == ""

@@ -27,7 +27,12 @@ from uuid import UUID
 import httpx
 from google.protobuf.message import Message
 
-from newsletter.contracts import canonical_json, content_hash, to_dict, validate_packet_body
+from newsletter.contracts import (
+    canonical_json,
+    content_hash,
+    to_dict,
+    validate_packet_body,
+)
 from newsletter.types import DeliveryResult, Payload
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -63,7 +68,9 @@ def _mapping(value: Mapping[str, Any] | Message) -> Payload:
     return dict(value)
 
 
-def _header(value: object, code: str, maximum: int = 256, *, ascii_only: bool = False) -> str:
+def _header(
+    value: object, code: str, maximum: int = 256, *, ascii_only: bool = False
+) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > maximum:
         raise AdapterError(code)
     if any(ord(char) < 32 or ord(char) == 127 for char in value):
@@ -79,7 +86,9 @@ def _mailbox(value: str) -> str:
         addresses = getaddresses([value], strict=True)
     except (ValueError, TypeError):
         raise AdapterError("INVALID_MAIL_CONFIGURATION") from None
-    if len(addresses) != 1 or not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+", addresses[0][1]):
+    if len(addresses) != 1 or not re.fullmatch(
+        r"[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+", addresses[0][1]
+    ):
         raise AdapterError("INVALID_MAIL_CONFIGURATION")
     return value
 
@@ -87,16 +96,30 @@ def _mailbox(value: str) -> str:
 def _frozen(edition: Mapping[str, Any]) -> tuple[str, str, str, bytes]:
     """Check the exact saved render, without editing it or rerunning a template."""
     try:
-        subject = _header(edition["draft"]["subject"], "INVALID_FROZEN_EDITION", 200)
+        subject = _header(
+            edition["draft"]["subject"], "INVALID_FROZEN_EDITION", 200
+        )
         rendered = edition["rendered"]
         html, text = rendered["html"], rendered["text"]
-        if not isinstance(html, str) or not html or not isinstance(text, str) or not text:
+        if (
+            not isinstance(html, str)
+            or not html
+            or not isinstance(text, str)
+            or not text
+        ):
             raise ValueError
         encoded = rendered.get("chart_png", "")
-        png = encoded if isinstance(encoded, bytes) else base64.b64decode(encoded, validate=True)
+        png = (
+            encoded
+            if isinstance(encoded, bytes)
+            else base64.b64decode(encoded, validate=True)
+        )
         if png and not png.startswith(_PNG_SIGNATURE):
             raise ValueError
-        if len(html.encode("utf-8")) + len(text.encode("utf-8")) + len(png) > _MAX_FROZEN_BYTES:
+        if (
+            len(html.encode("utf-8")) + len(text.encode("utf-8")) + len(png)
+            > _MAX_FROZEN_BYTES
+        ):
             raise ValueError
         expected = content_hash(
             {
@@ -107,7 +130,9 @@ def _frozen(edition: Mapping[str, Any]) -> tuple[str, str, str, bytes]:
         )
         if not hmac.compare_digest(expected, rendered["render_hash"]):
             raise ValueError
-        has_chart = any(f"src={quote}cid:{_CID}{quote}" in html for quote in ('"', "'"))
+        has_chart = any(
+            f"src={quote}cid:{_CID}{quote}" in html for quote in ('"', "'")
+        )
         if has_chart != bool(png):
             raise ValueError
         return subject, html, text, png
@@ -121,7 +146,9 @@ def _write_once(directory: Path, filename: str, data: bytes) -> None:
     try:
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / filename
-        with tempfile.NamedTemporaryFile(dir=directory, prefix=".pending-", delete=False) as stream:
+        with tempfile.NamedTemporaryFile(
+            dir=directory, prefix=".pending-", delete=False
+        ) as stream:
             temporary = Path(stream.name)
             stream.write(data)
             stream.flush()
@@ -152,7 +179,9 @@ class FakeNotion:
         identifier = _header(packet.get("id"), "INVALID_ADAPTER_INPUT", 128)
         validate_packet_body(packet.get("content", {}))
         filename = hashlib.sha256(identifier.encode()).hexdigest() + ".json"
-        data = canonical_json({"simulated": True, "packet": packet}).encode("utf-8")
+        data = canonical_json({"simulated": True, "packet": packet}).encode(
+            "utf-8"
+        )
         await asyncio.to_thread(_write_once, self.directory, filename, data)
 
 
@@ -173,7 +202,9 @@ class FakeMail:
         message["Subject"] = subject
         message["Message-ID"] = f"<simulated-{digest}@example.invalid>"
         message["X-Newsletter-Simulated"] = "true"
-        message["X-Newsletter-Edition"] = _header(edition.get("id"), "INVALID_FROZEN_EDITION", 128)
+        message["X-Newsletter-Edition"] = _header(
+            edition.get("id"), "INVALID_FROZEN_EDITION", 128
+        )
         message["X-Newsletter-Render-Hash"] = edition["rendered"]["render_hash"]
         message.set_content(text)
         message.add_alternative(html, subtype="html")
@@ -189,8 +220,13 @@ class FakeMail:
                 filename="newsletter-chart.png",
             )
             html_part.set_boundary(f"newsletter-related-{digest}")
-        await asyncio.to_thread(_write_once, self.directory, digest + ".eml", message.as_bytes())
-        return {"delivery_state": "simulated", "provider_message_id": f"simulated-{digest}"}
+        await asyncio.to_thread(
+            _write_once, self.directory, digest + ".eml", message.as_bytes()
+        )
+        return {
+            "delivery_state": "simulated",
+            "provider_message_id": f"simulated-{digest}",
+        }
 
 
 async def _post(
@@ -203,19 +239,28 @@ async def _post(
     """One fixed-endpoint POST; redirects and automatic retries are disabled."""
     try:
         async with httpx.AsyncClient(
-            transport=transport, timeout=30, follow_redirects=False, trust_env=False
+            transport=transport,
+            timeout=30,
+            follow_redirects=False,
+            trust_env=False,
         ) as client:
             response = await client.post(url, headers=headers, json=payload)
     except httpx.RequestError:
         raise AdapterError(f"{provider}_UNKNOWN", ambiguous=True) from None
     # A 409 may mean the same idempotent request is already being processed.
-    if 400 <= response.status_code < 500 and response.status_code not in {408, 409, 429}:
+    if 400 <= response.status_code < 500 and response.status_code not in {
+        408,
+        409,
+        429,
+    }:
         raise AdapterError(f"{provider}_REJECTED")
     if not 200 <= response.status_code < 300:
         raise AdapterError(f"{provider}_UNKNOWN", ambiguous=True)
     try:
         result = response.json()
-        if not isinstance(result, dict) or not isinstance(result.get("id"), str):
+        if not isinstance(result, dict) or not isinstance(
+            result.get("id"), str
+        ):
             raise ValueError
         if not _PROVIDER_ID.fullmatch(result["id"]):
             raise ValueError
@@ -232,7 +277,9 @@ class Resend:
         recipient_email: str,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._key = _header(key, "INVALID_MAIL_CONFIGURATION", 512, ascii_only=True)
+        self._key = _header(
+            key, "INVALID_MAIL_CONFIGURATION", 512, ascii_only=True
+        )
         self._from = _mailbox(from_email)
         self._recipient = _mailbox(recipient_email)
         self._transport = transport
@@ -271,7 +318,10 @@ class Resend:
             self._transport,
             "MAIL",
         )
-        return {"delivery_state": "provider_accepted", "provider_message_id": result["id"]}
+        return {
+            "delivery_state": "provider_accepted",
+            "provider_message_id": result["id"],
+        }
 
 
 def _rich_text(text: str) -> list[Payload]:
@@ -283,7 +333,11 @@ def _rich_text(text: str) -> list[Payload]:
 
 
 def _paragraph(text: str) -> Payload:
-    return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": _rich_text(text)}}
+    return {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {"rich_text": _rich_text(text)},
+    }
 
 
 class Notion:
@@ -294,9 +348,14 @@ class Notion:
     """
 
     def __init__(
-        self, token: str, data_source_id: str, transport: httpx.AsyncBaseTransport | None = None
+        self,
+        token: str,
+        data_source_id: str,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._token = _header(token, "INVALID_NOTION_CONFIGURATION", 512, ascii_only=True)
+        self._token = _header(
+            token, "INVALID_NOTION_CONFIGURATION", 512, ascii_only=True
+        )
         try:
             self._data_source_id = str(UUID(data_source_id))
         except (ValueError, TypeError, AttributeError):
@@ -326,7 +385,10 @@ class Notion:
                 )
             )
         payload = {
-            "parent": {"type": "data_source_id", "data_source_id": self._data_source_id},
+            "parent": {
+                "type": "data_source_id",
+                "data_source_id": self._data_source_id,
+            },
             "properties": {"title": {"title": _rich_text(content["title"])}},
             "children": children,
         }

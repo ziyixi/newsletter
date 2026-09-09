@@ -62,13 +62,19 @@ def client(monkeypatch):
             self.built = 0
 
         def open(self, request, *, timeout):
-            assert 0 < timeout <= (45 if request.full_url.endswith("/send") else 30)
+            assert (
+                0
+                < timeout
+                <= (45 if request.full_url.endswith("/send") else 30)
+            )
             self.requests.append(request)
             response = self.responses.pop(0)
             if isinstance(response, Exception):
                 raise response
             return io.BytesIO(
-                response if isinstance(response, bytes) else json.dumps(response).encode()
+                response
+                if isinstance(response, bytes)
+                else json.dumps(response).encode()
             )
 
         def build(self, *handlers):
@@ -80,8 +86,16 @@ def client(monkeypatch):
     return value
 
 
-def test_wait_only_observes_complete_run_and_returns_safe_receipt(client, capsys):
-    client.responses = [run("queued"), run("collecting"), run("editing"), run(), edition()]
+def test_wait_only_observes_complete_run_and_returns_safe_receipt(
+    client, capsys
+):
+    client.responses = [
+        run("queued"),
+        run("collecting"),
+        run("editing"),
+        run(),
+        edition(),
+    ]
     trigger.main(["--wait"])
     assert [request.get_method() for request in client.requests] == [
         "POST",
@@ -90,7 +104,9 @@ def test_wait_only_observes_complete_run_and_returns_safe_receipt(client, capsys
         "GET",
         "GET",
     ]
-    assert all(not request.full_url.endswith("/send") for request in client.requests)
+    assert all(
+        not request.full_url.endswith("/send") for request in client.requests
+    )
     output = capsys.readouterr().out
     assert "private" not in output
     assert json.loads(output)["render_hash"] == "b" * 64
@@ -103,13 +119,20 @@ def test_explicit_send_uses_distinct_role_and_frozen_approval(client, capsys):
     first, read, send = client.requests
     assert first.get_header("Authorization") == read.get_header("Authorization")
     assert (
-        send.get_header("Authorization") == "Bearer " + trigger.os.environ["NEWSLETTER_SEND_TOKEN"]
+        send.get_header("Authorization")
+        == "Bearer " + trigger.os.environ["NEWSLETTER_SEND_TOKEN"]
     )
-    assert send.full_url == "https://newsletter.example.org/v1/editions/edition-123/send"
+    assert (
+        send.full_url
+        == "https://newsletter.example.org/v1/editions/edition-123/send"
+    )
     payload = json.loads(send.data)
     assert payload["id"] == "edition-123"
     assert payload["expected_render_hash"] == "b" * 64
-    assert payload["request_key"].startswith("trigger-send-") and len(payload["request_key"]) <= 128
+    assert (
+        payload["request_key"].startswith("trigger-send-")
+        and len(payload["request_key"]) <= 128
+    )
     output = capsys.readouterr().out
     assert "private" not in output and "token" not in output
     assert json.loads(output)["delivery_state"] == "provider_accepted"
@@ -125,12 +148,16 @@ def test_repeat_accepted_run_observes_without_another_send(client):
     ]
     trigger.main(["--send"])
     trigger.main(["--send"])
-    starts = [req for req in client.requests if req.full_url.endswith("/v1/runs")]
+    starts = [
+        req for req in client.requests if req.full_url.endswith("/v1/runs")
+    ]
     assert starts[0].data == starts[1].data
     assert sum(req.full_url.endswith("/send") for req in client.requests) == 1
 
 
-@pytest.mark.parametrize("state", ["unknown", "submitting", "rejected", "simulated"])
+@pytest.mark.parametrize(
+    "state", ["unknown", "submitting", "rejected", "simulated"]
+)
 def test_prior_delivery_is_never_resent(client, capsys, state):
     client.responses = [run(), edition(state)]
     with pytest.raises(SystemExit, match="no further send attempted"):
@@ -156,11 +183,17 @@ def test_unsuccessful_send_response_is_not_success_or_retried(client, state):
         urllib.error.URLError("private transport"),
         b"private-invalid-json",
         urllib.error.HTTPError(
-            "https://newsletter.example.org", 503, "private", {}, io.BytesIO(b"private")
+            "https://newsletter.example.org",
+            503,
+            "private",
+            {},
+            io.BytesIO(b"private"),
         ),
     ],
 )
-def test_ambiguous_send_never_retries_and_next_invocation_observes_unknown(client, capsys, failure):
+def test_ambiguous_send_never_retries_and_next_invocation_observes_unknown(
+    client, capsys, failure
+):
     client.responses = [run(), edition(), failure, run(), edition("unknown")]
     with pytest.raises(SystemExit) as error:
         trigger.main(["--send"])
@@ -188,7 +221,8 @@ def test_same_key_is_retained_when_prior_post_never_reached_server(client):
 
 
 @pytest.mark.parametrize(
-    "value", [run("failed"), run("blocked"), run(is_fixture=True), run(is_fixture=None)]
+    "value",
+    [run("failed"), run("blocked"), run(is_fixture=True), run(is_fixture=None)],
 )
 def test_bad_run_cannot_fetch_or_send_edition(client, value):
     client.responses = [value]
@@ -237,7 +271,9 @@ def test_invalid_run_or_path_fields_never_become_urls(client, fields):
     assert len(client.requests) == 1
 
 
-@pytest.mark.parametrize("fields", [{"id": "other"}, {"instructions_hash": "c" * 64}])
+@pytest.mark.parametrize(
+    "fields", [{"id": "other"}, {"instructions_hash": "c" * 64}]
+)
 def test_poll_must_refer_to_same_instruction_snapshot(client, fields):
     client.responses = [run("queued"), run(**fields)]
     with pytest.raises(SystemExit, match="Invalid run observation"):
@@ -275,19 +311,26 @@ def test_send_reply_cannot_change_approved_hash(client):
     ],
 )
 def test_internal_http_opt_in_is_not_an_arbitrary_http_bypass(client, origin):
-    trigger.os.environ.update(NEWSLETTER_SERVICE_URL=origin, NEWSLETTER_ALLOW_INTERNAL_HTTP="1")
+    trigger.os.environ.update(
+        NEWSLETTER_SERVICE_URL=origin, NEWSLETTER_ALLOW_INTERNAL_HTTP="1"
+    )
     with pytest.raises(SystemExit, match="fixed HTTPS origin"):
         trigger.main(["--check-config", "--send"])
     assert client.built == 0
 
 
-def test_internal_origin_requires_opt_in_and_then_passes_offline(client, capsys):
+def test_internal_origin_requires_opt_in_and_then_passes_offline(
+    client, capsys
+):
     trigger.os.environ["NEWSLETTER_SERVICE_URL"] = "http://newsletter:8080"
     with pytest.raises(SystemExit, match="fixed HTTPS origin"):
         trigger.main(["--check-config", "--send"])
     trigger.os.environ["NEWSLETTER_ALLOW_INTERNAL_HTTP"] = "1"
     trigger.main(["--check-config", "--send"])
-    assert json.loads(capsys.readouterr().out) == {"configuration": "valid", "send_enabled": True}
+    assert json.loads(capsys.readouterr().out) == {
+        "configuration": "valid",
+        "send_enabled": True,
+    }
     assert client.built == 0
 
 
@@ -307,7 +350,9 @@ def test_internal_origin_requires_opt_in_and_then_passes_offline(client, capsys)
         ("NEWSLETTER_ALLOW_INTERNAL_HTTP", "yes"),
     ],
 )
-def test_check_config_validates_every_send_setting_before_io(client, key, value):
+def test_check_config_validates_every_send_setting_before_io(
+    client, key, value
+):
     trigger.os.environ[key] = value
     with pytest.raises(SystemExit):
         trigger.main(["--check-config", "--send"])
@@ -315,7 +360,8 @@ def test_check_config_validates_every_send_setting_before_io(client, key, value)
 
 
 @pytest.mark.parametrize(
-    "args", [["--timeout", "0"], ["--timeout", "86401"], ["--poll-interval", "0"]]
+    "args",
+    [["--timeout", "0"], ["--timeout", "86401"], ["--poll-interval", "0"]],
 )
 def test_invalid_time_bounds_rejected(client, args):
     with pytest.raises(SystemExit):
@@ -327,7 +373,9 @@ def test_timeout_stops_polling_without_send(client, monkeypatch):
     clock = [0.0]
     monkeypatch.setattr(trigger.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
-        trigger.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        trigger.time,
+        "sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
     )
     client.responses = [run("queued")]
     with pytest.raises(SystemExit, match="deadline exceeded"):
@@ -335,7 +383,9 @@ def test_timeout_stops_polling_without_send(client, monkeypatch):
     assert len(client.requests) == 1
 
 
-def test_posix_deadline_interrupts_network_and_restores_handler(client, monkeypatch):
+def test_posix_deadline_interrupts_network_and_restores_handler(
+    client, monkeypatch
+):
     previous = signal.getsignal(signal.SIGALRM)
 
     def blocked(request, *, timeout):
@@ -372,7 +422,9 @@ def test_standalone_module_is_stdlib_only_and_help_needs_no_dependencies():
     assert result.returncode == 0 and "--send" in result.stdout
 
 
-def test_checkout_wrapper_needs_no_install_pythonpath_or_repo_working_directory(tmp_path):
+def test_checkout_wrapper_needs_no_install_pythonpath_or_repo_working_directory(
+    tmp_path,
+):
     script = Path(__file__).resolve().parents[1] / "scripts" / "trigger_run.py"
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(script), "--check-config", "--send"],
@@ -388,7 +440,10 @@ def test_checkout_wrapper_needs_no_install_pythonpath_or_repo_working_directory(
         timeout=10,
     )
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"configuration": "valid", "send_enabled": True}
+    assert json.loads(result.stdout) == {
+        "configuration": "valid",
+        "send_enabled": True,
+    }
 
 
 def test_only_declared_configuration_is_read_and_never_mutated(client):

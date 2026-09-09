@@ -19,7 +19,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from urllib.request import (
+    HTTPRedirectHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -50,16 +55,26 @@ class GitHub:
     def __init__(self, repository: str, token: str) -> None:
         if (
             not re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}", repository
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}",
+                repository,
             )
             or not token
         ):
-            raise ReleaseError("GitHub release credentials or repository are unavailable")
+            raise ReleaseError(
+                "GitHub release credentials or repository are unavailable"
+            )
         self.prefix = "https://api.github.com/repos/" + repository
         self.token = token
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
 
-    def request(self, method: str, path: str, value: Any = None, *, missing: bool = False) -> Any:
+    def request(
+        self,
+        method: str,
+        path: str,
+        value: Any = None,
+        *,
+        missing: bool = False,
+    ) -> Any:
         if (
             method not in {"GET", "POST", "PATCH"}
             or not path.startswith("/")
@@ -92,7 +107,9 @@ class GitHub:
         except HTTPError as exc:
             if missing and exc.code == 404:
                 return None
-            raise ReleaseError(f"GitHub release request failed (HTTP {exc.code})") from None
+            raise ReleaseError(
+                f"GitHub release request failed (HTTP {exc.code})"
+            ) from None
         except (URLError, TimeoutError, ValueError, RecursionError):
             raise ReleaseError("GitHub release request failed") from None
 
@@ -113,7 +130,8 @@ def config_only_difference(
     # conservatively; a truncated file list must not certify engine compatibility.
     files = compared.get("files")
     return bool(
-        compared.get("status") in ({"ahead", "diverged"} if pull_request else {"ahead"})
+        compared.get("status")
+        in ({"ahead", "diverged"} if pull_request else {"ahead"})
         and isinstance(files, list)
         and len(files) < 300
         and all(
@@ -162,13 +180,17 @@ def plan(api: GitHub, event_name: str, event: dict[str, Any]) -> dict[str, str]:
         # Mixed PRs must first validate their new engine in Service CI, whose
         # image job includes this same offline config validation before release.
         if not config_only_difference(
-            api, sha(event["pull_request"]["base"]["sha"]), revision, pull_request=True
+            api,
+            sha(event["pull_request"]["base"]["sha"]),
+            revision,
+            pull_request=True,
         ):
             return {"ready": "false", "reason": "candidate_engine_ci_required"}
         engine = compatible_engine(api, current)
     else:
         if event_name == "push" and (
-            event.get("ref") != "refs/heads/main" or sha(event.get("after")) != current
+            event.get("ref") != "refs/heads/main"
+            or sha(event.get("after")) != current
         ):
             return {"ready": "false", "reason": "stale_push"}
         if event_name == "workflow_run":
@@ -197,7 +219,9 @@ def command(args: list[str], *, timeout: int = 180) -> str:
         ).stdout
     except (subprocess.SubprocessError, OSError):
         # Tool output could quote template content; do not print it into public CI.
-        raise ReleaseError("Configuration image validation command failed") from None
+        raise ReleaseError(
+            "Configuration image validation command failed"
+        ) from None
 
 
 def docker_base(image_id: str) -> list[str]:
@@ -254,7 +278,13 @@ def run_container(arguments: list[str]) -> None:
 
 
 def validate(
-    image: str, engine_sha: str, revision: str, source: Path, output: Path, *, pull: bool
+    image: str,
+    engine_sha: str,
+    revision: str,
+    source: Path,
+    output: Path,
+    *,
+    pull: bool,
 ) -> None:
     sha(engine_sha)
     sha(revision)
@@ -268,7 +298,9 @@ def validate(
     if pull:
         repository = os.environ.get("GITHUB_REPOSITORY", "").lower()
         if image != f"ghcr.io/{repository}:service-{engine_sha}":
-            raise ReleaseError("Release validation can only pull the tested repository image")
+            raise ReleaseError(
+                "Release validation can only pull the tested repository image"
+            )
         command(["docker", "pull", "--platform", "linux/amd64", "--", image])
     metadata = json.loads(
         command(
@@ -285,7 +317,9 @@ def validate(
     )
     image_id = metadata["id"]
     if metadata.get("os") != "linux" or metadata.get("architecture") != "amd64":
-        raise ReleaseError("Configuration validation engine must be linux/amd64")
+        raise ReleaseError(
+            "Configuration validation engine must be linux/amd64"
+        )
     base = docker_base(image_id)
     run_container(
         base
@@ -320,26 +354,40 @@ def validate(
         ]
     )
     bundle = output / "bundle.json"
-    if bundle.is_symlink() or not bundle.is_file() or bundle.stat().st_size > MAX_BUNDLE:
+    if (
+        bundle.is_symlink()
+        or not bundle.is_file()
+        or bundle.stat().st_size > MAX_BUNDLE
+    ):
         raise ReleaseError("Image did not produce a bounded regular bundle")
     raw = bundle.read_bytes()
     if json.loads(raw).get("revision") != revision:
-        raise ReleaseError("Validated bundle revision does not match its source")
+        raise ReleaseError(
+            "Validated bundle revision does not match its source"
+        )
     receipt = {
         "revision": revision,
         "engine_sha": engine_sha,
         "image_id": image_id,
         "bundle_sha256": hashlib.sha256(raw).hexdigest(),
     }
-    (output / "validation.json").write_text(json.dumps(receipt, sort_keys=True) + "\n")
-    print("Validated content bundle in a network-disabled, immutable linux/amd64 image.")
+    (output / "validation.json").write_text(
+        json.dumps(receipt, sort_keys=True) + "\n"
+    )
+    print(
+        "Validated content bundle in a network-disabled, immutable linux/amd64 image."
+    )
 
 
 def publish(api: GitHub, revision: str, directory: Path) -> bool:
     sha(revision)
     receipt = json.loads((directory / "validation.json").read_bytes())
     bundle = directory / "bundle.json"
-    if bundle.is_symlink() or not bundle.is_file() or bundle.stat().st_size > MAX_BUNDLE:
+    if (
+        bundle.is_symlink()
+        or not bundle.is_file()
+        or bundle.stat().st_size > MAX_BUNDLE
+    ):
         raise ReleaseError("Validated bundle is unavailable")
     raw = bundle.read_bytes()
     if (
@@ -353,10 +401,14 @@ def publish(api: GitHub, revision: str, directory: Path) -> bool:
     if api.main() != revision:
         print("Skipped stale configuration publication; main advanced.")
         return False
-    previous = api.request("GET", f"/git/ref/heads/{PUBLISHED_BRANCH}", missing=True)
+    previous = api.request(
+        "GET", f"/git/ref/heads/{PUBLISHED_BRANCH}", missing=True
+    )
     parent = sha(previous["object"]["sha"]) if previous else None
     blob = api.request(
-        "POST", "/git/blobs", {"content": base64.b64encode(raw).decode(), "encoding": "base64"}
+        "POST",
+        "/git/blobs",
+        {"content": base64.b64encode(raw).decode(), "encoding": "base64"},
     )
     tree = api.request(
         "POST",
@@ -384,7 +436,9 @@ def publish(api: GitHub, revision: str, directory: Path) -> bool:
     # Check immediately before the only visible mutation. Non-force ref update
     # also rejects concurrent publication from the same old parent.
     if api.main() != revision:
-        print("Skipped stale configuration publication; main advanced during validation.")
+        print(
+            "Skipped stale configuration publication; main advanced during validation."
+        )
         return False
     if parent:
         api.request(
@@ -396,9 +450,14 @@ def publish(api: GitHub, revision: str, directory: Path) -> bool:
         api.request(
             "POST",
             "/git/refs",
-            {"ref": f"refs/heads/{PUBLISHED_BRANCH}", "sha": sha(commit["sha"])},
+            {
+                "ref": f"refs/heads/{PUBLISHED_BRANCH}",
+                "sha": sha(commit["sha"]),
+            },
         )
-    print("Published validated bundle.json; no deployment, collection, or email triggered.")
+    print(
+        "Published validated bundle.json; no deployment, collection, or email triggered."
+    )
     return True
 
 
@@ -420,21 +479,36 @@ def main() -> int:
     try:
         if args.phase == "validate":
             validate(
-                args.image, args.engine_sha, args.revision, args.source, args.output, pull=args.pull
+                args.image,
+                args.engine_sha,
+                args.revision,
+                args.source,
+                args.output,
+                pull=args.pull,
             )
         else:
             api = GitHub(
-                os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_TOKEN", "")
+                os.environ.get("GITHUB_REPOSITORY", ""),
+                os.environ.get("GITHUB_TOKEN", ""),
             )
             if args.phase == "plan":
-                event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_bytes())
+                event = json.loads(
+                    Path(os.environ["GITHUB_EVENT_PATH"]).read_bytes()
+                )
                 result = plan(api, os.environ["GITHUB_EVENT_NAME"], event)
                 with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
                     for key, value in result.items():
                         output.write(f"{key}={value}\n")
             else:
                 publish(api, args.revision, args.directory)
-    except (ReleaseError, KeyError, ValueError, TypeError, OSError, RecursionError):
+    except (
+        ReleaseError,
+        KeyError,
+        ValueError,
+        TypeError,
+        OSError,
+        RecursionError,
+    ):
         print(
             "Configuration release failed; inspect the configuration and CI engine status.",
             file=sys.stderr,

@@ -16,7 +16,11 @@ from urllib.parse import urldefrag, urlsplit
 
 from ziyixi_protos.newsletter import editorial_pb2 as pb
 
-from newsletter.collection.collector import RESEARCH_RULES, ResearchResult, parse_research
+from newsletter.collection.collector import (
+    RESEARCH_RULES,
+    ResearchResult,
+    parse_research,
+)
 from newsletter.collection.instructions import Instruction
 from newsletter.contracts import (
     IDENTIFIER_PATTERN,
@@ -172,13 +176,20 @@ class EditorialLimits:
     max_research_candidates: int
 
 
-def editorial_limits(config: Mapping[str, object] | None) -> EditorialLimits | None:
+def editorial_limits(
+    config: Mapping[str, object] | None,
+) -> EditorialLimits | None:
     if config is None:
         return None
     values = config.get("editorial")
     if config.get("schema_version") != 1 or not isinstance(values, dict):
         raise EditorError("invalid_input")
-    keys = ("max_public_items", "max_research_items", "max_deep", "max_research_candidates")
+    keys = (
+        "max_public_items",
+        "max_research_items",
+        "max_deep",
+        "max_research_candidates",
+    )
     if any(type(values.get(key)) is not int for key in keys):
         raise EditorError("invalid_input")
     limits = EditorialLimits(**{key: values[key] for key in keys})
@@ -192,7 +203,9 @@ def editorial_limits(config: Mapping[str, object] | None) -> EditorialLimits | N
     return limits
 
 
-def _configured_policy(config: Mapping[str, object], name: str, default: str) -> str:
+def _configured_policy(
+    config: Mapping[str, object], name: str, default: str
+) -> str:
     files = config.get("files", {})
     value = files.get(name, default) if isinstance(files, dict) else default
     if not isinstance(value, str) or len(value) > 100_000:
@@ -200,7 +213,9 @@ def _configured_policy(config: Mapping[str, object], name: str, default: str) ->
     return value
 
 
-def candidate_classification(candidate: Candidate, declared: Payload | None = None) -> Payload:
+def candidate_classification(
+    candidate: Candidate, declared: Payload | None = None
+) -> Payload:
     """Conservative subject classification, not a claim of semantic infallibility.
 
     A publication identifier on the candidate itself is strong research evidence;
@@ -238,7 +253,8 @@ def candidate_budget(
 ) -> tuple[list[Candidate], dict[str, Payload]]:
     """Reserve pool room for actual news; keep stable order within each group."""
     classified = {
-        c["id"]: candidate_classification(c, classifications.get(c["id"])) for c in candidates
+        c["id"]: candidate_classification(c, classifications.get(c["id"]))
+        for c in candidates
     }
     news = [c for c in candidates if classified[c["id"]]["kind"] == "news"]
     research = [c for c in candidates if classified[c["id"]]["kind"] != "news"]
@@ -362,18 +378,29 @@ def _candidate_view(candidate: Candidate) -> Candidate:
                 item,
                 1200,
                 empty=key
-                in {"doi", "version", "event_key", "published_at", *CANDIDATE_RESEARCH_FIELDS},
+                in {
+                    "doi",
+                    "version",
+                    "event_key",
+                    "published_at",
+                    *CANDIDATE_RESEARCH_FIELDS,
+                },
             )
     _evidence_urls(value.get("evidence_urls", []))
     if not _ID.fullmatch(value["id"]) or not _ID.fullmatch(value["direction"]):
         raise EditorError("invalid_input")
-    if value["access_scope"] not in SOURCE_ACCESS_SCOPES or value["provenance"] not in {
+    if value["access_scope"] not in SOURCE_ACCESS_SCOPES or value[
+        "provenance"
+    ] not in {
         "web_open",
         "crossref_metadata",
         "rss_metadata",
     }:
         raise EditorError("invalid_input")
-    if value["provenance"] != "web_open" and value["access_scope"] != "metadata":
+    if (
+        value["provenance"] != "web_open"
+        and value["access_scope"] != "metadata"
+    ):
         raise EditorError("invalid_input")
     validate_public_url(value["url"])
     if value["published_at"]:
@@ -388,7 +415,9 @@ def _evidence_urls(value: object, opened: set[str] | None = None) -> list[str]:
     for item in value:
         url = _text(item, 1200)
         validate_public_url(url)
-        if url in urls or (opened is not None and urldefrag(url)[0] not in opened):
+        if url in urls or (
+            opened is not None and urldefrag(url)[0] not in opened
+        ):
             raise EditorError("invalid_output")
         urls.append(url)
     return urls
@@ -426,14 +455,24 @@ def parse_discovery(
             declared = {"kind": kind, "basis": _text(basis, 1200, empty=True)}
         # Older public candidates remain readable. Fresh model output is required
         # by discovery_schema to carry all additive fields, even when unknown.
-        if not set(CANDIDATE_LEGACY_FIELDS) <= set(value) <= set(CANDIDATE_FIELDS):
+        if (
+            not set(CANDIDATE_LEGACY_FIELDS)
+            <= set(value)
+            <= set(CANDIDATE_FIELDS)
+        ):
             raise EditorError("invalid_output")
         candidate: Payload = {
             key: _text(
                 value[key],
                 1200,
                 empty=key
-                in {"doi", "version", "event_key", "published_at", *CANDIDATE_RESEARCH_FIELDS},
+                in {
+                    "doi",
+                    "version",
+                    "event_key",
+                    "published_at",
+                    *CANDIDATE_RESEARCH_FIELDS,
+                },
             )
             for key in value
             if key != "evidence_urls"
@@ -458,7 +497,9 @@ def parse_discovery(
             candidate = dict(seed)
         else:
             if "evidence_urls" in value:
-                candidate["evidence_urls"] = _evidence_urls(value["evidence_urls"], opened)
+                candidate["evidence_urls"] = _evidence_urls(
+                    value["evidence_urls"], opened
+                )
             candidate["provenance"] = "web_open"
         candidate["direction"] = direction
         candidate["id"] = candidate_id(candidate)
@@ -478,7 +519,12 @@ def parse_discovery(
 
 
 def parse_plan(
-    text: str, candidate_ids: set[str], source_urls: set[str], max_tasks: int, *, gaps: bool = False
+    text: str,
+    candidate_ids: set[str],
+    source_urls: set[str],
+    max_tasks: int,
+    *,
+    gaps: bool = False,
 ) -> SelectionResult:
     values, note = _envelope(text, "research_tasks", max_tasks)
     tasks = []
@@ -492,7 +538,11 @@ def parse_plan(
             raise EditorError("invalid_output")
         value = to_dict(parse_message(value, pb.ResearchTask))
         identifier = _text(value["id"], 128)
-        refs, urls, priority = value["candidate_ids"], value["source_urls"], value["priority"]
+        refs, urls, priority = (
+            value["candidate_ids"],
+            value["source_urls"],
+            value["priority"],
+        )
         if (
             not _ID.fullmatch(identifier)
             or identifier in ids
@@ -501,12 +551,18 @@ def parse_plan(
             or priority in priorities
             or not isinstance(refs, list)
             or not (0 if gaps else 1) <= len(refs) <= 4
-            or any(not isinstance(ref, str) or ref not in candidate_ids for ref in refs)
+            or any(
+                not isinstance(ref, str) or ref not in candidate_ids
+                for ref in refs
+            )
             or len(set(refs)) != len(refs)
             or bool(selected & set(refs))
             or not isinstance(urls, list)
             or len(urls) > 8
-            or any(not isinstance(url, str) or url not in source_urls for url in urls)
+            or any(
+                not isinstance(url, str) or url not in source_urls
+                for url in urls
+            )
             or len(set(urls)) != len(urls)
         ):
             raise EditorError("invalid_output")
@@ -526,7 +582,9 @@ def parse_plan(
         ids.add(identifier)
         priorities.add(priority)
         selected.update(refs)
-    return SelectionResult(sorted(tasks, key=lambda task: task["priority"]), note)
+    return SelectionResult(
+        sorted(tasks, key=lambda task: task["priority"]), note
+    )
 
 
 def parse_classified_plan(
@@ -554,7 +612,9 @@ def parse_classified_plan(
         max_tasks,
     )
     kinds = {
-        c["id"]: candidate_classification(c, classifications.get(c["id"]))["kind"]
+        c["id"]: candidate_classification(c, classifications.get(c["id"]))[
+            "kind"
+        ]
         for c in candidates
     }
     source_candidates = {c["url"]: c["id"] for c in candidates}
@@ -567,7 +627,11 @@ def parse_classified_plan(
             source_candidates[url] for url in task["source_urls"]
         }
         research_ids = [ref for ref in linked if kinds[ref] != "news"]
-        kind = "research" if research_ids or declared[task["id"]] != "news" else "news"
+        kind = (
+            "research"
+            if research_ids or declared[task["id"]] != "news"
+            else "news"
+        )
         reason = (
             "mixed_research_topics"
             if len(research_ids) > 1
@@ -578,7 +642,9 @@ def parse_classified_plan(
             else ""
         )
         if reason:
-            omitted.append({"task": dict(task), "editorial_kind": kind, "reason": reason})
+            omitted.append(
+                {"task": dict(task), "editorial_kind": kind, "reason": reason}
+            )
             continue
         retained.append(task)
         task_kinds[task["id"]] = kind
@@ -620,7 +686,9 @@ class ContentPreparation:
             if content_config is None
             else _DISCOVERY
             + "\n本期编辑重心（取代旧的题材优先顺序）：\n"
-            + _configured_policy(content_config, "prompts/discovery.md", DEFAULT_DISCOVERY_POLICY),
+            + _configured_policy(
+                content_config, "prompts/discovery.md", DEFAULT_DISCOVERY_POLICY
+            ),
             prepare_workspace(workspace, issue_date),
         )
         return parse_discovery(
@@ -667,8 +735,13 @@ class ContentPreparation:
             )
             max_tasks = min(max_tasks, limits.max_public_items)
         if not candidates:
-            return SelectionResult([], "没有去重后值得深入的候选；没有声称今天没有新闻。")
-        ids, urls = [c["id"] for c in candidates], [c["url"] for c in candidates]
+            return SelectionResult(
+                [], "没有去重后值得深入的候选；没有声称今天没有新闻。"
+            )
+        ids, urls = (
+            [c["id"] for c in candidates],
+            [c["url"] for c in candidates],
+        )
         text, _, _ = await self.engine.execute(
             canonical_json(
                 {
@@ -692,16 +765,22 @@ class ContentPreparation:
                     ),
                 }
             ),
-            planning_schema(ids, urls, max_tasks, classified=limits is not None),
+            planning_schema(
+                ids, urls, max_tasks, classified=limits is not None
+            ),
             _SELECTION
             if content_config is None
             else _CLASSIFIED_SELECTION_RULES
             + "\n"
-            + _configured_policy(content_config, "prompts/selection.md", DEFAULT_SELECTION_POLICY),
+            + _configured_policy(
+                content_config, "prompts/selection.md", DEFAULT_SELECTION_POLICY
+            ),
             prepare_workspace(workspace, issue_date),
         )
         if limits is not None:
-            return parse_classified_plan(text, candidates, classifications or {}, max_tasks, limits)
+            return parse_classified_plan(
+                text, candidates, classifications or {}, max_tasks, limits
+            )
         return parse_plan(text, set(ids), set(urls), max_tasks)
 
     async def research(
@@ -713,14 +792,19 @@ class ContentPreparation:
     ) -> ResearchResult:
         candidates = [_candidate_view(candidate) for candidate in candidates]
         task = parse_plan(
-            canonical_json({"research_tasks": [task], "note": "Explicit research task"}),
+            canonical_json(
+                {"research_tasks": [task], "note": "Explicit research task"}
+            ),
             {candidate["id"] for candidate in candidates},
             set(task["source_urls"]),
             12,
             gaps=not bool(task["candidate_ids"]),
         ).research_tasks[0]
         selected = [c for c in candidates if c["id"] in task["candidate_ids"]]
-        if len(selected) != len(task["candidate_ids"]) or not task["evidence_context"].strip():
+        if (
+            len(selected) != len(task["candidate_ids"])
+            or not task["evidence_context"].strip()
+        ):
             raise EditorError("invalid_input")
         for url in task["source_urls"]:
             validate_public_url(url)
@@ -734,7 +818,8 @@ class ContentPreparation:
                 }
             ),
             research_schema(),
-            RESEARCH_RULES + "\n原始数值、比较基线、同时改变的实验因素必须分开核对。"
+            RESEARCH_RULES
+            + "\n原始数值、比较基线、同时改变的实验因素必须分开核对。"
             "通常每个任务只需一份自足packet，只有真正不同且必要的两项证据才拆成两份。"
             "不要仅重复候选摘要。缺口未能证实可no_findings，不制造确定结论。",
             prepare_workspace(workspace, issue_date),
@@ -754,8 +839,12 @@ class ContentPreparation:
             raise EditorError("invalid_input")
         validate_draft(draft, packets)
         # Packet public content only; never propagate personal_digest or extra record keys.
-        public_packets = [{"id": p["id"], "content": p["content"]} for p in packets]
-        urls = sorted({s["url"] for p in public_packets for s in p["content"]["sources"]})
+        public_packets = [
+            {"id": p["id"], "content": p["content"]} for p in packets
+        ]
+        urls = sorted(
+            {s["url"] for p in public_packets for s in p["content"]["sources"]}
+        )
         text, _, _ = await self.engine.execute(
             canonical_json(
                 {

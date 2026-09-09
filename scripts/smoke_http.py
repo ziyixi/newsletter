@@ -22,12 +22,24 @@ def main():
     with socket.socket() as available:
         available.bind(("127.0.0.1", 0))
         port = available.getsockname()[1]
-    with tempfile.TemporaryDirectory(prefix="newsletter-http-smoke-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="newsletter-http-smoke-"
+    ) as temporary:
         env = {
-            key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR", "LANG") if key in os.environ
+            key: os.environ[key]
+            for key in ("PATH", "HOME", "TMPDIR", "LANG")
+            if key in os.environ
         }
-        tokens = {role: secrets.token_urlsafe(32) for role in ("INGEST", "EDITOR", "SEND")}
-        env.update({f"NEWSLETTER_{role}_TOKEN": token for role, token in tokens.items()})
+        tokens = {
+            role: secrets.token_urlsafe(32)
+            for role in ("INGEST", "EDITOR", "SEND")
+        }
+        env.update(
+            {
+                f"NEWSLETTER_{role}_TOKEN": token
+                for role, token in tokens.items()
+            }
+        )
         env.update(
             NEWSLETTER_MODE="mock",
             NEWSLETTER_EDITOR="mock",
@@ -37,7 +49,14 @@ def main():
             NEWSLETTER_DATA_DIR=str(Path(temporary) / "data"),
         )
         process = subprocess.Popen(
-            [sys.executable, "-m", "newsletter.cli", "serve", "--port", str(port)],
+            [
+                sys.executable,
+                "-m",
+                "newsletter.cli",
+                "serve",
+                "--port",
+                str(port),
+            ],
             env=env,
             cwd=temporary,
             stdout=subprocess.DEVNULL,
@@ -73,9 +92,14 @@ def main():
             raise TimeoutError("Loopback smoke did not complete")
 
         try:
-            poll(lambda: request("/healthz"), lambda value: value["status"] == "ok")
+            poll(
+                lambda: request("/healthz"),
+                lambda value: value["status"] == "ok",
+            )
             material = json.loads(
-                files("newsletter").joinpath("fixtures/packets.json").read_text()
+                files("newsletter")
+                .joinpath("fixtures/packets.json")
+                .read_text()
             )[0]
             packet = request("/v1/packets", material, "INGEST")
             edition = request(
@@ -89,7 +113,9 @@ def main():
             path = "/v1/editions/" + edition["id"]
             ready = poll(
                 lambda: request(path),
-                lambda value: value["state"] != "queued" and value["state"] != "running",
+                lambda value: (
+                    value["state"] != "queued" and value["state"] != "running"
+                ),
             )
             assert ready["state"] == "ready", ready.get("error_code")
             assert ready["personal_digest"]["is_fixture"]
@@ -100,9 +126,18 @@ def main():
                 "request_key": "smoke-send",
                 "expected_render_hash": ready["rendered"]["render_hash"],
             }
-            assert request(path + "/send", approval, "SEND")["delivery_state"] == "simulated"
-            assert request(path + "/send", approval, "SEND")["delivery_state"] == "simulated"
-            assert len(list((Path(temporary) / "data" / "outbox").glob("*.eml"))) == 1
+            assert (
+                request(path + "/send", approval, "SEND")["delivery_state"]
+                == "simulated"
+            )
+            assert (
+                request(path + "/send", approval, "SEND")["delivery_state"]
+                == "simulated"
+            )
+            assert (
+                len(list((Path(temporary) / "data" / "outbox").glob("*.eml")))
+                == 1
+            )
             print(
                 "Loopback HTTP smoke passed: ingest → background editor → frozen preview → simulated mail (one attempt)."
             )

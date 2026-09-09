@@ -13,7 +13,12 @@ from .usage import UsageSummary
 Payload = dict[str, Any]
 EditionState = Literal["queued", "running", "ready", "blocked", "failed"]
 DeliveryState = Literal[
-    "not_requested", "submitting", "simulated", "provider_accepted", "rejected", "unknown"
+    "not_requested",
+    "submitting",
+    "simulated",
+    "provider_accepted",
+    "rejected",
+    "unknown",
 ]
 ProjectionState = Literal["pending", "submitting", "done", "failed", "unknown"]
 DigestState = Literal["current", "empty", "unavailable", "disabled"]

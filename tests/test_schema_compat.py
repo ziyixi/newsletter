@@ -35,7 +35,9 @@ def test_every_production_schema_passes_before_any_model_work():
 @pytest.mark.parametrize("mode", ["brief", "deep"])
 @pytest.mark.parametrize("repair", [False, True])
 def test_empty_and_input_scoped_writer_schemas_are_compatible(mode, repair):
-    schema_compat.validate_output_schema(story_writer_schema(mode, repair=repair))
+    schema_compat.validate_output_schema(
+        story_writer_schema(mode, repair=repair)
+    )
 
 
 @pytest.mark.parametrize(
@@ -58,9 +60,9 @@ def test_empty_and_input_scoped_writer_schemas_are_compatible(mode, repair):
 )
 def test_unprobed_constraint_is_rejected_even_inside_nested_component(keyword):
     schema = story_writer_schema("brief")
-    citations = schema["properties"]["content"]["anyOf"][0]["properties"]["paragraphs"]["items"][
-        "properties"
-    ]["citations"]
+    citations = schema["properties"]["content"]["anyOf"][0]["properties"][
+        "paragraphs"
+    ]["items"]["properties"]["citations"]
     citations[keyword] = True
     with pytest.raises(EditorError) as error:
         schema_compat.validate_output_schema(schema)
@@ -75,7 +77,10 @@ def test_schema_property_names_and_descriptions_are_not_keywords():
             "additionalProperties": False,
             "required": ["uniqueItems"],
             "properties": {
-                "uniqueItems": {"type": "string", "description": "allOf is ordinary text"}
+                "uniqueItems": {
+                    "type": "string",
+                    "description": "allOf is ordinary text",
+                }
             },
         }
     )
@@ -99,16 +104,22 @@ def test_unclosed_or_malformed_schema_is_configuration_failure(change):
     assert error.value.code == "configuration"
 
 
-async def test_unsupported_schema_fails_before_sdk_or_usage(monkeypatch, tmp_path, fake_sdk):
+async def test_unsupported_schema_fails_before_sdk_or_usage(
+    monkeypatch, tmp_path, fake_sdk
+):
     schema = story_writer_schema("brief")
     schema["properties"]["supplemental_packets"]["uniqueItems"] = True
 
     def unexpected(*args, **kwargs):
-        raise AssertionError("No usage context may start for rejected configuration")
+        raise AssertionError(
+            "No usage context may start for rejected configuration"
+        )
 
     monkeypatch.setattr(editor, "codex_usage", unexpected)
     with pytest.raises(EditorError) as error:
-        await live_editor(tmp_path).execute("{}", schema, "fixture", tmp_path / "workspace")
+        await live_editor(tmp_path).execute(
+            "{}", schema, "fixture", tmp_path / "workspace"
+        )
     assert error.value.code == "configuration"
     assert not fake_sdk.started and fake_sdk.thread_starts == 0
 
@@ -131,33 +142,49 @@ _PROVIDER_SCHEMA_ERROR = {
         },
     ],
 )
-def test_real_shaped_schema_rejection_is_fatal_configuration_without_raw_details(failure):
+def test_real_shaped_schema_rejection_is_fatal_configuration_without_raw_details(
+    failure,
+):
     error = editor._vendor_failure(failure)
     assert error.code == "configuration"
-    assert "uniqueItems" not in str(error) and "codex_output_schema" not in str(error)
+    assert "uniqueItems" not in str(error) and "codex_output_schema" not in str(
+        error
+    )
 
 
 @pytest.mark.parametrize(
     ("failure", "code"),
     [
-        ({"message": "Generated output failed schema validation"}, "unavailable"),
+        (
+            {"message": "Generated output failed schema validation"},
+            "unavailable",
+        ),
         ({"message": "HTTP 400 bad request"}, "unavailable"),
         ({"message": "temporary connection failure"}, "unavailable"),
         ({"message": "rate_limit_exceeded"}, "rate_limit"),
         ({"message": "not logged in"}, "authentication"),
     ],
 )
-def test_schema_classification_does_not_absorb_unrelated_failures(failure, code):
+def test_schema_classification_does_not_absorb_unrelated_failures(
+    failure, code
+):
     assert editor._vendor_failure(failure).code == code
 
 
-async def test_provider_schema_rejection_has_no_provenance_retry(tmp_path, fake_sdk):
+async def test_provider_schema_rejection_has_no_provenance_retry(
+    tmp_path, fake_sdk
+):
     # A valid local schema can still be rejected by a changed provider. The
     # upstream configuration error must reach the existing fatal workflow path.
-    fake_sdk.turn = FakeTurn({}, research=False, failure=copy.deepcopy(_PROVIDER_SCHEMA_ERROR))
+    fake_sdk.turn = FakeTurn(
+        {}, research=False, failure=copy.deepcopy(_PROVIDER_SCHEMA_ERROR)
+    )
     with pytest.raises(EditorError) as error:
         await live_editor(tmp_path).execute(
-            "{}", story_writer_schema("brief"), "fixture", tmp_path / "workspace"
+            "{}",
+            story_writer_schema("brief"),
+            "fixture",
+            tmp_path / "workspace",
         )
     assert error.value.code == "configuration"
     assert len(fake_sdk.prompts) == 1 and fake_sdk.closed

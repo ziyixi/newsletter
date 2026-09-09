@@ -9,7 +9,12 @@ import httpx
 import pytest
 
 from newsletter.adapters import AdapterError
-from newsletter.notion_api import API_VERSION, MAX_PNG_BYTES, SCHEMAS, NotionWorkspace
+from newsletter.notion_api import (
+    API_VERSION,
+    MAX_PNG_BYTES,
+    SCHEMAS,
+    NotionWorkspace,
+)
 
 MATERIAL = "11111111-1111-4111-8111-111111111111"
 EDITION = "22222222-2222-4222-8222-222222222222"
@@ -24,12 +29,21 @@ def rich(text):
 
 
 def paragraph(text="Offline content"):
-    return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": rich(text)}}
+    return {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {"rich_text": rich(text)},
+    }
 
 
 def source(kind, *, complete=True):
     properties = {
-        "My own title": {"id": "title", "name": "My own title", "type": "title", "title": {}}
+        "My own title": {
+            "id": "title",
+            "name": "My own title",
+            "type": "title",
+            "title": {},
+        }
     }
     if complete:
         for key, spec in SCHEMAS[kind].items():
@@ -39,12 +53,15 @@ def source(kind, *, complete=True):
             if spec.type in {"select", "multi_select"}:
                 detail = {
                     "options": [
-                        {"name": name, "id": str(index)} for index, name in enumerate(spec.options)
+                        {"name": name, "id": str(index)}
+                        for index, name in enumerate(spec.options)
                     ]
                 }
             elif spec.type == "relation":
                 detail = {
-                    "data_source_id": EDITION if kind == "material" else MATERIAL,
+                    "data_source_id": EDITION
+                    if kind == "material"
+                    else MATERIAL,
                     "single_property": {},
                 }
             properties[spec.name] = {
@@ -75,12 +92,15 @@ class Rig:
 
     def handle(self, request):
         self.requests.append(request)
-        assert request.url.scheme == "https" and request.url.host == "api.notion.com"
+        assert (
+            request.url.scheme == "https"
+            and request.url.host == "api.notion.com"
+        )
         assert request.headers["Authorization"] == "Bearer " + TOKEN
         assert request.headers["Notion-Version"] == API_VERSION == "2026-03-11"
-        if request.url.path.startswith("/v1/data_sources/") and not request.url.path.endswith(
-            "/query"
-        ):
+        if request.url.path.startswith(
+            "/v1/data_sources/"
+        ) and not request.url.path.endswith("/query"):
             target = request.url.path.rsplit("/", 1)[1]
             if request.method == "PATCH":
                 body = json.loads(request.content)
@@ -89,7 +109,8 @@ class Rig:
                     assert name not in self.sources[target]["properties"]
                     kind = next(iter(value))
                     self.sources[target]["properties"][name] = {
-                        "id": "new-" + str(len(self.sources[target]["properties"])),
+                        "id": "new-"
+                        + str(len(self.sources[target]["properties"])),
                         "name": name,
                         "type": kind,
                         **value,
@@ -97,13 +118,17 @@ class Rig:
             return httpx.Response(200, json=self.sources[target])
         if self.extra:
             return self.extra(request)
-        return httpx.Response(200, json={"object": "page", "id": PAGE, "properties": {}})
+        return httpx.Response(
+            200, json={"object": "page", "id": PAGE, "properties": {}}
+        )
 
     def mutations(self):
         return [
             r
             for r in self.requests
-            if r.method == "PATCH" or r.method == "POST" and not r.url.path.endswith("/query")
+            if r.method == "PATCH"
+            or r.method == "POST"
+            and not r.url.path.endswith("/query")
         ]
 
 
@@ -112,7 +137,9 @@ def forbid_real_network(monkeypatch):
     async def forbidden(*args, **kwargs):
         pytest.fail("Real network is forbidden in Notion adapter unit tests")
 
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", forbidden)
+    monkeypatch.setattr(
+        httpx.AsyncHTTPTransport, "handle_async_request", forbidden
+    )
 
 
 @pytest.mark.parametrize(
@@ -170,10 +197,14 @@ async def test_setup_inspects_both_before_adding_only_missing_columns_and_keeps_
         assert len(rig.api.property_ids(kind)) == len(SCHEMAS[kind])
     assert rig.sources[MATERIAL]["properties"]["My notes"]["id"] == "notes"
     assert (await rig.api.setup(apply=True))["ready"] is True
-    assert len(rig.mutations()) == 2  # An explicit second inspection is a no-op.
+    assert (
+        len(rig.mutations()) == 2
+    )  # An explicit second inspection is a no-op.
 
 
-@pytest.mark.parametrize("defect", ["type", "relation", "options", "title", "trash", "identity"])
+@pytest.mark.parametrize(
+    "defect", ["type", "relation", "options", "title", "trash", "identity"]
+)
 async def test_wrong_second_schema_prevents_any_write_to_first(defect):
     rig = Rig()
     rig.sources[MATERIAL] = source("material", complete=False)
@@ -185,7 +216,10 @@ async def test_wrong_second_schema_prevents_any_write_to_first(defect):
     elif defect == "options":
         second["properties"]["发送状态"]["select"]["options"] = []
     elif defect == "title":
-        second["properties"]["second title"] = {"id": "other-title", "type": "title"}
+        second["properties"]["second title"] = {
+            "id": "other-title",
+            "type": "title",
+        }
     elif defect == "trash":
         second["in_trash"] = True
     else:
@@ -211,10 +245,16 @@ async def test_stable_ids_survive_user_renames_but_not_property_replacement():
 
 
 @pytest.mark.parametrize("managed", [False, True])
-async def test_dual_relations_cannot_implicitly_update_an_unmanaged_reverse_column(managed):
+async def test_dual_relations_cannot_implicitly_update_an_unmanaged_reverse_column(
+    managed,
+):
     rig = Rig()
-    rig.sources[MATERIAL]["properties"]["见于简报"]["relation"]["dual_property"] = {
-        "synced_property_id": "edition-material_ids" if managed else "personal-notes",
+    rig.sources[MATERIAL]["properties"]["见于简报"]["relation"][
+        "dual_property"
+    ] = {
+        "synced_property_id": "edition-material_ids"
+        if managed
+        else "personal-notes",
         "synced_property_name": "User may rename the paired managed column",
     }
     if managed:
@@ -236,17 +276,29 @@ async def test_create_properties_only_and_patch_are_stable_id_bound_without_user
     assert await rig.api.create("material", original) == PAGE
     create = json.loads(rig.mutations()[0].content)
     assert set(create) == {"parent", "properties"}
-    assert create["parent"] == {"type": "data_source_id", "data_source_id": MATERIAL}
-    assert set(create["properties"]) == {"title", "material-value", "material-category"}
+    assert create["parent"] == {
+        "type": "data_source_id",
+        "data_source_id": MATERIAL,
+    }
+    assert set(create["properties"]) == {
+        "title",
+        "material-value",
+        "material-category",
+    }
     assert "children" not in create and original == before
     await rig.api.patch(
         "material",
         PAGE,
-        {"edition_ids": {"relation": [{"id": PAGE}]}, "fixture": {"checkbox": False}},
+        {
+            "edition_ids": {"relation": [{"id": PAGE}]},
+            "fixture": {"checkbox": False},
+        },
     )
     patch = json.loads(rig.mutations()[-1].content)
     assert set(patch) == {"properties"}
-    assert patch["properties"]["material-edition_ids"] == {"relation": [{"id": PAGE}]}
+    assert patch["properties"]["material-edition_ids"] == {
+        "relation": [{"id": PAGE}]
+    }
 
 
 async def test_property_value_reads_stable_id_not_visible_column_name():
@@ -286,7 +338,9 @@ async def test_property_value_reads_stable_id_not_visible_column_name():
         {"published_at": {"date": {"start": "not-a-date"}}},
     ],
 )
-async def test_invalid_properties_are_rejected_before_even_schema_reads(properties):
+async def test_invalid_properties_are_rejected_before_even_schema_reads(
+    properties,
+):
     rig = Rig()
     with pytest.raises(AdapterError, match="INVALID_NOTION_INPUT"):
         await rig.api.patch("material", PAGE, properties)
@@ -311,11 +365,18 @@ async def test_utf16_boundary_and_optional_empty_metadata_are_preserved():
 async def test_lookup_exact_rich_text_filter_paginates_raw_duplicates_without_following_urls():
     rig = Rig()
     key = "material:synthetic-key"
-    page = {"object": "page", "id": PAGE, "url": "https://example.org/not-followed"}
+    page = {
+        "object": "page",
+        "id": PAGE,
+        "url": "https://example.org/not-followed",
+    }
 
     def response(request):
         data = json.loads(request.content)
-        assert data["filter"] == {"property": "material-sync_key", "rich_text": {"equals": key}}
+        assert data["filter"] == {
+            "property": "material-sync_key",
+            "rich_text": {"equals": key},
+        }
         assert data["page_size"] == 100
         more = "start_cursor" not in data
         if not more:
@@ -353,7 +414,10 @@ async def test_children_paginates_only_top_level_and_returns_normalized_image_ur
     }
 
     def response(request):
-        assert request.method == "GET" and request.url.path == "/v1/blocks/" + PAGE + "/children"
+        assert (
+            request.method == "GET"
+            and request.url.path == "/v1/blocks/" + PAGE + "/children"
+        )
         more = "start_cursor" not in request.url.params
         return httpx.Response(
             200,
@@ -386,7 +450,10 @@ async def test_pagination_limit_and_repeated_cursor_never_return_a_partial_succe
         },
     )
     with pytest.raises(
-        AdapterError, match="NOTION_INVALID_RESPONSE" if repeat else "NOTION_PAGINATION_LIMIT"
+        AdapterError,
+        match="NOTION_INVALID_RESPONSE"
+        if repeat
+        else "NOTION_PAGINATION_LIMIT",
     ):
         await rig.api.children(PAGE)
     assert len(rig.requests) == 2
@@ -403,7 +470,8 @@ async def test_append_is_one_bounded_request_and_preserves_returned_ids():
         },
     ]
     result = [
-        {"object": "block", "id": str(UUID(int=i + 1)), **block} for i, block in enumerate(blocks)
+        {"object": "block", "id": str(UUID(int=i + 1)), **block}
+        for i, block in enumerate(blocks)
     ]
     rig.extra = lambda request: httpx.Response(
         200, json={"object": "list", "results": result, "has_more": False}
@@ -445,7 +513,11 @@ async def test_total_nested_blocks_and_unresolved_chart_placeholders_are_rejecte
         "table": {
             "table_width": 1,
             "children": [
-                {"object": "block", "type": "table_row", "table_row": {"cells": [rich("x")]}}
+                {
+                    "object": "block",
+                    "type": "table_row",
+                    "table_row": {"cells": [rich("x")]},
+                }
             ]
             * 100,
         },
@@ -461,30 +533,46 @@ async def test_total_nested_blocks_and_unresolved_chart_placeholders_are_rejecte
 
 
 @pytest.mark.parametrize("method", ["patch", "append"])
-async def test_malformed_mutation_success_receipt_is_unknown_not_retryable(method):
+async def test_malformed_mutation_success_receipt_is_unknown_not_retryable(
+    method,
+):
     rig = Rig()
     rig.extra = lambda request: httpx.Response(
         200,
-        json={"object": "list", "results": [{"id": "bad", "object": "block"}], "has_more": False},
+        json={
+            "object": "list",
+            "results": [{"id": "bad", "object": "block"}],
+            "has_more": False,
+        },
     )
     with pytest.raises(AdapterError) as exc:
         if method == "patch":
-            await rig.api.patch("edition", PAGE, {"delivery": {"select": {"name": "未发送"}}})
+            await rig.api.patch(
+                "edition", PAGE, {"delivery": {"select": {"name": "未发送"}}}
+            )
         else:
             await rig.api.append(PAGE, [paragraph()])
     assert exc.value.code == "NOTION_UNKNOWN" and exc.value.ambiguous
     assert len(rig.mutations()) == 1
 
 
-@pytest.mark.parametrize("bad_reply", ["invalid-schema", "missing-added-column"])
-async def test_schema_patch_invalid_success_is_ambiguous_and_stops_before_second_write(bad_reply):
+@pytest.mark.parametrize(
+    "bad_reply", ["invalid-schema", "missing-added-column"]
+)
+async def test_schema_patch_invalid_success_is_ambiguous_and_stops_before_second_write(
+    bad_reply,
+):
     rig = Rig(complete=False)
     original = rig.api._transport.handler
 
     def response(request):
         if request.method == "PATCH":
             rig.requests.append(request)
-            value = {} if bad_reply == "invalid-schema" else source("material", complete=False)
+            value = (
+                {}
+                if bad_reply == "invalid-schema"
+                else source("material", complete=False)
+            )
             return httpx.Response(200, json=value)
         return original(request)
 
@@ -500,14 +588,21 @@ async def test_schema_patch_invalid_success_is_ambiguous_and_stops_before_second
     [
         (302, {"location": "https://example.org"}, b"", "NOTION_REJECTED"),
         (200, {"content-type": "text/html"}, b"{}", "NOTION_INVALID_RESPONSE"),
-        (200, {"content-type": "application/json"}, b'{"id":1,"id":2}', "NOTION_INVALID_RESPONSE"),
+        (
+            200,
+            {"content-type": "application/json"},
+            b'{"id":1,"id":2}',
+            "NOTION_INVALID_RESPONSE",
+        ),
     ],
 )
 async def test_read_redirect_content_type_and_duplicate_json_are_hard_errors(
     status, headers, content, code
 ):
     rig = Rig()
-    rig.extra = lambda request: httpx.Response(status, headers=headers, content=content)
+    rig.extra = lambda request: httpx.Response(
+        status, headers=headers, content=content
+    )
     with pytest.raises(AdapterError) as exc:
         await rig.api.get_page(PAGE)
     assert exc.value.code == code and not exc.value.ambiguous
@@ -546,7 +641,8 @@ async def test_mutation_failures_do_not_retry_redirect_or_expose_provider_diagno
 
 
 @pytest.mark.parametrize(
-    "payload", [{}, {"object": "page", "id": "bad-id"}, {"object": "error", "id": PAGE}]
+    "payload",
+    [{}, {"object": "page", "id": "bad-id"}, {"object": "error", "id": PAGE}],
 )
 async def test_bad_create_success_response_is_ambiguous(payload):
     rig = Rig()
@@ -561,7 +657,9 @@ async def test_bad_create_success_response_is_ambiguous(payload):
 @pytest.mark.parametrize(
     "failure", ["network", "bad-json", "duplicate-json", "large-json", "server"]
 )
-async def test_unknown_read_vs_write_classification(monkeypatch, mutation, failure):
+async def test_unknown_read_vs_write_classification(
+    monkeypatch, mutation, failure
+):
     monkeypatch.setattr("newsletter.notion_api.MAX_RESPONSE_BYTES", 100)
     rig = Rig()
 
@@ -571,7 +669,9 @@ async def test_unknown_read_vs_write_classification(monkeypatch, mutation, failu
         if failure == "bad-json":
             return httpx.Response(200, text=TOKEN)
         if failure == "duplicate-json":
-            return httpx.Response(200, text='{"object":"page","object":"error"}')
+            return httpx.Response(
+                200, text='{"object":"page","object":"error"}'
+            )
         if failure == "large-json":
             return httpx.Response(200, json={"value": "x" * 101})
         return httpx.Response(503, text=TOKEN)
@@ -583,7 +683,9 @@ async def test_unknown_read_vs_write_classification(monkeypatch, mutation, failu
         else:
             await rig.api.get_page(PAGE)
     read_code = (
-        "NOTION_UNAVAILABLE" if failure in {"network", "server"} else "NOTION_INVALID_RESPONSE"
+        "NOTION_UNAVAILABLE"
+        if failure in {"network", "server"}
+        else "NOTION_INVALID_RESPONSE"
     )
     assert exc.value.code == ("NOTION_UNKNOWN" if mutation else read_code)
     assert exc.value.ambiguous is mutation and TOKEN not in str(exc.value)
@@ -611,7 +713,9 @@ async def test_upload_png_uses_two_fixed_endpoints_sha_filename_and_multipart():
                 },
             )
         assert request.url.path == "/v1/file_uploads/" + UPLOAD + "/send"
-        assert request.headers["content-type"].startswith("multipart/form-data; boundary=")
+        assert request.headers["content-type"].startswith(
+            "multipart/form-data; boundary="
+        )
         assert PNG in request.content and filename.encode() in request.content
         return httpx.Response(
             200,
@@ -642,7 +746,12 @@ async def test_upload_send_timeout_is_ambiguous_and_does_not_repeat_either_phase
     def response(request):
         if request.url.path == "/v1/file_uploads":
             return httpx.Response(
-                200, json={"object": "file_upload", "id": UPLOAD, "status": "pending"}
+                200,
+                json={
+                    "object": "file_upload",
+                    "id": UPLOAD,
+                    "status": "pending",
+                },
             )
         raise httpx.ReadTimeout("private", request=request)
 

@@ -71,17 +71,28 @@ def _approval_snapshot(value: ApprovalSources | None) -> ApprovalSources | None:
     components: dict[str, tuple[str, ...]] = {}
     try:
         for component, urls in value.components.items():
-            if isinstance(urls, str) or not isinstance(urls, Sequence) or len(urls) > 1024:
+            if (
+                isinstance(urls, str)
+                or not isinstance(urls, Sequence)
+                or len(urls) > 1024
+            ):
                 raise EditorError("invalid_input")
             for url in urls:
                 validate_public_url(url)
             components[component] = tuple(dict.fromkeys(urls))
         evidence = dict(value.evidence)
         for reference, url in evidence.items():
-            if not isinstance(reference, str) or len(reference) > 300 or reference.count("/") != 1:
+            if (
+                not isinstance(reference, str)
+                or len(reference) > 300
+                or reference.count("/") != 1
+            ):
                 raise EditorError("invalid_input")
             validate_public_url(url)
-        if sum(len(urls) for urls in components.values()) + len(evidence) > 5120:
+        if (
+            sum(len(urls) for urls in components.values()) + len(evidence)
+            > 5120
+        ):
             raise EditorError("invalid_input")
     except (ContractError, TypeError, AttributeError):
         raise EditorError("invalid_input") from None
@@ -95,14 +106,20 @@ class Editor(Protocol):
 
 
 def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    return json.dumps(
+        value, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+    )
 
 
 def _read_context(workspace: Path) -> Payload:
     context: Payload = {}
     for name in ("editorial.md", "reader-profile.md"):
         path = POLICY_DIR / name
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > 100_000:
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_size > 100_000
+        ):
             raise EditorError("configuration")
         context[name] = path.read_text(encoding="utf-8")
     history = workspace / "recent-history.json"
@@ -111,7 +128,9 @@ def _read_context(workspace: Path) -> Payload:
     if history.exists():
         if history.stat().st_size > 100_000:
             raise EditorError("invalid_input")
-        context["recent-history"] = load_json(history.read_text(encoding="utf-8"))
+        context["recent-history"] = load_json(
+            history.read_text(encoding="utf-8")
+        )
     else:
         context["recent-history"] = []
     return context
@@ -129,7 +148,9 @@ def _write_result(workspace: Path, result: EditorResult) -> None:
         if len(data) > MAX_JSON_BYTES:
             raise EditorError("invalid_output")
         try:
-            fd = os.open(workspace / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            fd = os.open(
+                workspace / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+            )
             with os.fdopen(fd, "wb") as artifact:
                 artifact.write(data)
         except OSError:
@@ -147,7 +168,9 @@ class MockEditor:
             raise EditorError("invalid_input")
         sections = []
         try:
-            for packet, kind in zip(packets[:3], ("world", "feature", "context")):
+            for packet, kind in zip(
+                packets[:3], ("world", "feature", "context")
+            ):
                 content = packet["content"]
                 sections.append(
                     {
@@ -173,7 +196,10 @@ class MockEditor:
                     "sections": sections,
                     "limitations": "此稿只验证技术流程，不可作为正式新闻发送。",
                 },
-                review={"passed": True, "findings": ["MOCK：仅验证 fixture 流程，非事实复核。"]},
+                review={
+                    "passed": True,
+                    "findings": ["MOCK：仅验证 fixture 流程，非事实复核。"],
+                },
             )
         except (KeyError, TypeError):
             raise EditorError("invalid_input") from None
@@ -189,7 +215,8 @@ class MockEditor:
             )
             markers = ("A=12", "B=8", "C=missing")
             if source is None or not all(
-                marker in demo["body"] and marker in source["excerpt"] for marker in markers
+                marker in demo["body"] and marker in source["excerpt"]
+                for marker in markers
             ):
                 raise EditorError("invalid_input")
             ref = f"{packets[0]['id']}/demo"
@@ -205,7 +232,11 @@ class MockEditor:
                 "points": [
                     {"label": "A", "decimal_value": "12", "citations": [ref]},
                     {"label": "B", "decimal_value": "8", "citations": [ref]},
-                    {"label": "C", "missing_reason": "fixture 明确缺失", "citations": [ref]},
+                    {
+                        "label": "C",
+                        "missing_reason": "fixture 明确缺失",
+                        "citations": [ref],
+                    },
                 ],
             }
         _write_result(workspace, result)
@@ -267,7 +298,9 @@ async def _collect(turn: AsyncTurnHandle) -> tuple[str, set[str], bool]:
     completed = False
     # Pinned SDK implements stream as an async generator, but annotates the
     # narrower AsyncIterator surface; aclosing also needs its aclose method.
-    async with aclosing(cast("AsyncGenerator[Notification, None]", turn.stream())) as events:
+    async with aclosing(
+        cast("AsyncGenerator[Notification, None]", turn.stream())
+    ) as events:
         async for event in events:
             payload = _plain(event.payload)
             observe_codex_usage(event.method, payload)
@@ -307,7 +340,10 @@ def _unopened_sources(text: str, opened: set[str]) -> list[str]:
     materials = value.get("packets", [])
     supplements = value.get("supplemental_packets", [])
     candidates = value.get("candidates", [])
-    if any(not isinstance(items, list) for items in (materials, supplements, candidates)):
+    if any(
+        not isinstance(items, list)
+        for items in (materials, supplements, candidates)
+    ):
         raise EditorError("invalid_output")
     try:
         sources = [
@@ -316,7 +352,9 @@ def _unopened_sources(text: str, opened: set[str]) -> list[str]:
             for source in material["sources"]
         ]
         sources.extend(c for c in candidates if c["access_scope"] != "metadata")
-        missing = {s["url"] for s in sources if urldefrag(s["url"])[0] not in opened}
+        missing = {
+            s["url"] for s in sources if urldefrag(s["url"])[0] not in opened
+        }
         if not all(isinstance(url, str) for url in missing):
             raise TypeError
         return sorted(missing)
@@ -324,7 +362,9 @@ def _unopened_sources(text: str, opened: set[str]) -> list[str]:
         raise EditorError("invalid_output") from None
 
 
-def _unobserved_approval_actions(text: str, opened: set[str], searched: bool) -> list[str]:
+def _unobserved_approval_actions(
+    text: str, opened: set[str], searched: bool
+) -> list[str]:
     """A claimed pass needs both actions; an honest HOLD needs neither.
 
     Inspect the legacy envelope and independent whole/story review shapes. This only
@@ -347,12 +387,17 @@ def _unobserved_approval_actions(text: str, opened: set[str], searched: bool) ->
             for item in assessments
         )
     withdrawal = value.get("prior_withdrawal")
-    approved |= isinstance(withdrawal, dict) and bool(withdrawal.get("target_body_hash"))
+    approved |= isinstance(withdrawal, dict) and bool(
+        withdrawal.get("target_body_hash")
+    )
     if not approved:
         return []
     return [
         action
-        for action, observed in (("search", searched), ("openPage", bool(opened)))
+        for action, observed in (
+            ("search", searched),
+            ("openPage", bool(opened)),
+        )
         if not observed
     ]
 
@@ -393,13 +438,21 @@ def _unopened_approval_sources(
     return sorted(url for url in requested if urldefrag(url)[0] not in opened)
 
 
-def _result(text: str, packets: list[Payload], opened: set[str], searched: bool) -> EditorResult:
+def _result(
+    text: str, packets: list[Payload], opened: set[str], searched: bool
+) -> EditorResult:
     from newsletter.contracts import content_hash, validate_packet_body
 
     value = load_json(text)
-    if not isinstance(value, dict) or set(value) != {"draft", "review", "supplemental_packets"}:
+    if not isinstance(value, dict) or set(value) != {
+        "draft",
+        "review",
+        "supplemental_packets",
+    }:
         raise EditorError("invalid_output")
-    draft, review, supplements = (value[k] for k in ("draft", "review", "supplemental_packets"))
+    draft, review, supplements = (
+        value[k] for k in ("draft", "review", "supplemental_packets")
+    )
     if (
         not isinstance(draft, dict)
         or not isinstance(review, dict)
@@ -418,7 +471,10 @@ def _result(text: str, packets: list[Payload], opened: set[str], searched: bool)
     all_ids = {p["id"] for p in packets}
     supplemental_packets = []
     for supplement in supplements:
-        if not isinstance(supplement, dict) or set(supplement) != {"id", "content"}:
+        if not isinstance(supplement, dict) or set(supplement) != {
+            "id",
+            "content",
+        }:
             raise EditorError("invalid_output")
         old_id = supplement["id"]
         if (
@@ -442,7 +498,9 @@ def _result(text: str, packets: list[Payload], opened: set[str], searched: bool)
                 "workflow_id": SUPPLEMENTAL_WORKFLOW,
                 "producer_id": SUPPLEMENTAL_PRODUCER,
                 "content_hash": content_hash(content),
-                "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "created_at": datetime.now(UTC)
+                .isoformat()
+                .replace("+00:00", "Z"),
                 "is_fixture": False,
                 "content": content,
             }
@@ -457,7 +515,9 @@ def _result(text: str, packets: list[Payload], opened: set[str], searched: bool)
     # Rewrite references only, never free text that happens to contain an ID.
     for section in draft.get("sections", []):
         for paragraph in section.get("paragraphs", []):
-            paragraph["citations"] = [citation(x) for x in paragraph.get("citations", [])]
+            paragraph["citations"] = [
+                citation(x) for x in paragraph.get("citations", [])
+            ]
     for point in draft.get("chart", {}).get("points", []):
         point["citations"] = [citation(x) for x in point.get("citations", [])]
     if "recommended_reading" in draft:
@@ -465,7 +525,10 @@ def _result(text: str, packets: list[Payload], opened: set[str], searched: bool)
             draft["recommended_reading"]["citation"]
         )
         draft["recommended_reading"]["supporting_citations"] = [
-            citation(ref) for ref in draft["recommended_reading"].get("supporting_citations", [])
+            citation(ref)
+            for ref in draft["recommended_reading"].get(
+                "supporting_citations", []
+            )
         ]
     if review["passed"] and (not searched or not opened):
         review = {
@@ -484,7 +547,11 @@ def _result(text: str, packets: list[Payload], opened: set[str], searched: bool)
 
 class CodexEditor:
     def __init__(
-        self, codex_home: Path, model: str = "gpt-5.6-sol", *, timeout_seconds: float = 840
+        self,
+        codex_home: Path,
+        model: str = "gpt-5.6-sol",
+        *,
+        timeout_seconds: float = 840,
     ) -> None:
         if not model.strip() or timeout_seconds <= 0:
             raise EditorError("configuration")
@@ -505,7 +572,9 @@ class CodexEditor:
         validate_output_schema(schema)
         sources = _approval_snapshot(approval_sources)
         with codex_usage(self.model) as usage:
-            return await self._execute(prompt, schema, instructions, workspace, usage, sources)
+            return await self._execute(
+                prompt, schema, instructions, workspace, usage, sources
+            )
 
     async def _execute(
         self,
@@ -551,13 +620,21 @@ class CodexEditor:
                 )
                 usage.start_turn()
                 turn = await thread.turn(prompt, output_schema=schema)
-                usage.bind_turn(getattr(turn, "thread_id", None), getattr(turn, "id", None))
+                usage.bind_turn(
+                    getattr(turn, "thread_id", None), getattr(turn, "id", None)
+                )
                 text, opened, searched = await _collect(turn)
                 missing = sorted(
                     set(_unopened_sources(text, opened))
-                    | set(_unopened_approval_sources(text, opened, approval_sources))
+                    | set(
+                        _unopened_approval_sources(
+                            text, opened, approval_sources
+                        )
+                    )
                 )
-                missing_actions = _unobserved_approval_actions(text, opened, searched)
+                missing_actions = _unobserved_approval_actions(
+                    text, opened, searched
+                )
                 if missing or missing_actions:
                     # SDK reports open inputs, not redirect/canonical equivalence. Keep
                     # the same thread so the model retains its evidence. This is one
@@ -595,7 +672,10 @@ class CodexEditor:
                     )
                     usage.start_turn()
                     turn = await thread.turn(correction, output_schema=schema)
-                    usage.bind_turn(getattr(turn, "thread_id", None), getattr(turn, "id", None))
+                    usage.bind_turn(
+                        getattr(turn, "thread_id", None),
+                        getattr(turn, "id", None),
+                    )
                     text, more_opened, more_searched = await _collect(turn)
                     opened |= more_opened
                     searched |= more_searched

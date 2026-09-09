@@ -23,7 +23,9 @@ def citations(value: object) -> set[str]:
         for key, item in value.items():
             if key == "citation" and isinstance(item, str):
                 found.add(item)
-            elif key in {"citations", "supporting_citations"} and isinstance(item, list):
+            elif key in {"citations", "supporting_citations"} and isinstance(
+                item, list
+            ):
                 found.update(text for text in item if isinstance(text, str))
             else:
                 found.update(citations(item))
@@ -34,18 +36,23 @@ def citations(value: object) -> set[str]:
 
 
 class NotionIntake:
-    def __init__(self, journal: NotionJournal, *, include_personal: bool) -> None:
+    def __init__(
+        self, journal: NotionJournal, *, include_personal: bool
+    ) -> None:
         self.journal = journal
         self.include_personal = include_personal
         journal.execute(
-            "INSERT OR IGNORE INTO metadata VALUES('notion_v2_bootstrap_at',?)", (now(),)
+            "INSERT OR IGNORE INTO metadata VALUES('notion_v2_bootstrap_at',?)",
+            (now(),),
         )
         self.bootstrap_at = journal.rows(
             "SELECT value FROM metadata WHERE key='notion_v2_bootstrap_at'"
         )[0]["value"]
 
     def historical(self, created_at: str) -> bool:
-        return datetime.fromisoformat(created_at) < datetime.fromisoformat(self.bootstrap_at)
+        return datetime.fromisoformat(created_at) < datetime.fromisoformat(
+            self.bootstrap_at
+        )
 
     def scan(self) -> int:
         imported = self._candidates() + self._research() + self._editions()
@@ -65,7 +72,9 @@ class NotionIntake:
             error = ""
             try:
                 definition = json.loads(row["definition"])
-                node = next(n for n in definition["nodes"] if n["id"] == row["node_id"])
+                node = next(
+                    n for n in definition["nodes"] if n["id"] == row["node_id"]
+                )
                 if node["type"] == "deduplicate":
                     for candidate in json.loads(row["body"])["candidates"]:
                         try:
@@ -136,7 +145,9 @@ class NotionIntake:
                         projection = material_projection(
                             json.loads(candidate["body"]),
                             key=candidate["entity_key"],
-                            first_seen=datetime.fromisoformat(candidate["first_seen"])
+                            first_seen=datetime.fromisoformat(
+                                candidate["first_seen"]
+                            )
                             .date()
                             .isoformat(),
                             run_id=row["run_id"],
@@ -163,11 +174,17 @@ class NotionIntake:
         ):
             try:
                 self._link(
-                    row["key"], row["run_id"], json.loads(row["body"]), json.loads(row["snapshot"])
+                    row["key"],
+                    row["run_id"],
+                    json.loads(row["body"]),
+                    json.loads(row["snapshot"]),
                 )
             except (ValueError, KeyError, TypeError):
                 self.journal.mark_import(
-                    "relations", row["key"], "invalid", "notion_relation_import_failed"
+                    "relations",
+                    row["key"],
+                    "invalid",
+                    "notion_relation_import_failed",
                 )
 
     def _editions(self) -> int:
@@ -190,10 +207,13 @@ class NotionIntake:
                 packets = json.loads(row["snapshot"])
                 edition_type = "日常"
                 run_id = row["run_id"] or ""
-                if edition["is_fixture"] or self.historical(edition["created_at"]):
+                if edition["is_fixture"] or self.historical(
+                    edition["created_at"]
+                ):
                     edition_type = "测试"
                 elif j.rows(
-                    "SELECT 1 FROM verification_sends WHERE edition_id=?", (edition["id"],)
+                    "SELECT 1 FROM verification_sends WHERE edition_id=?",
+                    (edition["id"],),
                 ):
                     edition_type = "修订"
                 elif j.exists("collection_runs"):
@@ -201,7 +221,11 @@ class NotionIntake:
                         "SELECT request_key FROM collection_runs WHERE id=?",
                         (run_id,),
                     )
-                    if not request or request[0]["request_key"] != "daily-" + edition["issue_date"]:
+                    if (
+                        not request
+                        or request[0]["request_key"]
+                        != "daily-" + edition["issue_date"]
+                    ):
                         edition_type = "测试"
                 projection = edition_projection(
                     edition,
@@ -214,11 +238,20 @@ class NotionIntake:
                 self._link(projection.key, run_id, edition, packets)
             except (ValueError, KeyError, TypeError):
                 error = "notion_edition_import_failed"
-            j.mark_import("edition", row["id"], edition.get("updated_at", "invalid"), error)
+            j.mark_import(
+                "edition",
+                row["id"],
+                edition.get("updated_at", "invalid"),
+                error,
+            )
         return len(rows)
 
     def _link(
-        self, edition_key: str, run_id: str, edition: Payload, packets: list[Payload]
+        self,
+        edition_key: str,
+        run_id: str,
+        edition: Payload,
+        packets: list[Payload],
     ) -> None:
         """Only actually cited source identities create adopted-material relations."""
         used = citations(edition["draft"])

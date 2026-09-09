@@ -44,15 +44,31 @@ def source_hashes(root: Path) -> dict[str, str]:
     package = root / "src" / "newsletter"
     result = {}
     for path in sorted(package.rglob("*")):
-        if any(fnmatch.fnmatchcase(path.name.lower(), pattern) for pattern in PRIVATE_NAMES):
-            raise ValueError("Unexpected private-file name inside the source package")
+        if any(
+            fnmatch.fnmatchcase(path.name.lower(), pattern)
+            for pattern in PRIVATE_NAMES
+        ):
+            raise ValueError(
+                "Unexpected private-file name inside the source package"
+            )
         if path.is_symlink():
-            raise ValueError("Image smoke requires regular source files, not symlinks")
+            raise ValueError(
+                "Image smoke requires regular source files, not symlinks"
+            )
         if "__pycache__" in path.parts or path.suffix == ".pyc":
             continue
         if path.is_file():
-            if path.suffix not in {".py", ".pyi", ".json", ".j2", ".md", ".yaml"}:
-                raise ValueError("Unexpected package file; audit its build inclusion first")
+            if path.suffix not in {
+                ".py",
+                ".pyi",
+                ".json",
+                ".j2",
+                ".md",
+                ".yaml",
+            }:
+                raise ValueError(
+                    "Unexpected package file; audit its build inclusion first"
+                )
             result[path.relative_to(package).as_posix()] = hashlib.sha256(
                 path.read_bytes()
             ).hexdigest()
@@ -61,7 +77,9 @@ def source_hashes(root: Path) -> dict[str, str]:
     return result
 
 
-def verify(image: str, platform: str, docker: str = "docker", *, root: Path = ROOT) -> str:
+def verify(
+    image: str, platform: str, docker: str = "docker", *, root: Path = ROOT
+) -> str:
     inspected = subprocess.run(
         [docker, "image", "inspect", "--format", IMAGE_FORMAT, "--", image],
         check=True,
@@ -74,12 +92,16 @@ def verify(image: str, platform: str, docker: str = "docker", *, root: Path = RO
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", image_id):
         raise ValueError("Docker did not return a fixed image ID")
     if f"{metadata['os']}/{metadata['architecture']}" != platform:
-        raise ValueError("Image architecture does not match the requested platform")
+        raise ValueError(
+            "Image architecture does not match the requested platform"
+        )
     if metadata["user"].split(":", 1)[0] in {"", "0", "root"}:
         raise ValueError("The image must configure a nonroot user")
     payload = {
         "source_hashes": source_hashes(root),
-        "startup_source": (root / "scripts" / "smoke_codex_startup.py").read_text(),
+        "startup_source": (
+            root / "scripts" / "smoke_codex_startup.py"
+        ).read_text(),
     }
     probe = (root / "scripts" / "smoke_image_probe.py").read_text()
     name = "newsletter-image-smoke-" + uuid4().hex
@@ -122,7 +144,13 @@ def verify(image: str, platform: str, docker: str = "docker", *, root: Path = RO
         probe,
     ]
     try:
-        subprocess.run(command, input=json.dumps(payload), text=True, check=True, timeout=120)
+        subprocess.run(
+            command,
+            input=json.dumps(payload),
+            text=True,
+            check=True,
+            timeout=120,
+        )
     finally:
         # Killing a timed-out Docker client does not itself stop its container.
         # Target only this unique, self-created probe; tolerate --rm already removing it.
@@ -133,7 +161,9 @@ def verify(image: str, platform: str, docker: str = "docker", *, root: Path = RO
             check=False,
             timeout=15,
         )
-    print(f"Image smoke passed for {image_id} ({platform}); no provider calls or mail.")
+    print(
+        f"Image smoke passed for {image_id} ({platform}); no provider calls or mail."
+    )
     return image_id
 
 
@@ -142,13 +172,21 @@ def main() -> None:
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--image")
     action.add_argument(
-        "--audit-source", action="store_true", help="Check build inputs without Docker"
+        "--audit-source",
+        action="store_true",
+        help="Check build inputs without Docker",
     )
-    parser.add_argument("--platform", choices=("linux/amd64", "linux/arm64"), default="linux/amd64")
+    parser.add_argument(
+        "--platform",
+        choices=("linux/amd64", "linux/arm64"),
+        default="linux/amd64",
+    )
     parser.add_argument("--docker", default="docker")
     args = parser.parse_args()
     if args.audit_source:
-        print(f"Source input audit passed: {len(source_hashes(ROOT))} package files.")
+        print(
+            f"Source input audit passed: {len(source_hashes(ROOT))} package files."
+        )
         return
     verify(args.image, args.platform, args.docker)
 

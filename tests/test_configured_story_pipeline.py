@@ -38,7 +38,9 @@ from newsletter.workflow.story_editor import StoryEditor
 
 class ForbiddenNotion:
     async def project(self, packet):
-        raise AssertionError("Configuration integration must never write to Notion")
+        raise AssertionError(
+            "Configuration integration must never write to Notion"
+        )
 
 
 @pytest.mark.parametrize("state", ["missing", "corrupt", "valid"])
@@ -70,7 +72,9 @@ def test_live_lifespan_checks_active_configuration_before_advertising_readiness(
         return PreflightReport(("offline_test_boundary",), ())
 
     async def forbidden(*args, **kwargs):
-        raise AssertionError("Startup-only test cannot call a model or run a worker")
+        raise AssertionError(
+            "Startup-only test cannot call a model or run a worker"
+        )
 
     monkeypatch.setattr(lifecycle, "preflight", offline_provider_preflight)
     monkeypatch.setattr(CodexEditor, "execute", forbidden)
@@ -82,13 +86,17 @@ def test_live_lifespan_checks_active_configuration_before_advertising_readiness(
             assert isinstance(app.state.worker.pipeline, DagPipeline)
             assert app.state.worker_task is None
             assert (
-                app.state.store.db.execute("SELECT COUNT(*) FROM collection_runs").fetchone()[0]
+                app.state.store.db.execute(
+                    "SELECT COUNT(*) FROM collection_runs"
+                ).fetchone()[0]
                 == 0
             )
     else:
         with pytest.raises(ContentConfigError):
             with TestClient(app):
-                pytest.fail("Missing or corrupt active configuration advertised readiness")
+                pytest.fail(
+                    "Missing or corrupt active configuration advertised readiness"
+                )
         assert not hasattr(app.state, "worker")
     assert len(opened) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
@@ -105,9 +113,9 @@ async def test_installed_config_drives_whole_topic_pipeline_and_survives_midrun_
     first_files["prompts/discovery.md"] += "\nDISCOVERY CONFIG A"
     first_files["prompts/selection.md"] += "\nSELECTION CONFIG A"
     first_files["policy/editorial.md"] += "\nWRITING CONFIG A"
-    first_files["templates/edition.html.j2"] = first_files["templates/edition.html.j2"].replace(
-        "THE DAILY BRIEF", "CONFIG A DAILY BRIEF"
-    )
+    first_files["templates/edition.html.j2"] = first_files[
+        "templates/edition.html.j2"
+    ].replace("THE DAILY BRIEF", "CONFIG A DAILY BRIEF")
     first = build_snapshot(first_files, "a" * 40)
     install_snapshot(config_root, first)
 
@@ -120,11 +128,15 @@ async def test_installed_config_drives_whole_topic_pipeline_and_survives_midrun_
             "max_research_candidates": 0,
         }
     )
-    for name in ("prompts/discovery.md", "prompts/selection.md", "policy/editorial.md"):
+    for name in (
+        "prompts/discovery.md",
+        "prompts/selection.md",
+        "policy/editorial.md",
+    ):
         second_files[name] = second_files[name].replace("CONFIG A", "CONFIG B")
-    second_files["templates/edition.html.j2"] = second_files["templates/edition.html.j2"].replace(
-        "CONFIG A DAILY BRIEF", "CONFIG B DAILY BRIEF"
-    )
+    second_files["templates/edition.html.j2"] = second_files[
+        "templates/edition.html.j2"
+    ].replace("CONFIG A DAILY BRIEF", "CONFIG B DAILY BRIEF")
     second = build_snapshot(second_files, "b" * 40)
 
     store = Store(tmp_path / "state.sqlite3", "mock")
@@ -132,7 +144,9 @@ async def test_installed_config_drives_whole_topic_pipeline_and_survives_midrun_
     switched = False
 
     async def forbidden(*args, **kwargs):
-        raise AssertionError("No legacy collector, whole-issue editor, external API or email")
+        raise AssertionError(
+            "No legacy collector, whole-issue editor, external API or email"
+        )
 
     async def empty_public_metadata(self, issue_date):
         return MetadataResult([], ["Synthetic offline metadata boundary"])
@@ -142,7 +156,10 @@ async def test_installed_config_drives_whole_topic_pipeline_and_survives_midrun_
         value = json.loads(prompt)
         provider_calls.append((value, schema, instructions))
         if "candidates" in schema["properties"]:
-            assert "DISCOVERY CONFIG A" in instructions and "DISCOVERY CONFIG B" not in instructions
+            assert (
+                "DISCOVERY CONFIG A" in instructions
+                and "DISCOVERY CONFIG B" not in instructions
+            )
             direction = value["direction"]
             candidates = (
                 [news(number) for number in range(1, 6)]
@@ -164,7 +181,10 @@ async def test_installed_config_drives_whole_topic_pipeline_and_survives_midrun_
                 switched = True
             return json.dumps(output), {c["url"] for c in candidates}, True
         assert "research_tasks" in schema["properties"]
-        assert "SELECTION CONFIG A" in instructions and "SELECTION CONFIG B" not in instructions
+        assert (
+            "SELECTION CONFIG A" in instructions
+            and "SELECTION CONFIG B" not in instructions
+        )
         assert value["max_tasks"] == 6
         assert schema["properties"]["research_tasks"]["maxItems"] == 6
         assert value["editorial_budget"] == {
@@ -178,7 +198,9 @@ async def test_installed_config_drives_whole_topic_pipeline_and_survives_midrun_
         papers = [c for c in candidates if kinds[c["id"]]["kind"] == "research"]
         events = [c for c in candidates if kinds[c["id"]]["kind"] == "news"]
         assert len(papers) == len(events) == 5
-        chosen = papers[:2] + events[:4] if excess_research else events + papers[:1]
+        chosen = (
+            papers[:2] + events[:4] if excess_research else events + papers[:1]
+        )
         tasks = [
             {
                 "id": f"story-{number}",
@@ -193,7 +215,9 @@ async def test_installed_config_drives_whole_topic_pipeline_and_survives_midrun_
             for number, c in enumerate(chosen, 1)
         ]
         return (
-            json.dumps({"research_tasks": tasks, "note": "Synthetic selection fixture"}),
+            json.dumps(
+                {"research_tasks": tasks, "note": "Synthetic selection fixture"}
+            ),
             set(),
             False,
         )
@@ -203,11 +227,14 @@ async def test_installed_config_drives_whole_topic_pipeline_and_survives_midrun_
         number = int(task["id"].rsplit("-", 1)[1])
         assert "WRITING CONFIG A" in kwargs["policy"]["editorial.md"]
         assert "WRITING CONFIG B" not in kwargs["policy"]["editorial.md"]
-        assert "公共选题最多6项，研究主体最多1项，深读最多1项" in kwargs["policy"]["editorial.md"]
+        assert (
+            "公共选题最多6项，研究主体最多1项，深读最多1项"
+            in kwargs["policy"]["editorial.md"]
+        )
         if mode == "deep":
-            assert len([call for call in writing_calls if call[0] == "brief"]) == (
-                5 if excess_research else 6
-            )
+            assert len(
+                [call for call in writing_calls if call[0] == "brief"]
+            ) == (5 if excess_research else 6)
             assert kwargs["prior"]["mode"] == "brief"
         writing_calls.append((mode, task["id"]))
         candidate = kwargs["candidates"][0]
@@ -236,7 +263,9 @@ async def test_installed_config_drives_whole_topic_pipeline_and_survives_midrun_
             32,
             editor=CodexEditor(tmp_path / "nonexistent-auth"),
         )
-        settings = Settings(workflow_backend="dag", content_config_dir=config_root)
+        settings = Settings(
+            workflow_backend="dag", content_config_dir=config_root
+        )
         instructions, snapshot = freeze_workflow(settings, pipeline.state, DAY)
         frozen = deepcopy(snapshot)
         run = runs.start(
@@ -265,26 +294,62 @@ async def test_installed_config_drives_whole_topic_pipeline_and_survives_midrun_
         plan = pipeline.repository.output(run["id"], "story_plan")
         expected_count = 5 if excess_research else 6
         assert len(selection["research_tasks"]) == expected_count
-        assert sum(kind == "research" for kind in selection["task_classifications"].values()) == 1
+        assert (
+            sum(
+                kind == "research"
+                for kind in selection["task_classifications"].values()
+            )
+            == 1
+        )
         assert len(selection["omitted_tasks"]) == (1 if excess_research else 0)
         if excess_research:
             assert selection["omitted_tasks"][0]["reason"] == "research_quota"
-        assert len(plan["brief_tasks"]) == expected_count and len(plan["deep_tasks"]) == 1
+        assert (
+            len(plan["brief_tasks"]) == expected_count
+            and len(plan["deep_tasks"]) == 1
+        )
         assert len([call for call in writing_calls if call[0] == "deep"]) == 1
         edition = store.get(completed["edition_id"])
-        assert edition["state"] == "ready" and edition["delivery_state"] == "not_requested"
+        assert (
+            edition["state"] == "ready"
+            and edition["delivery_state"] == "not_requested"
+        )
         assert len(edition["draft"]["sections"]) == expected_count
-        assert sum(s["disposition"] == "deep" for s in edition["publication"]["stories"]) == 1
+        assert (
+            sum(
+                s["disposition"] == "deep"
+                for s in edition["publication"]["stories"]
+            )
+            == 1
+        )
         assert "CONFIG A DAILY BRIEF" in edition["rendered"]["html"]
         assert "CONFIG B DAILY BRIEF" not in edition["rendered"]["html"]
-        assert sum(section["kind"] == "ai_ml" for section in edition["draft"]["sections"]) == 1
-        assert len(provider_calls) == 9  # Eight bounded retrievals, one selection.
+        assert (
+            sum(
+                section["kind"] == "ai_ml"
+                for section in edition["draft"]["sections"]
+            )
+            == 1
+        )
+        assert (
+            len(provider_calls) == 9
+        )  # Eight bounded retrievals, one selection.
         assert load_active(config_root) == second
         assert runs.workflow_snapshot(run["id"]) == frozen
-        assert pipeline.repository.snapshot(run["id"])["inputs"]["content_config"] == first
-        _, next_snapshot = freeze_workflow(settings, pipeline.state, "2026-09-07")
+        assert (
+            pipeline.repository.snapshot(run["id"])["inputs"]["content_config"]
+            == first
+        )
+        _, next_snapshot = freeze_workflow(
+            settings, pipeline.state, "2026-09-07"
+        )
         assert next_snapshot["inputs"]["content_config"] == second
         assert store.db.execute("SELECT COUNT(*) FROM sends").fetchone()[0] == 0
-        assert store.db.execute("SELECT COUNT(*) FROM verification_sends").fetchone()[0] == 0
+        assert (
+            store.db.execute(
+                "SELECT COUNT(*) FROM verification_sends"
+            ).fetchone()[0]
+            == 0
+        )
     finally:
         store.close()

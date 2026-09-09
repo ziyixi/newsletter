@@ -77,8 +77,12 @@ def _check_storage(settings: Settings, store: Store | None) -> None:
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     # Exercise writes/WAL in the actual mounted directory without touching any
     # newsletter records. Temporary files are closed and removed on every path.
-    with tempfile.TemporaryDirectory(prefix=".preflight-storage-", dir=directory) as temporary:
-        with closing(sqlite3.connect(Path(temporary) / "probe.sqlite3")) as probe:
+    with tempfile.TemporaryDirectory(
+        prefix=".preflight-storage-", dir=directory
+    ) as temporary:
+        with closing(
+            sqlite3.connect(Path(temporary) / "probe.sqlite3")
+        ) as probe:
             if probe.execute("PRAGMA journal_mode=WAL").fetchone() != ("wal",):
                 raise PreflightError("STORAGE_WAL_UNAVAILABLE")
             probe.execute("CREATE TABLE probe (value INTEGER NOT NULL)")
@@ -100,11 +104,15 @@ def check_proto_dependency() -> None:
     if Path(pb.__file__).resolve() != Path(str(module)).resolve():
         raise PreflightError("PROTO_SOURCE_INVALID")
     generated = files("ziyixi_protos.newsletter")
-    manifest = json.loads(generated.joinpath("provenance.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        generated.joinpath("provenance.json").read_text(encoding="utf-8")
+    )
     if not isinstance(manifest, dict):
         raise PreflightError("PROTO_SOURCE_INVALID")
     expected = {
-        "descriptor_sha256": hashlib.sha256(pb.DESCRIPTOR.serialized_pb).hexdigest(),
+        "descriptor_sha256": hashlib.sha256(
+            pb.DESCRIPTOR.serialized_pb
+        ).hexdigest(),
         "generated_sha256": hashlib.sha256(
             generated.joinpath("editorial_pb2.py").read_bytes()
         ).hexdigest(),
@@ -139,13 +147,19 @@ def _check_resources() -> None:
         pin, _, marker = requirement.partition(";")
         if marker.strip() in {'extra == "codex"', "extra == 'codex'"}:
             continue
-        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([A-Za-z0-9_.+-]+)", pin.strip())
+        match = re.fullmatch(
+            r"([A-Za-z0-9_.-]+)==([A-Za-z0-9_.+-]+)", pin.strip()
+        )
         if marker or match is None or version(match[1]) != match[2]:
             raise PreflightError("DEPENDENCY_VERSION_MISMATCH")
     check_proto_dependency()
     package = files("newsletter")
     for filename in ("editorial.md", "story-editorial.md", "reader-profile.md"):
-        if not package.joinpath("policy", filename).read_text(encoding="utf-8").strip():
+        if (
+            not package.joinpath("policy", filename)
+            .read_text(encoding="utf-8")
+            .strip()
+        ):
             raise PreflightError("EDITOR_POLICY_UNAVAILABLE")
     load_template()
     font = load_font(24)
@@ -170,24 +184,42 @@ def _check_resources() -> None:
 def _runtime_files() -> tuple[Path, Path]:
     from codex_cli_bin import bundled_codex_path  # type: ignore[import-untyped]
 
-    if version("openai-codex") != SDK_VERSION or version("openai-codex-cli-bin") != SDK_VERSION:
+    if (
+        version("openai-codex") != SDK_VERSION
+        or version("openai-codex-cli-bin") != SDK_VERSION
+    ):
         raise PreflightError("CODEX_VERSION_MISMATCH")
     executable = Path(bundled_codex_path())
     host = executable.with_name("codex-code-mode-host")
-    metadata = json.loads(executable.parent.parent.joinpath("codex-package.json").read_text())
+    metadata = json.loads(
+        executable.parent.parent.joinpath("codex-package.json").read_text()
+    )
     if metadata.get("version") != SDK_VERSION:
         raise PreflightError("CODEX_VERSION_MISMATCH")
     installed = distribution("openai-codex-cli-bin")
     records = {str(record): record for record in installed.files or ()}
     for binary in (executable, host):
-        if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
+        if (
+            binary.is_symlink()
+            or not binary.is_file()
+            or not os.access(binary, os.X_OK)
+        ):
             raise PreflightError("CODEX_EXECUTABLE_UNAVAILABLE")
         record = records.get("codex_cli_bin/bin/" + binary.name)
-        if record is None or record.hash is None or record.hash.mode != "sha256":
+        if (
+            record is None
+            or record.hash is None
+            or record.hash.mode != "sha256"
+        ):
             raise PreflightError("CODEX_INTEGRITY_FAILED")
         with binary.open("rb") as stream:
-            digest = base64.urlsafe_b64encode(hashlib.file_digest(stream, "sha256").digest())
-        if digest.decode().rstrip("=") != record.hash.value or binary.stat().st_size != record.size:
+            digest = base64.urlsafe_b64encode(
+                hashlib.file_digest(stream, "sha256").digest()
+            )
+        if (
+            digest.decode().rstrip("=") != record.hash.value
+            or binary.stat().st_size != record.size
+        ):
             raise PreflightError("CODEX_INTEGRITY_FAILED")
     return executable, host
 
@@ -199,7 +231,11 @@ async def _host_executable(host: Path, workspace: Path) -> None:
         str(host),
         "--help",
         cwd=workspace,
-        env={"PATH": os.defpath, "HOME": str(workspace), "TMPDIR": str(workspace)},
+        env={
+            "PATH": os.defpath,
+            "HOME": str(workspace),
+            "TMPDIR": str(workspace),
+        },
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -218,7 +254,9 @@ async def _check_codex(settings: Settings, sdk: ModuleType | None) -> None:
 
     _, host = _runtime_files()
     sdk = sdk or load_sdk()
-    with tempfile.TemporaryDirectory(prefix=".preflight-codex-", dir=settings.data_dir) as name:
+    with tempfile.TemporaryDirectory(
+        prefix=".preflight-codex-", dir=settings.data_dir
+    ) as name:
         workspace = Path(name).resolve()
         home = check_codex_home(cast(Path, settings.codex_home), workspace)
         await _host_executable(host, workspace)
@@ -238,7 +276,10 @@ async def _check_codex(settings: Settings, sdk: ModuleType | None) -> None:
                 check_codex_home(home, workspace)
                 await assert_no_skills(client, workspace, home)
                 account = await client.account(refresh_token=True)
-                if account.account is None or account.account.root.type != "chatgpt":
+                if (
+                    account.account is None
+                    or account.account.root.type != "chatgpt"
+                ):
                     raise PreflightError("CODEX_CHATGPT_AUTH_REQUIRED")
                 cursor = None
                 seen = set()
@@ -251,7 +292,9 @@ async def _check_codex(settings: Settings, sdk: ModuleType | None) -> None:
                         params,
                         response_model=ModelListResponse,
                     )
-                    if any(model.model == settings.model for model in result.data):
+                    if any(
+                        model.model == settings.model for model in result.data
+                    ):
                         return
                     cursor = result.next_cursor
                     if cursor is None:
@@ -282,12 +325,17 @@ async def _get_json(
             async with client.stream("GET", url) as response:
                 if response.status_code in {401, 403}:
                     raise PreflightError(provider + "_AUTH_FAILED")
-                if response.status_code == 429 or 500 <= response.status_code < 600:
+                if (
+                    response.status_code == 429
+                    or 500 <= response.status_code < 600
+                ):
                     raise PreflightError(provider + "_TEMPORARILY_UNAVAILABLE")
                 if response.status_code != 200:
                     raise PreflightError(provider + "_UNAVAILABLE")
                 if (
-                    response.headers.get("content-type", "").split(";", 1)[0].strip()
+                    response.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .strip()
                     != "application/json"
                 ):
                     raise PreflightError(provider + "_INVALID_RESPONSE")
@@ -305,7 +353,9 @@ async def _get_json(
     return value
 
 
-async def _check_notion(settings: Settings, transport: httpx.AsyncBaseTransport | None) -> None:
+async def _check_notion(
+    settings: Settings, transport: httpx.AsyncBaseTransport | None
+) -> None:
     if settings.notion_v2:
         try:
             async with asyncio.timeout(2 * HTTP_TIMEOUT):
@@ -325,7 +375,9 @@ async def _check_notion(settings: Settings, transport: httpx.AsyncBaseTransport 
                 "NOTION_SCHEMA_MISSING": "NOTION_SCHEMA_MISSING",
                 "NOTION_SCHEMA_MISMATCH": "NOTION_SCHEMA_INVALID",
             }
-            raise PreflightError(codes.get(exc.code, "NOTION_CHECK_FAILED")) from None
+            raise PreflightError(
+                codes.get(exc.code, "NOTION_CHECK_FAILED")
+            ) from None
         return
     Notion(settings.notion_token, settings.notion_data_source_id)
     identifier = str(UUID(settings.notion_data_source_id))
@@ -347,12 +399,18 @@ async def _check_notion(settings: Settings, transport: httpx.AsyncBaseTransport 
         or not isinstance(properties, dict)
     ):
         raise PreflightError("NOTION_SCHEMA_INVALID")
-    titles = [p for p in properties.values() if isinstance(p, dict) and p.get("type") == "title"]
+    titles = [
+        p
+        for p in properties.values()
+        if isinstance(p, dict) and p.get("type") == "title"
+    ]
     if len(titles) != 1 or titles[0].get("id") != "title":
         raise PreflightError("NOTION_SCHEMA_INVALID")
 
 
-async def _check_todofy(settings: Settings, transport: httpx.AsyncBaseTransport | None) -> None:
+async def _check_todofy(
+    settings: Settings, transport: httpx.AsyncBaseTransport | None
+) -> None:
     origin = validate_todofy_configuration(
         settings.todofy_base_url,
         settings.todofy_user,
@@ -466,7 +524,11 @@ async def preflight(
                 )
         if settings.mail_backend == "resend":
             stage = "MAIL"
-            Resend(settings.resend_api_key, settings.from_email, settings.recipient_email)
+            Resend(
+                settings.resend_api_key,
+                settings.from_email,
+                settings.recipient_email,
+            )
             checks.append("resend_configuration_only")
             limitations.append(
                 "Resend sending-only keys lack a universal read probe; key validity, domain and delivery remain unverified. No email was sent."
