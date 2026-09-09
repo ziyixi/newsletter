@@ -1,1 +1,1 @@
-"""Externally triggered collection: immutable instructions, evidence, durable runs."""
+"""Operator instructions, durable runs and one-shot collection."""

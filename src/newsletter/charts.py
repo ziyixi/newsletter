@@ -8,15 +8,17 @@ The font path is deployment configuration, never supplied by a draft.
 
 from __future__ import annotations
 
+import decimal
 import io
 import os
-from decimal import Decimal, localcontext
-from pathlib import Path
+import pathlib
 from typing import cast
 
-from PIL import Image, ImageDraw, ImageFont
+import PIL.Image as Image
+import PIL.ImageDraw as ImageDraw
+import PIL.ImageFont as ImageFont
 
-from .types import Payload
+import newsletter.types as types
 
 _INK = "#24332e"
 _MUTED = "#64716b"
@@ -26,7 +28,7 @@ _PAPER = "#ffffff"
 
 
 def load_font(size: int) -> ImageFont.FreeTypeFont:
-    """Load a CJK font; an explicitly configured missing path must fail closed."""
+    """Load a CJK font, failing closed for an unavailable configured path."""
     configured = os.environ.get("NEWSLETTER_CHART_FONT")
     candidates = (
         [configured]
@@ -39,12 +41,13 @@ def load_font(size: int) -> ImageFont.FreeTypeFont:
         ]
     )
     for candidate in candidates:
-        if candidate and Path(candidate).is_file():
+        if candidate and pathlib.Path(candidate).is_file():
             return ImageFont.truetype(
                 candidate, size, layout_engine=ImageFont.Layout.BASIC
             )
     raise ValueError(
-        "CHART_FONT_UNAVAILABLE: install fonts-noto-cjk or set NEWSLETTER_CHART_FONT"
+        "CHART_FONT_UNAVAILABLE: install fonts-noto-cjk or set "
+        "NEWSLETTER_CHART_FONT"
     )
 
 
@@ -83,7 +86,7 @@ def _lines(
     return y
 
 
-def _tick(value: Decimal) -> str:
+def _tick(value: decimal.Decimal) -> str:
     if value == 0:
         return "0"
     if -3 <= value.adjusted() <= 6:
@@ -91,8 +94,8 @@ def _tick(value: Decimal) -> str:
     return format(value, ".2E")
 
 
-def chart_metadata(chart: Payload) -> str:
-    """Describe the measure without repeating a unit already written in its name.
+def chart_metadata(chart: types.Payload) -> str:
+    """Describe the measure without repeating units included in its name.
 
     This is typography only. In particular, the renderer cannot infer whether a
     large effect, percentage or score is good, or invent a comparison baseline.
@@ -106,8 +109,160 @@ def chart_metadata(chart: Payload) -> str:
     return f"指标：{measure} · 范围：{chart['period']}"
 
 
-def render_chart_png(chart: Payload, is_fixture: bool) -> bytes:
-    """Render a self-contained figure; preserve the supplied explanation verbatim.
+def _draw_bars(
+    draw: ImageDraw.ImageDraw,
+    values: list[decimal.Decimal | None],
+    observed: list[decimal.Decimal],
+    label_lines: list[list[str]],
+    row_heights: list[float],
+    header: float,
+    width: int,
+    label_font: ImageFont.FreeTypeFont,
+    axis_font: ImageFont.FreeTypeFont,
+) -> None:
+    lower, upper = (
+        min(decimal.Decimal(0), min(observed)),
+        max(decimal.Decimal(0), max(observed)),
+    )
+    if upper == lower:
+        upper = decimal.Decimal(1)
+    left, right = 350, 1150
+
+    def to_x(value: decimal.Decimal) -> float:
+        return left + float((value - lower) / (upper - lower)) * (right - left)
+
+    baseline = to_x(decimal.Decimal(0))
+    bottom = header + sum(row_heights)
+    for index in range(5):
+        value = lower + (upper - lower) * decimal.Decimal(index) / 4
+        x = to_x(value)
+        draw.line((x, header, x, bottom), fill="#e5e8df", width=2)
+        label = _tick(value)
+        draw.text(
+            (
+                x - draw.textlength(label, font=axis_font) / 2,
+                bottom + 18,
+            ),
+            label,
+            font=axis_font,
+            fill=_MUTED,
+        )
+    draw.line((baseline, header, baseline, bottom), fill=_INK, width=3)
+    y = header
+    for observed_value, labels, row_height in zip(
+        values, label_lines, row_heights, strict=True
+    ):
+        _lines(draw, labels, (60, y + 15), label_font)
+        middle = y + row_height / 2
+        if observed_value is None:
+            draw.text(
+                (left + 20, middle - 19),
+                "缺失 · 未作零值",
+                font=label_font,
+                fill=_MUTED,
+            )
+        elif observed_value == 0:
+            draw.ellipse(
+                (baseline - 5, middle - 5, baseline + 5, middle + 5),
+                fill=_GREEN,
+            )
+            draw.text(
+                (baseline + 13, middle - 19),
+                "0",
+                font=label_font,
+                fill=_GREEN,
+            )
+        else:
+            x = to_x(observed_value)
+            draw.rectangle(
+                (
+                    min(baseline, x),
+                    middle - 20,
+                    max(baseline, x),
+                    middle + 20,
+                ),
+                fill=_GREEN if observed_value > 0 else _RUST,
+            )
+            label = _tick(observed_value)
+            label_width = draw.textlength(label, font=axis_font)
+            label_x = x + 10 if observed_value > 0 else x - label_width - 10
+            label_x = max(left, min(label_x, width - label_width - 24))
+            draw.text((label_x, middle - 18), label, font=axis_font, fill=_INK)
+        y += row_height
+
+
+def _draw_line(
+    draw: ImageDraw.ImageDraw,
+    values: list[decimal.Decimal | None],
+    observed: list[decimal.Decimal],
+    header: float,
+    line_labels: dict[int, list[str]],
+    axis_font: ImageFont.FreeTypeFont,
+) -> None:
+    low, high = min(observed), max(observed)
+    if low == high:
+        margin = abs(low) / 10 if low else decimal.Decimal(1)
+    else:
+        margin = (high - low) / 10
+    lower, upper = low - margin, high + margin
+    left, right, top, bottom = 150, 1190, header + 25, header + 380
+
+    def to_y(value: decimal.Decimal) -> float:
+        return bottom - float((value - lower) / (upper - lower)) * (
+            bottom - top
+        )
+
+    def line_x(index: int) -> float:
+        return (
+            (left + right) / 2
+            if len(values) == 1
+            else left + index / (len(values) - 1) * (right - left)
+        )
+
+    for index in range(5):
+        value = lower + (upper - lower) * decimal.Decimal(index) / 4
+        y = to_y(value)
+        draw.line((left, y, right, y), fill="#e5e8df", width=2)
+        label = _tick(value)
+        draw.text(
+            (
+                left - draw.textlength(label, font=axis_font) - 16,
+                y - 18,
+            ),
+            label,
+            font=axis_font,
+            fill=_MUTED,
+        )
+    previous = None
+    for index, line_value in enumerate(values):
+        x = line_x(index)
+        if line_value is None:
+            previous = None
+            draw.text(
+                (x - 26, bottom + 10),
+                "缺失",
+                font=axis_font,
+                fill=_RUST,
+            )
+        else:
+            y = to_y(line_value)
+            if previous is not None:
+                draw.line((*previous, x, y), fill=_GREEN, width=5)
+            draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=_GREEN)
+            previous = (x, y)
+        if index in line_labels:
+            _lines(
+                draw,
+                line_labels[index],
+                (max(24, min(x - 60, 1110)), bottom + 53),
+                axis_font,
+                _MUTED,
+                4,
+            )
+
+
+def render_chart_png(chart: types.Payload, is_fixture: bool) -> bytes:
+    """Render a self-contained figure with the supplied explanation verbatim.
 
     Editorial context belongs in the image, not only in the surrounding email.
     All text is measured before allocating the canvas; long supplied text grows
@@ -117,7 +272,7 @@ def render_chart_png(chart: Payload, is_fixture: bool) -> bytes:
     if not 1 <= len(points) <= 32:
         raise ValueError("CHART_SIZE_UNSUPPORTED: chart requires 1–32 points")
     values = [
-        Decimal(p["decimal_value"]) if "decimal_value" in p else None
+        decimal.Decimal(p["decimal_value"]) if "decimal_value" in p else None
         for p in points
     ]
     observed = [v for v in values if v is not None]
@@ -195,159 +350,36 @@ def render_chart_png(chart: Payload, is_fixture: bool) -> bytes:
         )
     )
     height += 76 if is_fixture else 28
-    # All font sizes passed to load_font are integers; Pillow annotates size as float.
+    # Font sizes passed to load_font are integers; Pillow types them as float.
     image = Image.new("RGB", (width, cast(int, height)), _PAPER)
     draw = ImageDraw.Draw(image)
     y = _lines(draw, title_lines, (60, 34), title_font) + 18
     if caption_lines:
         y = _lines(draw, caption_lines, (60, y), caption_font) + 18
     _lines(draw, metadata_lines, (60, y), detail_font, _MUTED)
-    with localcontext() as context:
+    with decimal.localcontext() as context:
         context.prec = 100
         if chart["kind"] == "bar":
-            lower, upper = (
-                min(Decimal(0), min(observed)),
-                max(Decimal(0), max(observed)),
+            _draw_bars(
+                draw,
+                values,
+                observed,
+                label_lines,
+                row_heights,
+                header,
+                width,
+                label_font,
+                axis_font,
             )
-            if upper == lower:
-                upper = Decimal(1)
-            left, right = 350, 1150
-
-            def to_x(value: Decimal) -> float:
-                return left + float((value - lower) / (upper - lower)) * (
-                    right - left
-                )
-
-            baseline = to_x(Decimal(0))
-            bottom = header + sum(row_heights)
-            for index in range(5):
-                value = lower + (upper - lower) * Decimal(index) / 4
-                x = to_x(value)
-                draw.line((x, header, x, bottom), fill="#e5e8df", width=2)
-                label = _tick(value)
-                draw.text(
-                    (
-                        x - draw.textlength(label, font=axis_font) / 2,
-                        bottom + 18,
-                    ),
-                    label,
-                    font=axis_font,
-                    fill=_MUTED,
-                )
-            draw.line((baseline, header, baseline, bottom), fill=_INK, width=3)
-            y = header
-            for point, observed_value, labels, row_height in zip(
-                points, values, label_lines, row_heights
-            ):
-                _lines(draw, labels, (60, y + 15), label_font)
-                middle = y + row_height / 2
-                if observed_value is None:
-                    draw.text(
-                        (left + 20, middle - 19),
-                        "缺失 · 未作零值",
-                        font=label_font,
-                        fill=_MUTED,
-                    )
-                elif observed_value == 0:
-                    draw.ellipse(
-                        (baseline - 5, middle - 5, baseline + 5, middle + 5),
-                        fill=_GREEN,
-                    )
-                    draw.text(
-                        (baseline + 13, middle - 19),
-                        "0",
-                        font=label_font,
-                        fill=_GREEN,
-                    )
-                else:
-                    x = to_x(observed_value)
-                    draw.rectangle(
-                        (
-                            min(baseline, x),
-                            middle - 20,
-                            max(baseline, x),
-                            middle + 20,
-                        ),
-                        fill=_GREEN if observed_value > 0 else _RUST,
-                    )
-                    label = _tick(observed_value)
-                    label_width = draw.textlength(label, font=axis_font)
-                    label_x = (
-                        x + 10 if observed_value > 0 else x - label_width - 10
-                    )
-                    label_x = max(left, min(label_x, width - label_width - 24))
-                    draw.text(
-                        (label_x, middle - 18), label, font=axis_font, fill=_INK
-                    )
-                y += row_height
         else:
-            low, high = min(observed), max(observed)
-            if low == high:
-                margin = abs(low) / 10 if low else Decimal(1)
-            else:
-                margin = (high - low) / 10
-            lower, upper = low - margin, high + margin
-            left, right, top, bottom = 150, 1190, header + 25, header + 380
-
-            def to_y(value: Decimal) -> float:
-                return bottom - float((value - lower) / (upper - lower)) * (
-                    bottom - top
-                )
-
-            def line_x(index: int) -> float:
-                return (
-                    (left + right) / 2
-                    if len(points) == 1
-                    else left + index / (len(points) - 1) * (right - left)
-                )
-
-            for index in range(5):
-                value = lower + (upper - lower) * Decimal(index) / 4
-                y = to_y(value)
-                draw.line((left, y, right, y), fill="#e5e8df", width=2)
-                label = _tick(value)
-                draw.text(
-                    (
-                        left - draw.textlength(label, font=axis_font) - 16,
-                        y - 18,
-                    ),
-                    label,
-                    font=axis_font,
-                    fill=_MUTED,
-                )
-            previous = None
-            for index, (point, line_value) in enumerate(zip(points, values)):
-                x = line_x(index)
-                if line_value is None:
-                    previous = None
-                    draw.text(
-                        (x - 26, bottom + 10),
-                        "缺失",
-                        font=axis_font,
-                        fill=_RUST,
-                    )
-                else:
-                    y = to_y(line_value)
-                    if previous is not None:
-                        draw.line((*previous, x, y), fill=_GREEN, width=5)
-                    draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=_GREEN)
-                    previous = (x, y)
-                if index in line_labels:
-                    _lines(
-                        draw,
-                        line_labels[index],
-                        (max(24, min(x - 60, 1110)), bottom + 53),
-                        axis_font,
-                        _MUTED,
-                        4,
-                    )
+            _draw_line(draw, values, observed, header, line_labels, axis_font)
     y = plot_end + 20
     draw.line((60, y - 10, width - 60, y - 10), fill="#e5e8df", width=2)
     for lines in footer_lines:
         y = _lines(draw, lines, (60, y), detail_font, _MUTED) + 12
     if is_fixture:
         label = "模拟数据 · 试刊样张"
-        # Default text coordinates include font-specific ascent/descender offsets.
+        # Default text coordinates include font-specific vertical offsets.
         # Anchor the visible glyph bounds, not a guessed offset from the canvas.
         _, _, label_right, label_bottom = draw.textbbox(
             (0, 0), label, font=axis_font

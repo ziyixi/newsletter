@@ -1,7 +1,7 @@
 """Dependency-free scheduler client, also runnable as a standalone Python file.
 
 By default only enqueue a run. --wait observes it; --send authorizes its frozen
-ready edition. Never retry a POST within one invocation. After an uncertain result
+ready edition. Never retry a POST within one invocation. After uncertainty,
 resume with the same issue date/request key: the server's durable records and
 one-delivery-attempt-per-date guard are authoritative. No environment files or
 provider credentials are loaded. Provider acceptance is not inbox delivery.
@@ -10,20 +10,20 @@ provider credentials are loaded. Provider acceptance is not inbox delivery.
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import datetime
 import hashlib
 import json
 import os
 import re
 import signal
 import time
-import urllib.error
-import urllib.request
-from dataclasses import dataclass, field
-from datetime import date, datetime
-from types import FrameType
+import types
 from typing import cast
-from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+import urllib.error as error
+import urllib.parse as parse
+import urllib.request as urllib_request
+import zoneinfo
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
@@ -44,24 +44,29 @@ class TriggerError(Exception):
     """Only credential-free messages may cross the CLI boundary."""
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
+class NoRedirect(urllib_request.HTTPRedirectHandler):
+    """Refuse redirects so bearer credentials stay on the configured origin."""
+
     def redirect_request(
         self,
-        req: urllib.request.Request,
+        req: urllib_request.Request,
         fp: object,
         code: int,
         msg: str,
         headers: object,
         newurl: str,
     ) -> None:
-        return None
+        """Never construct a follow-up request for a redirection response."""
+        return
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class Config:
+    """Validated scheduler options with credential fields excluded from repr."""
+
     origin: str
-    editor_token: str = field(repr=False)
-    send_token: str = field(repr=False)
+    editor_token: str = dataclasses.field(repr=False)
+    send_token: str = dataclasses.field(repr=False)
     issue_date: str
     request_key: str
     wait: bool
@@ -71,10 +76,11 @@ class Config:
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> Config:
+        """Read explicit process settings without loading environment files."""
         origin = os.environ.get("NEWSLETTER_SERVICE_URL", "").rstrip("/")
         allow_internal = os.environ.get("NEWSLETTER_ALLOW_INTERNAL_HTTP", "0")
         try:
-            parsed = urlsplit(origin)
+            parsed = parse.urlsplit(origin)
             valid = (
                 bool(parsed.hostname)
                 and parsed.port != 0
@@ -93,8 +99,10 @@ class Config:
             valid = False
         if not valid:
             raise TriggerError(
-                "NEWSLETTER_SERVICE_URL must be a fixed HTTPS origin; only exact "
-                "http://newsletter:8080 is allowed with NEWSLETTER_ALLOW_INTERNAL_HTTP=1"
+                "NEWSLETTER_SERVICE_URL must be a fixed HTTPS origin; only "
+                "exact "
+                "http://newsletter:8080 is allowed with "
+                "NEWSLETTER_ALLOW_INTERNAL_HTTP=1"
             )
 
         def token(name: str) -> str:
@@ -112,16 +120,19 @@ class Config:
         if args.send and send_token == editor_token:
             raise TriggerError("Editor and send tokens must be distinct")
         try:
-            zone = ZoneInfo(
+            zone = zoneinfo.ZoneInfo(
                 os.environ.get("NEWSLETTER_TIME_ZONE", "America/Los_Angeles")
             )
             issue_date = (
                 os.environ.get("NEWSLETTER_ISSUE_DATE")
-                or datetime.now(zone).date().isoformat()
+                or datetime.datetime.now(zone).date().isoformat()
             )
-            if date.fromisoformat(issue_date).isoformat() != issue_date:
+            if (
+                datetime.date.fromisoformat(issue_date).isoformat()
+                != issue_date
+            ):
                 raise ValueError
-        except (ValueError, ZoneInfoNotFoundError):
+        except (ValueError, zoneinfo.ZoneInfoNotFoundError):
             raise TriggerError(
                 "Configure a valid issue date and IANA time zone"
             ) from None
@@ -225,63 +236,86 @@ def _edition(
     return render_hash, delivery
 
 
-def execute(config: Config) -> dict[str, str]:
-    deadline = time.monotonic() + config.timeout
-    client = urllib.request.build_opener(
-        NoRedirect(), urllib.request.ProxyHandler({})
-    )
+class _Transport:
+    """Keep one deadline and one non-proxy, non-redirecting HTTP client."""
 
-    def remaining() -> float:
-        value = deadline - time.monotonic()
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self.deadline = time.monotonic() + config.timeout
+        self.client = urllib_request.build_opener(
+            NoRedirect(), urllib_request.ProxyHandler({})
+        )
+
+    def remaining(self) -> float:
+        """Return the shared time budget without resetting between requests."""
+        value = self.deadline - time.monotonic()
         if value <= 0:
             raise TriggerError(
-                "Trigger deadline exceeded; resume only with the same date/request key"
+                "Trigger deadline exceeded; resume only with the same "
+                "date/request key"
             )
         return value
 
     def request(
+        self,
         path: str,
         *,
         payload: dict[str, str] | None = None,
         sending: bool = False,
     ) -> dict[str, object]:
+        """Perform one request; transport ambiguity never causes a retry."""
         data = json.dumps(payload).encode() if payload is not None else None
-        req = urllib.request.Request(
-            config.origin + path,
+        req = urllib_request.Request(
+            self.config.origin + path,
             data=data,
             method="POST" if data is not None else "GET",
             headers={
                 "Content-Type": "application/json",
                 "Authorization": "Bearer "
-                + (config.send_token if sending else config.editor_token),
+                + (
+                    self.config.send_token
+                    if sending
+                    else self.config.editor_token
+                ),
             },
         )
-        phase = (
-            "Send" if sending else ("Trigger" if data is not None else "Read")
-        )
-        timeout = min(45 if sending else 30, remaining())
+        if sending:
+            phase = "Send"
+        elif data is not None:
+            phase = "Trigger"
+        else:
+            phase = "Read"
+        timeout = min(45 if sending else 30, self.remaining())
         try:
-            with client.open(req, timeout=timeout) as response:
+            with self.client.open(req, timeout=timeout) as response:
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
             if len(raw) > _MAX_RESPONSE_BYTES:
                 raise ValueError("Response too large")
             return _object(json.loads(raw, object_pairs_hook=_unique_object))
         except TriggerError:
             raise
-        except urllib.error.HTTPError as exc:
+        except error.HTTPError as exc:
             outcome = "not confirmed" if sending else "rejected"
             raise TriggerError(
                 f"{phase} {outcome} (HTTP {exc.code}); no automatic retry"
             ) from None
-        except Exception:
+        # This standalone CLI is the final transport boundary. Its only safe
+        # outcome for an unexpected read failure is an explicit unknown result.
+        except Exception:  # noqa: BLE001
             guidance = (
-                "inspect the edition before resuming with the same date/request key; never change keys"
+                "inspect the edition before resuming with the same "
+                "date/request key; never change keys"
                 if sending
                 else "retry only with the same request key"
             )
             raise TriggerError(f"{phase} outcome unknown; {guidance}") from None
 
-    raw_run = request(
+
+def execute(config: Config) -> dict[str, str]:
+    """Enqueue once, optionally observe, and authorize at most one send."""
+    transport = _Transport(config)
+
+    raw_run = transport.request(
         "/v1/runs",
         payload={
             "request_key": config.request_key,
@@ -304,12 +338,13 @@ def execute(config: Config) -> dict[str, str]:
             )
         if result["state"] in {"blocked", "failed"}:
             raise TriggerError(
-                f"Run {result['state']}; not sending or creating a replacement run"
+                f"Run {result['state']}; "
+                "not sending or creating a replacement run"
             )
         if result["state"] == "ready":
             break
-        time.sleep(min(config.poll_interval, remaining()))
-        raw_run = request("/v1/runs/" + run_id)
+        time.sleep(min(config.poll_interval, transport.remaining()))
+        raw_run = transport.request("/v1/runs/" + run_id)
         try:
             result = _run(raw_run, config)
             if (
@@ -327,7 +362,9 @@ def execute(config: Config) -> dict[str, str]:
             "Ready run has no valid edition ID; not sending"
         ) from None
     path = "/v1/editions/" + edition_id
-    render_hash, delivery = _edition(request(path), edition_id, config)
+    render_hash, delivery = _edition(
+        transport.request(path), edition_id, config
+    )
     result.update(
         edition_id=edition_id, render_hash=render_hash, delivery_state=delivery
     )
@@ -340,7 +377,7 @@ def execute(config: Config) -> dict[str, str]:
                 json.dumps([config.issue_date, config.request_key]).encode()
             ).hexdigest()
         )
-        sent = request(
+        sent = transport.request(
             path + "/send",
             sending=True,
             payload={
@@ -357,12 +394,14 @@ def execute(config: Config) -> dict[str, str]:
         result["delivery_state"] = delivery
     if delivery != "provider_accepted":
         raise TriggerError(
-            f"Delivery state {delivery}; no further send attempted; inspect the existing edition"
+            f"Delivery state {delivery}; "
+            "no further send attempted; inspect the existing edition"
         )
     return result
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Run the scheduler with a process-wide deadline and safe diagnostics."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--wait",
@@ -390,9 +429,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    def expired(signum: int, frame: FrameType | None) -> None:
+    def expired(signum: int, frame: types.FrameType | None) -> None:
         raise TriggerError(
-            "Trigger deadline exceeded; resume only with the same date/request key"
+            "Trigger deadline exceeded; resume only with the same "
+            "date/request key"
         )
 
     try:
@@ -404,7 +444,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
             )
             return
-        # POSIX cron runtime: this also bounds DNS resolution and trickling reads,
+        # POSIX timer also bounds DNS resolution and trickling reads,
         # unlike socket timeouts alone. No send retry occurs after interruption.
         previous = signal.signal(signal.SIGALRM, expired)
         signal.setitimer(signal.ITIMER_REAL, config.timeout)

@@ -7,22 +7,21 @@ the truth of an article. URL checks do not perform DNS or network requests.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+import datetime
+import decimal
 import hashlib
 import ipaddress
 import json
 import re
-from collections.abc import Mapping, Sequence
-from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
-from typing import Any, NoReturn, TypeVar, cast
-from urllib.parse import unquote, urlsplit
+from typing import Any, cast, NoReturn
+import urllib.parse as parse
 
-from google.protobuf import json_format
-from google.protobuf.descriptor import Descriptor, FieldDescriptor
-from google.protobuf.message import Message
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import google.protobuf.descriptor as google_protobuf_descriptor
+import google.protobuf.json_format as json_format
+import google.protobuf.message as google_protobuf_message
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-M = TypeVar("M", bound=Message)
 MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 MAX_PACKET_BYTES = 1024 * 1024
 MAX_PACKETS = 32
@@ -64,8 +63,8 @@ def _fail(code: str, message: str) -> NoReturn:
     raise ContractError(code, message)
 
 
-def to_dict(message: Message) -> dict[str, Any]:
-    """ProtoJSON with snake_case names and explicit non-presence scalar defaults."""
+def to_dict(message: google_protobuf_message.Message) -> dict[str, Any]:
+    """Convert to snake_case ProtoJSON with explicit scalar defaults."""
     return json_format.MessageToDict(
         message,
         preserving_proto_field_name=True,
@@ -75,7 +74,7 @@ def to_dict(message: Message) -> dict[str, Any]:
 
 def canonical_json(value: Any) -> str:
     """Canonical application JSON, not canonical protobuf wire serialization."""
-    if isinstance(value, Message):
+    if isinstance(value, google_protobuf_message.Message):
         value = to_dict(value)
     try:
         return json.dumps(
@@ -92,6 +91,7 @@ def canonical_json(value: Any) -> str:
 
 
 def content_hash(value: Any) -> str:
+    """Hash canonical application JSON, independent of mapping key order."""
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
@@ -108,7 +108,9 @@ def _reject_constant(_: str) -> None:
     _fail("INVALID_JSON", "Non-finite JSON numbers are not allowed")
 
 
-def _check_names(data: Any, descriptor: Descriptor, depth: int = 0) -> None:
+def _check_names(
+    data: Any, descriptor: google_protobuf_descriptor.Descriptor, depth: int = 0
+) -> None:
     if depth > 32 or not isinstance(data, Mapping):
         _fail("INVALID_ARGUMENT", "A message must be a bounded JSON object")
     for name, value in data.items():
@@ -118,23 +120,36 @@ def _check_names(data: Any, descriptor: Descriptor, depth: int = 0) -> None:
                 "INVALID_ARGUMENT",
                 f"Unknown or non-snake_case field in {descriptor.name}",
             )
-        if field.type != FieldDescriptor.TYPE_MESSAGE or value is None:
+        if (
+            field.type
+            != google_protobuf_descriptor.FieldDescriptor.TYPE_MESSAGE
+            or value is None
+        ):
             continue
         if field.is_repeated:
             if not isinstance(value, list):
                 _fail("INVALID_ARGUMENT", f"{name} must be a JSON array")
             for item in value:
                 _check_names(
-                    item, cast(Descriptor, field.message_type), depth + 1
+                    item,
+                    cast(
+                        google_protobuf_descriptor.Descriptor,
+                        field.message_type,
+                    ),
+                    depth + 1,
                 )
         else:
-            _check_names(value, cast(Descriptor, field.message_type), depth + 1)
+            _check_names(
+                value,
+                cast(google_protobuf_descriptor.Descriptor, field.message_type),
+                depth + 1,
+            )
 
 
-def parse_message(
+def parse_message[M: google_protobuf_message.Message](
     data: Mapping[str, Any] | str | bytes, message_type: type[M]
 ) -> M:
-    """Parse only declared snake_case fields; semantic checks are explicit below."""
+    """Parse declared snake_case fields without inferring semantic validity."""
     try:
         if isinstance(data, (str, bytes)):
             if (
@@ -147,7 +162,12 @@ def parse_message(
                 object_pairs_hook=_unique_object,
                 parse_constant=_reject_constant,
             )
-        _check_names(data, cast(Descriptor, message_type.DESCRIPTOR))
+        _check_names(
+            data,
+            cast(
+                google_protobuf_descriptor.Descriptor, message_type.DESCRIPTOR
+            ),
+        )
         if len(canonical_json(data).encode("utf-8")) > MAX_MESSAGE_BYTES:
             _fail("TOO_LARGE", "Message exceeds the byte limit")
         return json_format.ParseDict(
@@ -170,10 +190,13 @@ def parse_message(
         ) from exc
 
 
-def _coerce(value: Mapping[str, Any] | Message, message_type: type[M]) -> M:
+def _coerce[M: google_protobuf_message.Message](
+    value: Mapping[str, Any] | google_protobuf_message.Message,
+    message_type: type[M],
+) -> M:
     if isinstance(value, message_type):
         return value
-    if isinstance(value, Message):
+    if isinstance(value, google_protobuf_message.Message):
         _fail("INVALID_ARGUMENT", f"Expected {message_type.DESCRIPTOR.name}")
     return parse_message(value, message_type)
 
@@ -214,10 +237,11 @@ def _request_key(value: str) -> None:
 
 
 def validate_issue_date(value: str) -> None:
+    """Require an exact YYYY-MM-DD spelling for a valid calendar date."""
     try:
         valid = (
             bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value))
-            and date.fromisoformat(value).isoformat() == value
+            and datetime.date.fromisoformat(value).isoformat() == value
         )
     except ValueError:
         valid = False
@@ -228,17 +252,17 @@ def validate_issue_date(value: str) -> None:
 def validate_public_url(value: str) -> None:
     """Reject unsafe URL syntax and literal/local hosts, without resolving DNS.
 
-    Any future network fetcher must additionally validate resolved connection IPs
-    and every redirect; accepting a domain here is not an SSRF-safe fetch permit.
+    Future fetchers must also validate resolved connection IPs
+    and redirects; domain acceptance is not an SSRF-safe fetch permit.
     """
     try:
         if len(value) > 2048 or not value or value != value.strip():
             raise ValueError
         if "\\" in value or any(ord(c) <= 32 or ord(c) == 127 for c in value):
             raise ValueError
-        if any(ord(c) < 32 or ord(c) == 127 for c in unquote(value)):
+        if any(ord(c) < 32 or ord(c) == 127 for c in parse.unquote(value)):
             raise ValueError
-        parsed = urlsplit(value)
+        parsed = parse.urlsplit(value)
         if (
             parsed.scheme not in {"http", "https"}
             or parsed.username is not None
@@ -258,7 +282,7 @@ def validate_public_url(value: str) -> None:
                 for label in ascii_host.split(".")
             )
             if len(ascii_host) > 253 or "." not in ascii_host or numeric_host:
-                raise ValueError
+                raise ValueError from None
             if ascii_host.endswith(
                 (
                     ".localhost",
@@ -268,11 +292,11 @@ def validate_public_url(value: str) -> None:
                     ".localdomain",
                 )
             ):
-                raise ValueError
+                raise ValueError from None
             if not all(
                 _HOST_LABEL.fullmatch(label) for label in ascii_host.split(".")
             ):
-                raise ValueError
+                raise ValueError from None
         else:
             if not address.is_global:
                 raise ValueError
@@ -282,8 +306,11 @@ def validate_public_url(value: str) -> None:
         ) from exc
 
 
-def validate_packet_body(body: Mapping[str, Any] | Message) -> None:
-    packet = _coerce(body, pb.PacketBody)
+def validate_packet_body(
+    body: Mapping[str, Any] | google_protobuf_message.Message,
+) -> None:
+    """Validate packet size, source identities, URLs and evidence metadata."""
+    packet = _coerce(body, editorial_pb2.PacketBody)
     if packet.ByteSize() > MAX_PACKET_BYTES:
         _fail("TOO_LARGE", "Packet exceeds the byte limit")
     _text(packet.title, "packet.title", 300, single_line=True)
@@ -307,7 +334,7 @@ def validate_packet_body(body: Mapping[str, Any] | Message) -> None:
             try:
                 if len(source.published_at) > 40:
                     raise ValueError
-                datetime.fromisoformat(
+                datetime.datetime.fromisoformat(
                     source.published_at.replace("Z", "+00:00")
                 )
             except ValueError as exc:
@@ -333,14 +360,15 @@ def _citations(values: Sequence[str], known: set[str]) -> None:
             )
 
 
-def validate_decimal(value: str) -> Decimal:
+def validate_decimal(value: str) -> decimal.Decimal:
+    """Parse a finite chart decimal within the supported precision range."""
     if len(value) > 64 or not _DECIMAL.fullmatch(value):
         _fail("INVALID_NUMBER", "Chart values must be finite decimal strings")
     try:
-        number = Decimal(value)
+        number = decimal.Decimal(value)
         if not number.is_finite() or (number and abs(number.adjusted()) > 100):
-            raise InvalidOperation
-    except InvalidOperation as exc:
+            raise decimal.InvalidOperation
+    except decimal.InvalidOperation as exc:
         raise ContractError(
             "INVALID_NUMBER", "Chart value is outside supported finite range"
         ) from exc
@@ -348,16 +376,17 @@ def validate_decimal(value: str) -> Decimal:
 
 
 def validate_draft(
-    draft: Mapping[str, Any] | Message,
-    packets: Sequence[Mapping[str, Any] | Message],
+    draft: Mapping[str, Any] | google_protobuf_message.Message,
+    packets: Sequence[Mapping[str, Any] | google_protobuf_message.Message],
 ) -> None:
-    article = _coerce(draft, pb.Draft)
+    """Validate a draft against its exact packet IDs, sources and chart data."""
+    article = _coerce(draft, editorial_pb2.Draft)
     if not 1 <= len(packets) <= MAX_PACKETS:
         _fail("INVALID_ARGUMENT", f"Draft requires 1..{MAX_PACKETS} packets")
     known: set[str] = set()
     packet_ids: set[str] = set()
     for value in packets:
-        packet = _coerce(value, pb.Packet)
+        packet = _coerce(value, editorial_pb2.Packet)
         _identifier(packet.id, "packet.id")
         if packet.id in packet_ids:
             _fail("INVALID_ARGUMENT", "Duplicate packet IDs")
@@ -383,42 +412,7 @@ def validate_draft(
             _text(paragraph.text, "paragraph.text", 8000)
             _citations(paragraph.citations, known)
     if article.HasField("chart"):
-        chart = article.chart
-        if chart.kind not in CHART_KINDS:
-            _fail("INVALID_ARGUMENT", "Unsupported chart kind")
-        for name in (
-            "question",
-            "metric",
-            "unit",
-            "period",
-            "caption",
-            "alt_text",
-        ):
-            _text(getattr(chart, name), f"chart.{name}", 1000)
-        _text(chart.limitations, "chart.limitations", 4000, required=False)
-        if not 1 <= len(chart.points) <= MAX_CHART_POINTS:
-            _fail("INVALID_ARGUMENT", "Invalid chart point count")
-        has_value = False
-        for point in chart.points:
-            _text(point.label, "chart.point.label", 120, single_line=True)
-            _citations(point.citations, known)
-            if point.WhichOneof("observation") == "decimal_value":
-                validate_decimal(point.decimal_value)
-                if not point.citations:
-                    _fail(
-                        "INVALID_CITATION",
-                        "Numeric chart points require a citation",
-                    )
-                has_value = True
-            elif point.WhichOneof("observation") == "missing_reason":
-                _text(point.missing_reason, "missing_reason", 500)
-            else:
-                _fail(
-                    "INVALID_NUMBER",
-                    "Chart point needs a value or a missing reason",
-                )
-        if not has_value:
-            _fail("INVALID_NUMBER", "A chart must contain a non-missing value")
+        _validate_chart(article.chart, known)
     if article.HasField("recommended_reading"):
         _citations(
             [
@@ -436,8 +430,42 @@ def validate_draft(
         _fail("TOO_LARGE", "Draft exceeds the byte limit")
 
 
-def validate_render_request(request: Mapping[str, Any] | Message) -> None:
-    value = _coerce(request, pb.RenderEditionRequest)
+def _validate_chart(chart: editorial_pb2.Chart, known: set[str]) -> None:
+    if chart.kind not in CHART_KINDS:
+        _fail("INVALID_ARGUMENT", "Unsupported chart kind")
+    for name in ("question", "metric", "unit", "period", "caption", "alt_text"):
+        _text(getattr(chart, name), f"chart.{name}", 1000)
+    _text(chart.limitations, "chart.limitations", 4000, required=False)
+    if not 1 <= len(chart.points) <= MAX_CHART_POINTS:
+        _fail("INVALID_ARGUMENT", "Invalid chart point count")
+    has_value = False
+    for point in chart.points:
+        _text(point.label, "chart.point.label", 120, single_line=True)
+        _citations(point.citations, known)
+        if point.WhichOneof("observation") == "decimal_value":
+            validate_decimal(point.decimal_value)
+            if not point.citations:
+                _fail(
+                    "INVALID_CITATION",
+                    "Numeric chart points require a citation",
+                )
+            has_value = True
+        elif point.WhichOneof("observation") == "missing_reason":
+            _text(point.missing_reason, "missing_reason", 500)
+        else:
+            _fail(
+                "INVALID_NUMBER",
+                "Chart point needs a value or a missing reason",
+            )
+    if not has_value:
+        _fail("INVALID_NUMBER", "A chart must contain a non-missing value")
+
+
+def validate_render_request(
+    request: Mapping[str, Any] | google_protobuf_message.Message,
+) -> None:
+    """Validate a render request and every included public/private section."""
+    value = _coerce(request, editorial_pb2.RenderEditionRequest)
     if value.ByteSize() > MAX_MESSAGE_BYTES:
         _fail("TOO_LARGE", "Render request exceeds the byte limit")
     validate_issue_date(value.issue_date)
@@ -446,8 +474,11 @@ def validate_render_request(request: Mapping[str, Any] | Message) -> None:
         validate_personal_digest(value.personal_digest)
 
 
-def validate_personal_digest(value: Mapping[str, Any] | Message) -> None:
-    digest = _coerce(value, pb.PersonalDigest)
+def validate_personal_digest(
+    value: Mapping[str, Any] | google_protobuf_message.Message,
+) -> None:
+    """Validate digest state, bounded private text and ranked event items."""
+    digest = _coerce(value, editorial_pb2.PersonalDigest)
     if digest.state not in {"current", "empty", "unavailable", "disabled"}:
         _fail("INVALID_ARGUMENT", "Invalid personal digest state")
     _text(digest.title, "personal_digest.title", 200, single_line=True)
@@ -491,7 +522,7 @@ def validate_personal_digest(value: Mapping[str, Any] | Message) -> None:
         )
     if digest.fetched_at:
         try:
-            parsed = datetime.fromisoformat(
+            parsed = datetime.datetime.fromisoformat(
                 digest.fetched_at.replace("Z", "+00:00")
             )
             if len(digest.fetched_at) > 40 or parsed.tzinfo is None:
@@ -503,22 +534,22 @@ def validate_personal_digest(value: Mapping[str, Any] | Message) -> None:
             )
 
 
-def validate_request(message: Message) -> None:
+def validate_request(message: google_protobuf_message.Message) -> None:
     """Validate public requests; does not perform authentication."""
-    if isinstance(message, pb.StartRunRequest):
+    if isinstance(message, editorial_pb2.StartRunRequest):
         _request_key(message.request_key)
         validate_issue_date(message.issue_date)
-    elif isinstance(message, pb.GetRunRequest):
+    elif isinstance(message, editorial_pb2.GetRunRequest):
         _identifier(message.id, "run.id")
-    elif isinstance(message, pb.PutPacketRequest):
+    elif isinstance(message, editorial_pb2.PutPacketRequest):
         _request_key(message.request_key)
         _identifier(message.workflow_id, "workflow_id")
         validate_packet_body(message.content)
-    elif isinstance(message, pb.ReadInboxRequest):
+    elif isinstance(message, editorial_pb2.ReadInboxRequest):
         if message.limit > 100:
             _fail("INVALID_ARGUMENT", "limit must be 0 (default) or 1..100")
         _text(message.cursor, "cursor", 2048, required=False, single_line=True)
-    elif isinstance(message, pb.PrepareEditionRequest):
+    elif isinstance(message, editorial_pb2.PrepareEditionRequest):
         _request_key(message.request_key)
         validate_issue_date(message.issue_date)
         if not 1 <= len(message.packet_ids) <= MAX_PACKETS:
@@ -530,11 +561,11 @@ def validate_request(message: Message) -> None:
             _fail("INVALID_ARGUMENT", "Duplicate packet IDs")
         for packet_id in message.packet_ids:
             _identifier(packet_id, "packet_id")
-    elif isinstance(message, pb.GetEditionRequest):
+    elif isinstance(message, editorial_pb2.GetEditionRequest):
         _identifier(message.id, "edition.id")
-    elif isinstance(message, pb.RenderEditionRequest):
+    elif isinstance(message, editorial_pb2.RenderEditionRequest):
         validate_render_request(message)
-    elif isinstance(message, pb.SendEditionRequest):
+    elif isinstance(message, editorial_pb2.SendEditionRequest):
         _identifier(message.id, "edition.id")
         _request_key(message.request_key)
         if not _HASH.fullmatch(message.expected_render_hash):

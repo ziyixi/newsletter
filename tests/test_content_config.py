@@ -1,36 +1,27 @@
-"""Configuration transactions and per-run isolation, without providers or mail."""
+"""Test config transactions and run isolation without providers or mail."""
 
 import copy
 import json
 
 import pytest
 
-from newsletter import config_cli, content_config
-from newsletter.collection.repository import RunRepository
-from newsletter.content_config import (
-    ContentConfigError,
-    build_directory,
-    build_snapshot,
-    install_snapshot,
-    load_active,
-    packaged_snapshot,
-    read_snapshot,
-    validate_snapshot,
-)
-from newsletter.contracts import content_hash
-from newsletter.settings import Settings
-from newsletter.store import Store
-from newsletter.workflow.pipeline import freeze_workflow
-from newsletter.workflow.state import WorkflowState
+import newsletter.collection.repository as repository
+import newsletter.config_cli as config_cli
+import newsletter.content_config as content_config
+import newsletter.contracts as contracts
+import newsletter.settings as newsletter_settings
+import newsletter.store as newsletter_store
+import newsletter.workflow.pipeline as pipeline
+import newsletter.workflow.state as newsletter_workflow_state
 
 
 @pytest.fixture
 def baseline():
-    return packaged_snapshot()
+    return content_config.packaged_snapshot()
 
 
 def resign(value):
-    value["digest"] = content_hash(
+    value["digest"] = contracts.content_hash(
         {key: value[key] for key in ("schema_version", "revision", "files")}
     )
     return value
@@ -44,7 +35,7 @@ def test_baseline_has_news_first_budget_and_all_eight_retrievals(baseline):
         "max_research_candidates": 10,
     }
     assert len(content_config.config_instructions(baseline["files"])) == 8
-    assert validate_snapshot(baseline) == baseline
+    assert content_config.validate_snapshot(baseline) == baseline
     assert len(json.dumps(baseline).encode()) < 768_000
 
 
@@ -65,8 +56,8 @@ def test_baseline_has_news_first_budget_and_all_eight_retrievals(baseline):
 )
 def test_untrusted_files_fail_even_when_digest_is_valid(baseline, name, value):
     baseline["files"][name] = value
-    with pytest.raises(ContentConfigError):
-        validate_snapshot(resign(baseline))
+    with pytest.raises(content_config.ContentConfigError):
+        content_config.validate_snapshot(resign(baseline))
 
 
 @pytest.mark.parametrize(
@@ -81,42 +72,42 @@ def test_untrusted_files_fail_even_when_digest_is_valid(baseline, name, value):
 )
 def test_invalid_manifest_rejected(baseline, field, value):
     baseline[field] = value
-    with pytest.raises(ContentConfigError):
-        validate_snapshot(baseline)
+    with pytest.raises(content_config.ContentConfigError):
+        content_config.validate_snapshot(baseline)
 
 
 def test_metadata_is_recomputed_not_trusted(baseline):
     baseline["editorial"]["max_research_items"] = 5
-    with pytest.raises(ContentConfigError):
-        validate_snapshot(baseline)
+    with pytest.raises(content_config.ContentConfigError):
+        content_config.validate_snapshot(baseline)
 
 
 def test_duplicate_yaml_fields_rejected(baseline):
     text = baseline["files"]["editorial.yaml"]
     baseline["files"]["editorial.yaml"] = text + "max_public_items: 6\n"
-    with pytest.raises(ContentConfigError):
-        validate_snapshot(resign(baseline))
+    with pytest.raises(content_config.ContentConfigError):
+        content_config.validate_snapshot(resign(baseline))
 
 
 def test_provenance_changes_digest_even_for_identical_files(baseline):
-    other = build_snapshot(baseline["files"], "b" * 40)
+    other = content_config.build_snapshot(baseline["files"], "b" * 40)
     assert other["digest"] != baseline["digest"]
 
 
 def test_reject_missing_baseline_without_silent_packaged_fallback(tmp_path):
-    with pytest.raises(ContentConfigError):
-        load_active(tmp_path)
+    with pytest.raises(content_config.ContentConfigError):
+        content_config.load_active(tmp_path)
 
 
 def test_failed_validation_and_failed_activation_keep_old_release(
     tmp_path, baseline, monkeypatch
 ):
-    install_snapshot(tmp_path, baseline)
-    newer = build_snapshot(baseline["files"], "b" * 40)
+    content_config.install_snapshot(tmp_path, baseline)
+    newer = content_config.build_snapshot(baseline["files"], "b" * 40)
     invalid = copy.deepcopy(newer)
     invalid["digest"] = "0" * 64
-    with pytest.raises(ContentConfigError):
-        install_snapshot(tmp_path, invalid)
+    with pytest.raises(content_config.ContentConfigError):
+        content_config.install_snapshot(tmp_path, invalid)
     original = content_config._atomic_json
 
     def fail_pointer(path, value):
@@ -125,11 +116,13 @@ def test_failed_validation_and_failed_activation_keep_old_release(
         original(path, value)
 
     monkeypatch.setattr(content_config, "_atomic_json", fail_pointer)
-    with pytest.raises(OSError):
-        install_snapshot(tmp_path, newer)
-    assert load_active(tmp_path) == baseline
+    with pytest.raises(OSError, match="simulated atomic activation failure"):
+        content_config.install_snapshot(tmp_path, newer)
+    assert content_config.load_active(tmp_path) == baseline
     assert (
-        read_snapshot(tmp_path / "releases" / newer["digest"] / "bundle.json")
+        content_config.read_snapshot(
+            tmp_path / "releases" / newer["digest"] / "bundle.json"
+        )
         == newer
     )
 
@@ -137,16 +130,16 @@ def test_failed_validation_and_failed_activation_keep_old_release(
 def test_same_version_is_no_write_and_returns_owned_copy(
     tmp_path, baseline, monkeypatch
 ):
-    install_snapshot(tmp_path, baseline)
+    content_config.install_snapshot(tmp_path, baseline)
 
     def fail(*args):
         raise AssertionError("same revision must not be rewritten")
 
     monkeypatch.setattr(content_config, "_atomic_json", fail)
-    install_snapshot(tmp_path, baseline)
-    loaded = load_active(tmp_path)
+    content_config.install_snapshot(tmp_path, baseline)
+    loaded = content_config.load_active(tmp_path)
     loaded["files"]["policy/editorial.md"] = "mutated"
-    assert load_active(tmp_path) == baseline
+    assert content_config.load_active(tmp_path) == baseline
 
 
 @pytest.mark.parametrize(
@@ -154,7 +147,7 @@ def test_same_version_is_no_write_and_returns_owned_copy(
 )
 def test_symlink_state_is_never_followed(tmp_path, baseline, target):
     root = tmp_path / "config"
-    install_snapshot(root, baseline)
+    content_config.install_snapshot(root, baseline)
     paths = {
         "root": root,
         "releases": root / "releases",
@@ -166,35 +159,37 @@ def test_symlink_state_is_never_followed(tmp_path, baseline, target):
     original = tmp_path / "moved"
     path.rename(original)
     path.symlink_to(original, target_is_directory=original.is_dir())
-    with pytest.raises(ContentConfigError):
-        load_active(root)
+    with pytest.raises(content_config.ContentConfigError):
+        content_config.load_active(root)
 
 
 def test_duplicate_json_key_cannot_hide_modified_provenance(tmp_path, baseline):
     path = tmp_path / "bundle.json"
     raw = json.dumps(baseline)
     path.write_text('{"revision":"hidden",' + raw[1:])
-    with pytest.raises(ContentConfigError):
-        read_snapshot(path)
+    with pytest.raises(content_config.ContentConfigError):
+        content_config.read_snapshot(path)
 
 
 def test_frozen_run_keeps_whole_config_a_while_next_run_gets_b(
     tmp_path, baseline
 ):
     root = tmp_path / "config"
-    install_snapshot(root, baseline)
-    store = Store(tmp_path / "state.sqlite3", "mock")
+    content_config.install_snapshot(root, baseline)
+    store = newsletter_store.Store(tmp_path / "state.sqlite3", "mock")
     try:
-        state = WorkflowState(store)
-        settings = Settings(
+        state = newsletter_workflow_state.WorkflowState(store)
+        settings = newsletter_settings.Settings(
             workflow_backend="dag",
             content_config_dir=root,
             workflow_file=tmp_path / "ignored.yml",
             discovery_dir=tmp_path / "ignored",
         )
-        instructions, snapshot = freeze_workflow(settings, state, "2026-09-08")
+        instructions, snapshot = pipeline.freeze_workflow(
+            settings, state, "2026-09-08"
+        )
         assert snapshot["inputs"]["content_config"] == baseline
-        runs = RunRepository(store)
+        runs = repository.RunRepository(store)
         request = {
             "request_key": "config-isolation",
             "issue_date": "2026-09-08",
@@ -206,9 +201,9 @@ def test_frozen_run_keeps_whole_config_a_while_next_run_gets_b(
         files["templates/edition.html.j2"] = files[
             "templates/edition.html.j2"
         ].replace("THE DAILY BRIEF", "NEXT DAILY BRIEF")
-        newer = build_snapshot(files, "b" * 40)
-        install_snapshot(root, newer)
-        next_instructions, next_snapshot = freeze_workflow(
+        newer = content_config.build_snapshot(files, "b" * 40)
+        content_config.install_snapshot(root, newer)
+        next_instructions, next_snapshot = pipeline.freeze_workflow(
             settings, state, "2026-09-09"
         )
         assert next_snapshot["inputs"]["content_config"] == newer
@@ -236,13 +231,18 @@ def test_no_config_remains_legacy_and_settings_reads_only_directory(
     monkeypatch.setenv(
         "NEWSLETTER_CONTENT_CONFIG_DIR", str(tmp_path / "config")
     )
-    assert Settings.from_env().content_config_dir == tmp_path / "config"
+    assert (
+        newsletter_settings.Settings.from_env().content_config_dir
+        == tmp_path / "config"
+    )
     with pytest.raises(ValueError, match="requires NEWSLETTER_WORKFLOW=dag"):
-        Settings(content_config_dir=tmp_path).validate()
-    store = Store(tmp_path / "state.sqlite3", "mock")
+        newsletter_settings.Settings(content_config_dir=tmp_path).validate()
+    store = newsletter_store.Store(tmp_path / "state.sqlite3", "mock")
     try:
-        _, snapshot = freeze_workflow(
-            Settings(), WorkflowState(store), "2026-09-08"
+        _, snapshot = pipeline.freeze_workflow(
+            newsletter_settings.Settings(),
+            newsletter_workflow_state.WorkflowState(store),
+            "2026-09-08",
         )
         assert "content_config" not in snapshot["inputs"]
     finally:
@@ -273,7 +273,9 @@ def test_offline_cli_build_and_validate_do_not_touch_business_state(
         == 0
     )
     assert config_cli.main(["validate", "--bundle", str(output)]) == 0
-    assert read_snapshot(output) == build_directory(source, "a" * 40)
+    assert content_config.read_snapshot(
+        output
+    ) == content_config.build_directory(source, "a" * 40)
     (source / ".env").write_text("SYNTHETIC_TOKEN=never-print-this")
     assert (
         config_cli.main(

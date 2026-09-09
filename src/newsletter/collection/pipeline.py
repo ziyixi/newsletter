@@ -1,23 +1,27 @@
-"""One-shot orchestration. A queue wakeup is not a schedule; nothing creates daily jobs."""
+"""One-shot collection orchestration; no daily scheduling."""
 
 import asyncio
-from pathlib import Path
+import logging
+import pathlib
 
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from newsletter.collection.collector import Collector
-from newsletter.collection.repository import RunRepository
-from newsletter.contracts import parse_message, to_dict, validate_request
-from newsletter.editor import EditorError
-from newsletter.store import StoreError
+import newsletter.collection.collector as newsletter_collection_collector
+import newsletter.collection.repository as repository
+import newsletter.contracts as contracts
+import newsletter.diagnostics as diagnostics
+import newsletter.errors as errors
+import newsletter.store as store
 
 
 class CollectionPipeline:
+    """Advance frozen collection directions without scheduling new issues."""
+
     def __init__(
         self,
-        runs: RunRepository,
-        collector: Collector,
-        workspace: Path,
+        runs: repository.RunRepository,
+        collector: newsletter_collection_collector.Collector,
+        workspace: pathlib.Path,
         timeout: float,
         max_packets: int,
     ) -> None:
@@ -33,6 +37,7 @@ class CollectionPipeline:
         return False
 
     async def collect_next(self) -> bool:
+        """Claim one queued run; retain failed work for explicit recovery."""
         claimed = self.runs.claim()
         if claimed is None:
             return False
@@ -55,19 +60,19 @@ class CollectionPipeline:
                     or len(result.packets) > 2
                     or len(result.note) > 2000
                 ):
-                    raise EditorError("invalid_output")
+                    raise errors.EditorError("invalid_output")
                 requests = []
                 for index, material in enumerate(result.packets):
-                    request = parse_message(
+                    request = contracts.parse_message(
                         {
                             "request_key": f"{run['id']}:{current}:{index}",
                             "workflow_id": current,
                             "content": material,
                         },
-                        pb.PutPacketRequest,
+                        editorial_pb2.PutPacketRequest,
                     )
-                    validate_request(request)
-                    requests.append(to_dict(request))
+                    contracts.validate_request(request)
+                    requests.append(contracts.to_dict(request))
                 self.runs.save_direction(
                     run["id"], current, requests, result.note
                 )
@@ -87,22 +92,30 @@ class CollectionPipeline:
             self.runs.update(
                 run["id"], state="failed", error_code="collection_timeout"
             )
-        except Exception as exc:
+        # A provider failure must not terminate unrelated durable queue work.
+        except Exception as exc:  # noqa: BLE001
+            diagnostics.record_failure(
+                logging.getLogger(__name__),
+                phase="collection",
+                error=exc,
+                reference=run["id"],
+            )
             self.runs.direction(run["id"], current, state="failed")
             code = (
                 "collection_" + exc.code
-                if isinstance(exc, EditorError)
+                if isinstance(exc, errors.EditorError)
                 else "collection_invalid_result"
             )
             self.runs.update(run["id"], state="failed", error_code=code)
         return True
 
     def advance(self) -> bool:
-        """Proceed only once material projection is confirmed; never retry unknown writes."""
+        """Await confirmed material projection; never retry unknown writes."""
         changed = False
         for run in self.runs.active():
             if self.runs.workflow_snapshot(run["id"]) is not None:
-                continue  # The DAG tail gates adopted, not every discovered, material.
+                # The DAG gates adopted, not every discovered, material.
+                continue
             packet_ids = [
                 packet_id
                 for direction in run["directions"]
@@ -137,7 +150,8 @@ class CollectionPipeline:
                 changed = True
                 continue
             try:
-                # The edition's own idempotency key survives a crash between these writes.
+                # The edition's own idempotency key survives a crash between
+                # these writes.
                 edition = self.runs.store.prepare(
                     {
                         "request_key": "collection:" + run["id"],
@@ -145,9 +159,10 @@ class CollectionPipeline:
                         "packet_ids": packet_ids,
                     }
                 )
-            except StoreError as exc:
+            except store.StoreError as exc:
                 if exc.code == "busy":
-                    continue  # Existing queued editions will free capacity; no external retry.
+                    # Queued editions will free capacity; no external retry.
+                    continue
                 self.runs.update(
                     run["id"],
                     state="failed",

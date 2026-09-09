@@ -1,15 +1,15 @@
-"""Offline regressions for strict endpoint schema rejection; no provider calls."""
+"""Test strict endpoint schema rejection without provider calls."""
 
 import copy
 
 import pytest
-from test_editor import FakeTurn, live_editor
-from test_editor import bundle as bundle
-from test_editor import fake_sdk as fake_sdk
 
-from newsletter import editor, schema_compat
-from newsletter.errors import EditorError
-from newsletter.workflow.story_editor import story_writer_schema
+import newsletter.editor as newsletter_editor
+import newsletter.errors as errors
+import newsletter.schema_compat as schema_compat
+import newsletter.usage as usage
+import newsletter.workflow.story_editor as story_editor
+import tests.support.editor as editor
 
 
 def test_every_production_schema_passes_before_any_model_work():
@@ -36,7 +36,7 @@ def test_every_production_schema_passes_before_any_model_work():
 @pytest.mark.parametrize("repair", [False, True])
 def test_empty_and_input_scoped_writer_schemas_are_compatible(mode, repair):
     schema_compat.validate_output_schema(
-        story_writer_schema(mode, repair=repair)
+        story_editor.story_writer_schema(mode, repair=repair)
     )
 
 
@@ -59,12 +59,12 @@ def test_empty_and_input_scoped_writer_schemas_are_compatible(mode, repair):
     ],
 )
 def test_unprobed_constraint_is_rejected_even_inside_nested_component(keyword):
-    schema = story_writer_schema("brief")
+    schema = story_editor.story_writer_schema("brief")
     citations = schema["properties"]["content"]["anyOf"][0]["properties"][
         "paragraphs"
     ]["items"]["properties"]["citations"]
     citations[keyword] = True
-    with pytest.raises(EditorError) as error:
+    with pytest.raises(errors.EditorError) as error:
         schema_compat.validate_output_schema(schema)
     assert error.value.code == "configuration"
     assert keyword not in str(error.value)
@@ -97,9 +97,9 @@ def test_schema_property_names_and_descriptions_are_not_keywords():
     ],
 )
 def test_unclosed_or_malformed_schema_is_configuration_failure(change):
-    schema = story_writer_schema("brief")
+    schema = story_editor.story_writer_schema("brief")
     schema.update(change)
-    with pytest.raises(EditorError) as error:
+    with pytest.raises(errors.EditorError) as error:
         schema_compat.validate_output_schema(schema)
     assert error.value.code == "configuration"
 
@@ -107,7 +107,7 @@ def test_unclosed_or_malformed_schema_is_configuration_failure(change):
 async def test_unsupported_schema_fails_before_sdk_or_usage(
     monkeypatch, tmp_path, fake_sdk
 ):
-    schema = story_writer_schema("brief")
+    schema = story_editor.story_writer_schema("brief")
     schema["properties"]["supplemental_packets"]["uniqueItems"] = True
 
     def unexpected(*args, **kwargs):
@@ -115,9 +115,9 @@ async def test_unsupported_schema_fails_before_sdk_or_usage(
             "No usage context may start for rejected configuration"
         )
 
-    monkeypatch.setattr(editor, "codex_usage", unexpected)
-    with pytest.raises(EditorError) as error:
-        await live_editor(tmp_path).execute(
+    monkeypatch.setattr(usage, "codex_usage", unexpected)
+    with pytest.raises(errors.EditorError) as error:
+        await editor.live_editor(tmp_path).execute(
             "{}", schema, "fixture", tmp_path / "workspace"
         )
     assert error.value.code == "configuration"
@@ -125,7 +125,12 @@ async def test_unsupported_schema_fails_before_sdk_or_usage(
 
 
 _PROVIDER_SCHEMA_ERROR = {
-    "message": "Invalid schema for response_format 'codex_output_schema': In context=('properties', 'content', 'anyOf', '0', 'properties', 'paragraphs', 'items', 'properties', 'citations'), 'uniqueItems' is not permitted.",
+    "message": (
+        "Invalid schema for response_format 'codex_output_schema': "
+        "In context=('properties', 'content', 'anyOf', '0', "
+        "'properties', 'paragraphs', 'items', 'properties', "
+        "'citations'), 'uniqueItems' is not permitted."
+    ),
     "type": "invalid_request_error",
     "code": "invalid_json_schema",
     "param": "text.format.schema",
@@ -138,14 +143,17 @@ _PROVIDER_SCHEMA_ERROR = {
         _PROVIDER_SCHEMA_ERROR,
         RuntimeError(str(_PROVIDER_SCHEMA_ERROR)),
         {
-            "message": "Invalid schema for text.format 'codex_output_schema': schema keyword rejected"
+            "message": (
+                "Invalid schema for text.format 'codex_output_schema': "
+                "schema keyword rejected"
+            )
         },
     ],
 )
-def test_real_shaped_schema_rejection_is_fatal_configuration_without_raw_details(
+def test_real_shaped_schema_rejection_fatal_config_without_raw_details(
     failure,
 ):
-    error = editor._vendor_failure(failure)
+    error = newsletter_editor._vendor_failure(failure)
     assert error.code == "configuration"
     assert "uniqueItems" not in str(error) and "codex_output_schema" not in str(
         error
@@ -168,7 +176,7 @@ def test_real_shaped_schema_rejection_is_fatal_configuration_without_raw_details
 def test_schema_classification_does_not_absorb_unrelated_failures(
     failure, code
 ):
-    assert editor._vendor_failure(failure).code == code
+    assert newsletter_editor._vendor_failure(failure).code == code
 
 
 async def test_provider_schema_rejection_has_no_provenance_retry(
@@ -176,13 +184,13 @@ async def test_provider_schema_rejection_has_no_provenance_retry(
 ):
     # A valid local schema can still be rejected by a changed provider. The
     # upstream configuration error must reach the existing fatal workflow path.
-    fake_sdk.turn = FakeTurn(
+    fake_sdk.turn = editor.FakeTurn(
         {}, research=False, failure=copy.deepcopy(_PROVIDER_SCHEMA_ERROR)
     )
-    with pytest.raises(EditorError) as error:
-        await live_editor(tmp_path).execute(
+    with pytest.raises(errors.EditorError) as error:
+        await editor.live_editor(tmp_path).execute(
             "{}",
-            story_writer_schema("brief"),
+            story_editor.story_writer_schema("brief"),
             "fixture",
             tmp_path / "workspace",
         )

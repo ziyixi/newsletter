@@ -1,6 +1,6 @@
 """Guard explicit editorial requirements; not a model quality evaluation."""
 
-from importlib.resources import files
+import importlib.resources as resources
 
 import pytest
 
@@ -8,7 +8,7 @@ import pytest
 @pytest.fixture
 def editorial_policy():
     return (
-        files("newsletter")
+        resources.files("newsletter")
         .joinpath("policy/editorial.md")
         .read_text(encoding="utf-8")
     )
@@ -17,13 +17,13 @@ def editorial_policy():
 @pytest.fixture
 def reader_profile():
     return (
-        files("newsletter")
+        resources.files("newsletter")
         .joinpath("policy/reader-profile.md")
         .read_text(encoding="utf-8")
     )
 
 
-def test_news_first_reader_profile_does_not_inherit_legacy_research_reservations(
+def test_news_profile_excludes_legacy_research_reservations(
     editorial_policy, reader_profile
 ):
     assert "高优先级" in reader_profile and "不排他" in reader_profile
@@ -114,11 +114,11 @@ def test_editor_recomputes_numeric_claims_and_preserves_cost_assumptions(
 
 
 @pytest.mark.parametrize("direction", ["01-ai-ml.md", "02-science.md"])
-def test_research_directions_require_honest_reading_scope_and_accessible_overview(
+def test_research_guides_require_read_scope_and_clear_overview(
     direction,
 ):
     instruction = (
-        files("newsletter")
+        resources.files("newsletter")
         .joinpath(f"instructions/{direction}")
         .read_text(encoding="utf-8")
     )

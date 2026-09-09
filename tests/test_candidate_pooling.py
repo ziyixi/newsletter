@@ -1,20 +1,20 @@
-"""Deterministic local pooling of synthetic public candidates; no provider calls."""
+"""Test deterministic public-candidate pooling without providers."""
 
-from collections import Counter
-from copy import deepcopy
-from importlib.resources import files
-from pathlib import Path
+import collections
+import copy
+import importlib.resources as resources
+import pathlib
 
 import pytest
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from newsletter.contracts import content_hash, parse_message, to_dict
-from newsletter.editor import CodexEditor
-from newsletter.store import Store
-from newsletter.workflow.definition import load_definition
-from newsletter.workflow.engine import NodeContext
-from newsletter.workflow.nodes import EditorialNodes
-from newsletter.workflow.story_nodes import StoryNodes
+import newsletter.contracts as contracts
+import newsletter.editor as editor
+import newsletter.store as newsletter_store
+import newsletter.workflow.definition as newsletter_workflow_definition
+import newsletter.workflow.engine as engine
+import newsletter.workflow.nodes as newsletter_workflow_nodes
+import newsletter.workflow.story_nodes as story_nodes
 
 DAY = "2026-09-06"
 
@@ -31,7 +31,9 @@ def candidate(direction, index):
         "event_key": "",
         "published_at": DAY,
         "summary": "Offline fixture only; not real research.",
-        "why_now": "Only tests source-preserving candidate pooling across directions.",
+        "why_now": (
+            "Only tests source-preserving candidate pooling across directions."
+        ),
         "access_scope": "abstract",
         "provenance": "fixture-discovery",
         "authors": "Fixture Author",
@@ -44,22 +46,30 @@ def candidate(direction, index):
     }
 
 
-@pytest.fixture(params=[EditorialNodes, StoryNodes], ids=["legacy", "topics"])
+@pytest.fixture(
+    params=[newsletter_workflow_nodes.EditorialNodes, story_nodes.StoryNodes],
+    ids=["legacy", "topics"],
+)
 def pool(request, tmp_path, monkeypatch):
     async def forbidden(*args, **kwargs):
         raise AssertionError("Candidate pooling cannot call a provider")
 
-    monkeypatch.setattr(CodexEditor, "execute", forbidden)
-    definition = load_definition(
-        Path(str(files("newsletter").joinpath("workflows/daily.yaml")))
+    monkeypatch.setattr(editor.CodexEditor, "execute", forbidden)
+    definition = newsletter_workflow_definition.load_definition(
+        pathlib.Path(
+            str(resources.files("newsletter").joinpath("workflows/daily.yaml"))
+        )
     )
-    store = Store(tmp_path / "newsletter.sqlite3", "mock")
+    store = newsletter_store.Store(tmp_path / "newsletter.sqlite3", "mock")
     nodes = request.param(
-        store, definition, CodexEditor(tmp_path / "unused-auth"), tmp_path
+        store,
+        definition,
+        editor.CodexEditor(tmp_path / "unused-auth"),
+        tmp_path,
     )
 
     async def run(groups, *, limit=30, history=(), feeds=(), states=None):
-        context = NodeContext(
+        context = engine.NodeContext(
             run_id="fixture-pooling",
             node_id="candidates",
             item_id="",
@@ -78,7 +88,7 @@ def pool(request, tmp_path, monkeypatch):
             run_inputs={"issue_date": DAY},
             dependency_states=states or {},
         )
-        original = deepcopy(context.inputs)
+        original = copy.deepcopy(context.inputs)
         result = await nodes.execute("deduplicate", context, tmp_path)
         assert context.inputs == original
         return result
@@ -87,7 +97,7 @@ def pool(request, tmp_path, monkeypatch):
     store.close()
 
 
-async def test_eight_full_directions_share_existing_thirty_candidate_cap_in_frozen_order(
+async def test_eight_directions_share_thirty_candidate_cap_and_order(
     pool,
 ):
     groups = [
@@ -99,24 +109,25 @@ async def test_eight_full_directions_share_existing_thirty_candidate_cap_in_froz
         for i in range(5)
         for direction in range(8)
     ][:30]
-    original_hash = content_hash(groups)
+    original_hash = contracts.content_hash(groups)
     first = await pool(groups)
-    second = await pool(deepcopy(groups))
+    second = await pool(copy.deepcopy(groups))
     assert first == second
     assert first["candidates"] == [
-        to_dict(parse_message(item, pb.Candidate)) for item in expected
+        contracts.to_dict(
+            contracts.parse_message(item, editorial_pb2.Candidate)
+        )
+        for item in expected
     ]
     assert len(first["candidates"]) == 30
-    assert Counter(item["direction"] for item in first["candidates"]) == {
-        f"direction-{i}": 4 if i < 6 else 3 for i in range(8)
-    }
-    assert content_hash(groups) == original_hash
+    assert collections.Counter(
+        item["direction"] for item in first["candidates"]
+    ) == {f"direction-{i}": 4 if i < 6 else 3 for i in range(8)}
+    assert contracts.content_hash(groups) == original_hash
 
 
 @pytest.mark.parametrize("limit", [1, 5, 30])
-async def test_configured_caps_and_order_with_uneven_or_empty_directions_remain_bounded(
-    pool, limit
-):
+async def test_uneven_directions_respect_configured_caps_and_order(pool, limit):
     a = [candidate(0, i) for i in range(5)]
     b = [candidate(1, 0)]
     groups = [{"candidates": a}, {"candidates": []}, {"candidates": b}]
@@ -126,7 +137,7 @@ async def test_configured_caps_and_order_with_uneven_or_empty_directions_remain_
     ]
 
 
-async def test_alias_and_history_dedup_still_run_before_the_cap_and_keep_first_source(
+async def test_alias_history_dedup_still_run_before_cap_keep_first_source(
     pool,
 ):
     a, b, followup, extra = [candidate(0, i) for i in range(4)]
@@ -137,7 +148,9 @@ async def test_alias_and_history_dedup_still_run_before_the_cap_and_keep_first_s
     groups = [{"candidates": [a, b, extra]}, {"candidates": [alias, followup]}]
     result = await pool(groups, history=[b, old], limit=3)
     assert result["candidates"] == [
-        to_dict(parse_message(item, pb.Candidate))
+        contracts.to_dict(
+            contracts.parse_message(item, editorial_pb2.Candidate)
+        )
         for item in (a, followup, extra)
     ]
     assert result["candidates"][0]["url"] == a["url"]
@@ -145,7 +158,7 @@ async def test_alias_and_history_dedup_still_run_before_the_cap_and_keep_first_s
 
 
 @pytest.mark.parametrize("discovery", [None, [], [{"candidates": []}]])
-async def test_missing_or_empty_discovery_preserves_metadata_supplement_and_failure_coverage(
+async def test_missing_discovery_keeps_metadata_and_failure_coverage(
     pool, discovery
 ):
     states = {
@@ -170,7 +183,7 @@ async def test_missing_or_empty_discovery_preserves_metadata_supplement_and_fail
     ]
 
 
-async def test_metadata_remains_after_discovery_and_missing_feed_does_not_change_pool(
+async def test_metadata_remains_after_discovery_missing_feed_never_change_pool(
     pool,
 ):
     first, second, supplement = (

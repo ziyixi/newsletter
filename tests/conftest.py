@@ -1,4 +1,4 @@
-"""All default tests are offline. External integration requires a separate explicit run."""
+"""Run offline tests by default; external integration needs an explicit run."""
 
 import socket
 
@@ -15,3 +15,10 @@ def no_external_network(monkeypatch):
         return original_connect(sock, address)
 
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+
+
+pytest_plugins = (
+    "tests.support.editor",
+    "tests.support.story_pipeline",
+    "tests.support.story_editor",
+)

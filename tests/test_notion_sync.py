@@ -1,37 +1,32 @@
 """Durable outbox regressions with a local FakeWorkspace; no provider calls.
 
-All material, images, publication rows and delivery receipts below are synthetic.
-These exercise recovery semantics, not live Notion behavior or editorial quality.
+All material, images, publication rows and delivery receipts are synthetic.
+Tests exercise recovery, not live Notion behavior or editorial quality.
 """
 
 import asyncio
+import collections
 import copy
+import dataclasses
 import hashlib
+import importlib.resources as resources
 import json
-from collections import Counter, defaultdict
-from dataclasses import replace
-from importlib.resources import files
-from pathlib import Path
-from urllib.parse import quote
-from uuid import NAMESPACE_URL, uuid5
+import pathlib
+import urllib.parse as parse
+import uuid
 
 import httpx
 import pytest
-from test_notion_content import PNG, candidate, edition, packet
 
-import newsletter.notion_sync as sync_module
-from newsletter.adapters import AdapterError
-from newsletter.contracts import content_hash
-from newsletter.notion_content import (
-    Projection,
-    edition_projection,
-    material_projection,
-)
-from newsletter.notion_journal import NotionJournal
-from newsletter.notion_sync import NotionSync, block_signature
-from newsletter.store import Store
-from newsletter.workflow.definition import load_definition
-from newsletter.workflow.repository import WorkflowRepository
+import newsletter.adapters as adapters
+import newsletter.contracts as contracts
+import newsletter.notion_content as newsletter_notion_content
+import newsletter.notion_journal as notion_journal
+import newsletter.notion_sync as notion_sync
+import newsletter.store as newsletter_store
+import newsletter.workflow.definition as newsletter_workflow_definition
+import newsletter.workflow.repository as newsletter_workflow_repository
+import tests.support.notion_content as notion_content
 
 DAY = "2026-09-07"
 KEY = "material:offline-fixture"
@@ -80,10 +75,12 @@ def projected(key=KEY, *, count=2, prefix="Offline version", chart=False):
                 },
             },
         )
-    digest = content_hash(
+    digest = contracts.content_hash(
         {
             "blocks": blocks,
-            "chart": hashlib.sha256(PNG).hexdigest() if chart else "",
+            "chart": hashlib.sha256(notion_content.PNG).hexdigest()
+            if chart
+            else "",
         }
     )
     properties = {
@@ -93,17 +90,19 @@ def projected(key=KEY, *, count=2, prefix="Offline version", chart=False):
         "fixture": {"checkbox": True},
         "sync_state": {"select": {"name": "同步中"}},
     }
-    return Projection(key, properties, blocks, digest, PNG if chart else None)
+    return newsletter_notion_content.Projection(
+        key, properties, blocks, digest, notion_content.PNG if chart else None
+    )
 
 
 class FakeWorkspace:
-    """An external-state stand-in retained when the local SQLite handle restarts."""
+    """Retain synthetic external state across local SQLite restarts."""
 
     def __init__(self):
         self.pages = {}
         self.uploads = {}
         self.calls = []
-        self.failures = defaultdict(list)
+        self.failures = collections.defaultdict(list)
         self.extra_lookup = []
 
     def fail(
@@ -123,7 +122,7 @@ class FakeWorkspace:
             effect()
         if cancel:
             raise asyncio.CancelledError
-        raise AdapterError(code, ambiguous=code == "NOTION_UNKNOWN")
+        raise adapters.AdapterError(code, ambiguous=code == "NOTION_UNKNOWN")
 
     async def lookup(self, kind, key):
         self.calls.append(("lookup", (kind, key)))
@@ -143,8 +142,9 @@ class FakeWorkspace:
 
         def effect():
             page_id = str(
-                uuid5(
-                    NAMESPACE_URL, "offline-create/" + str(self.count("create"))
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    "offline-create/" + str(self.count("create")),
                 )
             )
             self.pages[page_id] = {
@@ -170,7 +170,7 @@ class FakeWorkspace:
     def _returned_block(self, block, page_id, index):
         result = copy.deepcopy(block)
         result.update(
-            id=str(uuid5(NAMESPACE_URL, page_id + "/" + str(index))),
+            id=str(uuid.uuid5(uuid.NAMESPACE_URL, page_id + "/" + str(index))),
             has_children=False,
             in_trash=False,
         )
@@ -182,7 +182,7 @@ class FakeWorkspace:
                 "type": "file",
                 "file": {
                     "url": "https://files.example.org/uploads/"
-                    + quote(filename)
+                    + parse.quote(filename)
                     + "?signature=ephemeral-value",
                     "expiry_time": "2026-09-07T20:00:00Z",
                 },
@@ -226,8 +226,8 @@ class FakeWorkspace:
     async def upload_png(self, png):
         def effect():
             upload_id = str(
-                uuid5(
-                    NAMESPACE_URL,
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
                     "offline-upload/" + str(self.count("upload_png")),
                 )
             )
@@ -244,15 +244,19 @@ class Rig:
     def __init__(self, path):
         self.path = path
         self.api = FakeWorkspace()
-        self.store = Store(path, "mock")
-        self.journal = NotionJournal(self.store, DESTINATION)
-        self.sync = NotionSync(self.journal, self.api, include_personal=False)
+        self.store = newsletter_store.Store(path, "mock")
+        self.journal = notion_journal.NotionJournal(self.store, DESTINATION)
+        self.sync = notion_sync.NotionSync(
+            self.journal, self.api, include_personal=False
+        )
 
     def restart(self):
         self.store.close()
-        self.store = Store(self.path, "mock")
-        self.journal = NotionJournal(self.store, DESTINATION)
-        self.sync = NotionSync(self.journal, self.api, include_personal=False)
+        self.store = newsletter_store.Store(self.path, "mock")
+        self.journal = notion_journal.NotionJournal(self.store, DESTINATION)
+        self.sync = notion_sync.NotionSync(
+            self.journal, self.api, include_personal=False
+        )
 
     def due(self):
         self.journal.execute("UPDATE notion_entities SET retry_at=0")
@@ -287,11 +291,15 @@ def rig(tmp_path, monkeypatch):
     value.store.close()
 
 
-async def test_enqueue_creates_properties_then_body_then_synced_state_without_changing_projection(
+async def test_enqueue_orders_properties_body_and_synced_state(
     rig,
 ):
-    projection = material_projection(
-        candidate(), key=KEY, first_seen=DAY, run_id="offline-run", fixture=True
+    projection = newsletter_notion_content.material_projection(
+        notion_content.candidate(),
+        key=KEY,
+        first_seen=DAY,
+        run_id="offline-run",
+        fixture=True,
     )
     before = copy.deepcopy(projection)
     rig.journal.enqueue("material", projection)
@@ -310,16 +318,20 @@ async def test_enqueue_creates_properties_then_body_then_synced_state_without_ch
         "append",
         "patch",
     ]
-    assert [block_signature(b) for b in rig.page()["blocks"]] == [
-        block_signature(b) for b in projection.blocks
+    assert [notion_sync.block_signature(b) for b in rig.page()["blocks"]] == [
+        notion_sync.block_signature(b) for b in projection.blocks
     ]
 
 
-async def test_duplicate_enqueue_scan_and_real_sqlite_restart_do_not_repeat_remote_mutations(
+async def test_duplicate_enqueue_and_restart_never_repeat_writes(
     rig,
 ):
-    projection = material_projection(
-        candidate(), key=KEY, first_seen=DAY, run_id="offline-run", fixture=True
+    projection = newsletter_notion_content.material_projection(
+        notion_content.candidate(),
+        key=KEY,
+        first_seen=DAY,
+        run_id="offline-run",
+        fixture=True,
     )
     rig.journal.enqueue("material", projection)
     await rig.drain()
@@ -336,9 +348,7 @@ async def test_duplicate_enqueue_scan_and_real_sqlite_restart_do_not_repeat_remo
 
 
 @pytest.mark.parametrize("landed", [False, True])
-async def test_unknown_create_only_looks_up_after_restart_and_never_blindly_recreates(
-    rig, landed
-):
+async def test_unknown_create_recovers_by_lookup_not_recreation(rig, landed):
     rig.journal.enqueue("material", projected())
     rig.api.fail("create", landed=landed)
     assert await rig.sync.step()
@@ -371,7 +381,7 @@ async def test_unknown_append_reads_the_pending_prefix_without_repeating_append(
     failed = rig.versions()[0]
     assert failed["state"] == "unknown" and failed["offset"] == 0
     assert json.loads(failed["pending_chunk"]) == [
-        block_signature(b) for b in projection.blocks
+        notion_sync.block_signature(b) for b in projection.blocks
     ]
     rig.restart()
     for _ in range(2):
@@ -389,16 +399,20 @@ async def test_unknown_append_reads_the_pending_prefix_without_repeating_append(
 
 
 @pytest.mark.parametrize("escaped", ["%3A", "%3a"])
-def test_eur_lex_query_value_colon_serialization_has_equal_signature_without_changing_blocks(
+def test_eur_lex_colon_normalization_keeps_signature_and_blocks(
     escaped,
 ):
     expected = linked_paragraph(EUR_LEX_URL)
     actual = linked_paragraph(EUR_LEX_URL.replace("CELEX:", "CELEX" + escaped))
     before = copy.deepcopy((expected, actual))
-    hashes = [content_hash(block) for block in before]
-    assert block_signature(expected) == block_signature(actual)
+    hashes = [contracts.content_hash(block) for block in before]
+    assert notion_sync.block_signature(expected) == notion_sync.block_signature(
+        actual
+    )
     assert (expected, actual) == before
-    assert [content_hash(block) for block in (expected, actual)] == hashes
+    assert [
+        contracts.content_hash(block) for block in (expected, actual)
+    ] == hashes
 
 
 @pytest.mark.parametrize(
@@ -446,9 +460,9 @@ def test_eur_lex_query_value_colon_serialization_has_equal_signature_without_cha
 def test_link_signature_does_not_hide_other_source_url_changes(
     expected, actual
 ):
-    assert block_signature(linked_paragraph(expected)) != block_signature(
-        linked_paragraph(actual)
-    )
+    assert notion_sync.block_signature(
+        linked_paragraph(expected)
+    ) != notion_sync.block_signature(linked_paragraph(actual))
 
 
 def encode_eur_lex_response(monkeypatch, api):
@@ -465,12 +479,12 @@ def encode_eur_lex_response(monkeypatch, api):
     monkeypatch.setattr(api, "_returned_block", returned)
 
 
-async def test_equivalent_link_in_append_ack_preserves_frozen_projection_and_never_reappends(
+async def test_equivalent_append_link_keeps_snapshot_without_reappend(
     rig, monkeypatch
 ):
     blocks = [linked_paragraph(EUR_LEX_URL)]
-    projection = replace(
-        projected(), blocks=blocks, digest=content_hash(blocks)
+    projection = dataclasses.replace(
+        projected(), blocks=blocks, digest=contracts.content_hash(blocks)
     )
     before = copy.deepcopy(projection)
     encode_eur_lex_response(monkeypatch, rig.api)
@@ -492,12 +506,12 @@ async def test_equivalent_link_in_append_ack_preserves_frozen_projection_and_nev
 @pytest.mark.parametrize(
     "original_url", [EUR_LEX_URL, EUR_LEX_URL.replace("CELEX:", "CELEX%3a")]
 )
-async def test_unknown_append_with_legacy_link_signature_recovers_read_only_after_restart(
+async def test_legacy_link_append_recovers_read_only_after_restart(
     rig, monkeypatch, original_url
 ):
     blocks = [linked_paragraph(original_url)]
-    projection = replace(
-        projected(), blocks=blocks, digest=content_hash(blocks)
+    projection = dataclasses.replace(
+        projected(), blocks=blocks, digest=contracts.content_hash(blocks)
     )
     encode_eur_lex_response(monkeypatch, rig.api)
     rig.journal.enqueue("material", projection)
@@ -507,7 +521,7 @@ async def test_unknown_append_with_legacy_link_signature_recovers_read_only_afte
     assert rig.versions()[0]["state"] == "unknown"
     # A pre-fix checkpoint contains the original link spelling, not a newly
     # computed canonical signature. Reconcile it without rewriting source data.
-    legacy_pending = [block_signature(blocks[0])]
+    legacy_pending = [notion_sync.block_signature(blocks[0])]
     legacy_pending[0]["text"][0]["format"]["link"] = original_url
     rig.journal.execute(
         "UPDATE notion_versions SET pending_chunk=?",
@@ -532,8 +546,8 @@ async def test_persisted_unknown_link_conflict_recovers_in_one_read_only_step(
     rig, monkeypatch
 ):
     blocks = [linked_paragraph(EUR_LEX_URL)]
-    projection = replace(
-        projected(), blocks=blocks, digest=content_hash(blocks)
+    projection = dataclasses.replace(
+        projected(), blocks=blocks, digest=contracts.content_hash(blocks)
     )
     encode_eur_lex_response(monkeypatch, rig.api)
     rig.journal.enqueue("material", projection)
@@ -541,7 +555,8 @@ async def test_persisted_unknown_link_conflict_recovers_in_one_read_only_step(
     rig.api.fail("append", landed=True)
     assert await rig.sync.step()
     rig.journal.execute(
-        "UPDATE notion_entities SET create_state='conflict',error='NOTION_PROJECTION_CONFLICT'"
+        "UPDATE notion_entities SET create_state='conflict',"
+        "error='NOTION_PROJECTION_CONFLICT'"
     )
     frozen = (rig.versions()[0]["blocks"], rig.versions()[0]["digest"])
     body = copy.deepcopy(rig.page()["blocks"])
@@ -563,7 +578,7 @@ async def test_persisted_unknown_link_conflict_recovers_in_one_read_only_step(
 
 
 @pytest.mark.parametrize("checkpoint_count", [40, 80])
-async def test_partial_conflict_uses_original_pending_count_and_appends_only_remaining_tail(
+async def test_partial_conflict_appends_only_original_pending_tail(
     rig, monkeypatch, checkpoint_count
 ):
     blocks = [linked_paragraph(EUR_LEX_URL) for _ in range(103)]
@@ -571,18 +586,18 @@ async def test_partial_conflict_uses_original_pending_count_and_appends_only_rem
         block["paragraph"]["rich_text"][0]["text"]["content"] += (
             f" — item {index}"
         )
-    projection = replace(
-        projected(), blocks=blocks, digest=content_hash(blocks)
+    projection = dataclasses.replace(
+        projected(), blocks=blocks, digest=contracts.content_hash(blocks)
     )
     encode_eur_lex_response(monkeypatch, rig.api)
     rig.journal.enqueue("material", projection)
     assert await rig.sync.step()
     rig.api.fail("append", landed=True)
-    original_chunk = sync_module._chunk
+    original_chunk = notion_sync._chunk
     # A legacy checkpoint may have used a smaller chunk than today's limit.
     with monkeypatch.context() as historical:
         historical.setattr(
-            sync_module,
+            notion_sync,
             "_chunk",
             lambda items, offset: original_chunk(items, offset)[
                 :checkpoint_count
@@ -619,19 +634,19 @@ async def test_partial_conflict_uses_original_pending_count_and_appends_only_rem
         rig.versions()[0]["state"] == "done"
         and rig.versions()[0]["offset"] == 103
     )
-    assert [block_signature(block) for block in rig.page()["blocks"]] == [
-        block_signature(block) for block in blocks
-    ]
+    assert [
+        notion_sync.block_signature(block) for block in rig.page()["blocks"]
+    ] == [notion_sync.block_signature(block) for block in blocks]
 
 
 @pytest.mark.parametrize("unknown", [False, True])
 @pytest.mark.parametrize("edit", ["text", "link"])
-async def test_real_human_edit_stays_conflicted_until_undo_then_recovers_read_only(
+async def test_human_edit_conflicts_until_undo_and_read_only_recovery(
     rig, unknown, edit
 ):
     blocks = [linked_paragraph(EUR_LEX_URL) for _ in range(103)]
-    projection = replace(
-        projected(), blocks=blocks, digest=content_hash(blocks)
+    projection = dataclasses.replace(
+        projected(), blocks=blocks, digest=contracts.content_hash(blocks)
     )
     rig.journal.enqueue("material", projection)
     assert await rig.sync.step()
@@ -676,7 +691,7 @@ async def test_real_human_edit_stays_conflicted_until_undo_then_recovers_read_on
 
 
 @pytest.mark.parametrize("finished", [False, True])
-async def test_conflict_without_page_or_unfinished_version_never_opens_a_write_path(
+async def test_unbound_or_terminal_conflict_cannot_open_write_path(
     rig, finished
 ):
     rig.journal.enqueue("material", projected())
@@ -692,7 +707,7 @@ async def test_conflict_without_page_or_unfinished_version_never_opens_a_write_p
     assert rig.versions() == versions and rig.api.calls == before
 
 
-async def test_large_material_is_chunked_to_eighty_and_completed_in_original_order(
+async def test_large_material_chunked_to_eighty_completed_in_original_order(
     rig,
 ):
     projection = projected(count=173)
@@ -707,7 +722,7 @@ async def test_large_material_is_chunked_to_eighty_and_completed_in_original_ord
     )
 
 
-async def test_unknown_middle_chunk_recovers_exact_prefix_then_only_appends_the_remaining_tail(
+async def test_unknown_chunk_recovers_prefix_then_appends_tail(
     rig,
 ):
     projection = projected(count=173)
@@ -729,15 +744,15 @@ async def test_unknown_middle_chunk_recovers_exact_prefix_then_only_appends_the_
     assert [
         len(value[1]) for name, value in rig.api.calls if name == "append"
     ] == [80, 80, 13]
-    assert [block_signature(b) for b in rig.page()["blocks"]] == [
-        block_signature(b) for b in projection.blocks
+    assert [notion_sync.block_signature(b) for b in rig.page()["blocks"]] == [
+        notion_sync.block_signature(b) for b in projection.blocks
     ]
 
 
 async def test_chunk_byte_budget_is_respected_before_eighty_items(rig):
     blocks = [paragraph("界" * 1800) for _ in range(80)]
-    projection = replace(
-        projected(), blocks=blocks, digest=content_hash(blocks)
+    projection = dataclasses.replace(
+        projected(), blocks=blocks, digest=contracts.content_hash(blocks)
     )
     rig.journal.enqueue("material", projection)
     await rig.drain()
@@ -760,16 +775,16 @@ async def test_chunk_byte_budget_is_respected_before_eighty_items(rig):
 async def test_delivery_property_changes_do_not_append_a_second_archive_body(
     rig,
 ):
-    original = edition_projection(
-        edition(),
+    original = newsletter_notion_content.edition_projection(
+        notion_content.edition(),
         run_id="offline-run",
-        packets=[packet()],
+        packets=[notion_content.packet()],
         include_personal=False,
     )
-    accepted = edition_projection(
-        edition(delivery_state="provider_accepted"),
+    accepted = newsletter_notion_content.edition_projection(
+        notion_content.edition(delivery_state="provider_accepted"),
         run_id="offline-run",
-        packets=[packet()],
+        packets=[notion_content.packet()],
         include_personal=False,
     )
     assert (
@@ -778,11 +793,11 @@ async def test_delivery_property_changes_do_not_append_a_second_archive_body(
     )
     rig.journal.enqueue("edition", original)
     await rig.drain()
-    before = Counter(name for name, _ in rig.api.calls)
+    before = collections.Counter(name for name, _ in rig.api.calls)
     body = copy.deepcopy(rig.page(original.key)["blocks"])
     rig.journal.enqueue("edition", accepted)
     await rig.drain()
-    after = Counter(name for name, _ in rig.api.calls)
+    after = collections.Counter(name for name, _ in rig.api.calls)
     assert after["create"] == before["create"]
     assert after["append"] == before["append"]
     assert after["upload_png"] == before["upload_png"]
@@ -830,12 +845,12 @@ async def test_human_body_edits_conflict_without_deleting_or_overwriting_them(
 
 
 @pytest.mark.parametrize("count", [3, 103])
-async def test_old_conflict_recovers_by_reading_then_appends_only_unwritten_tail(
-    rig, count
-):
+async def test_old_conflict_reads_before_appending_unwritten_tail(rig, count):
     projection = projected(count=count - 1, chart=True)
     projection.blocks[-1 if count == 3 else 63] = linked_paragraph(EUR_LEX_URL)
-    projection = replace(projection, digest=content_hash(projection.blocks))
+    projection = dataclasses.replace(
+        projection, digest=contracts.content_hash(projection.blocks)
+    )
     rig.journal.enqueue("edition", projection)
     assert await rig.sync.step() and await rig.sync.step()  # Create, upload.
     rig.api.fail("append", landed=True)
@@ -847,7 +862,8 @@ async def test_old_conflict_recovers_by_reading_then_appends_only_unwritten_tail
                     "CELEX:", "CELEX%3A"
                 )
     rig.journal.execute(
-        "UPDATE notion_entities SET create_state='conflict',error='NOTION_PROJECTION_CONFLICT'"
+        "UPDATE notion_entities SET create_state='conflict',"
+        "error='NOTION_PROJECTION_CONFLICT'"
     )
     # Mimic an old signature receipt and an expired upload already attached.
     old_receipt = rig.versions()[0]["pending_chunk"].replace(
@@ -879,7 +895,7 @@ async def test_old_conflict_recovers_by_reading_then_appends_only_unwritten_tail
     assert (rig.versions()[0]["blocks"], rig.versions()[0]["digest"]) == frozen
 
 
-async def test_body_conflict_retry_never_writes_and_human_undo_only_reopens_after_read(
+async def test_body_conflict_writes_only_after_undo_and_fresh_read(
     rig,
 ):
     rig.journal.enqueue("material", projected(count=81))
@@ -924,7 +940,7 @@ async def test_unlanded_unknown_conflict_stays_uncertain_without_any_write(rig):
     assert rig.api.count("append") == 1 and not rig.page()["blocks"]
 
 
-async def test_identity_conflict_without_bound_page_never_selects_or_creates_a_page(
+async def test_unbound_identity_conflict_never_selects_or_creates_page(
     rig,
 ):
     rig.journal.enqueue("material", projected())
@@ -934,7 +950,7 @@ async def test_identity_conflict_without_bound_page_never_selects_or_creates_a_p
     assert not rig.api.calls
 
 
-async def test_uploaded_chart_placeholder_becomes_signed_file_image_and_recovers_unknown_append(
+async def test_chart_upload_replaces_placeholder_and_recovers_append(
     rig,
 ):
     projection = projected(chart=True)
@@ -945,7 +961,7 @@ async def test_uploaded_chart_placeholder_becomes_signed_file_image_and_recovers
     )  # Persist uploaded PNG ID separately from append.
     assert rig.api.count("upload_png") == 1
     upload = rig.versions()[0]["upload_id"]
-    assert rig.api.uploads[upload]["png"] == PNG
+    assert rig.api.uploads[upload]["png"] == notion_content.PNG
     rig.api.fail("append", landed=True)
     assert await rig.sync.step()
     sent = next(value[1] for name, value in rig.api.calls if name == "append")
@@ -953,11 +969,13 @@ async def test_uploaded_chart_placeholder_becomes_signed_file_image_and_recovers
     image = next(b for b in sent if b["type"] == "image")
     assert image["image"]["file_upload"]["id"] == upload
     returned = next(b for b in rig.page()["blocks"] if b["type"] == "image")
-    expected = "chart-" + hashlib.sha256(PNG).hexdigest() + ".png"
-    assert block_signature(returned)["filename"] == expected
+    expected = (
+        "chart-" + hashlib.sha256(notion_content.PNG).hexdigest() + ".png"
+    )
+    assert notion_sync.block_signature(returned)["filename"] == expected
     returned["image"]["file"]["url"] = (
         "https://files.example.org/new-expiring-path/"
-        + quote(expected)
+        + parse.quote(expected)
         + "?signature=rotated"
     )
     rig.restart()
@@ -985,7 +1003,7 @@ async def test_wrong_image_basename_is_conflict_not_permission_to_append_again(
     assert rig.page()["blocks"] == before and rig.api.count("append") == 1
 
 
-async def test_expired_unattached_upload_after_restart_is_refreshed_before_any_append(
+async def test_expired_unattached_upload_refreshes_before_append(
     rig,
 ):
     rig.journal.enqueue("edition", projected(chart=True))
@@ -1015,7 +1033,7 @@ async def test_expired_unattached_upload_after_restart_is_refreshed_before_any_a
     assert rig.versions()[0]["state"] == "done" and rig.api.count("append") == 1
 
 
-async def test_old_upload_with_unknown_landed_append_is_reconciled_without_reupload(
+async def test_landed_unknown_append_recovers_without_reupload(
     rig,
 ):
     rig.journal.enqueue("edition", projected(chart=True))
@@ -1056,9 +1074,7 @@ def delivery_tables(store):
 
 
 @pytest.mark.parametrize("phase", ["create", "append", "patch"])
-async def test_known_rate_limit_defers_then_retries_without_touching_publication_or_send_ledgers(
-    rig, phase
-):
+async def test_rate_limit_retry_keeps_publication_and_send_ledgers(rig, phase):
     unrelated = rig.store.prepare(
         {
             "request_key": "offline-unrelated-edition",
@@ -1092,7 +1108,7 @@ async def test_known_rate_limit_defers_then_retries_without_touching_publication
 
 @pytest.mark.parametrize("phase", ["create", "append"])
 @pytest.mark.parametrize("landed", [False, True])
-async def test_cancellation_persists_unknown_and_restart_never_blindly_repeats_mutation(
+async def test_cancellation_preserves_unknown_without_blind_replay(
     rig, phase, landed
 ):
     rig.journal.enqueue("material", projected())
@@ -1117,7 +1133,7 @@ async def test_cancellation_persists_unknown_and_restart_never_blindly_repeats_m
         )
 
 
-async def test_material_versions_are_appended_in_registration_order_without_recreating_page(
+async def test_versions_append_in_order_without_recreating_page(
     rig,
 ):
     first = projected(count=83, prefix="First frozen material")
@@ -1131,8 +1147,10 @@ async def test_material_versions_are_appended_in_registration_order_without_recr
         p.digest for p in (first, second, third)
     ]
     assert all(v["state"] == "done" for v in versions)
-    assert [block_signature(b) for b in rig.page()["blocks"]] == [
-        block_signature(b) for p in (first, second, third) for b in p.blocks
+    assert [notion_sync.block_signature(b) for b in rig.page()["blocks"]] == [
+        notion_sync.block_signature(b)
+        for p in (first, second, third)
+        for b in p.blocks
     ]
     assert rig.api.count("create") == 1
     assert [
@@ -1140,7 +1158,7 @@ async def test_material_versions_are_appended_in_registration_order_without_recr
     ] == [80, 3, 4, 2]
 
 
-async def test_unknown_first_material_version_must_resolve_before_later_versions(
+async def test_unknown_first_version_blocks_later_versions(
     rig,
 ):
     first, second = projected(prefix="First"), projected(prefix="Second")
@@ -1158,9 +1176,11 @@ async def test_unknown_first_material_version_must_resolve_before_later_versions
 async def test_scan_imports_real_artifact_timestamp_once_and_restart_is_a_no_op(
     rig,
 ):
-    repository = WorkflowRepository(rig.store)
-    definition = load_definition(
-        Path(str(files("newsletter").joinpath("workflows/daily.yaml")))
+    repository = newsletter_workflow_repository.WorkflowRepository(rig.store)
+    definition = newsletter_workflow_definition.load_definition(
+        pathlib.Path(
+            str(resources.files("newsletter").joinpath("workflows/daily.yaml"))
+        )
     )
     repository.start("offline-candidate-run", definition, {"issue_date": DAY})
     with rig.store.transaction():
@@ -1168,7 +1188,7 @@ async def test_scan_imports_real_artifact_timestamp_once_and_restart_is_a_no_op(
             "offline-candidate-run",
             "candidates",
             "",
-            {"candidates": [candidate()]},
+            {"candidates": [notion_content.candidate()]},
         )
     assert (
         "T"
@@ -1191,13 +1211,13 @@ async def test_scan_imports_real_artifact_timestamp_once_and_restart_is_a_no_op(
     assert rig.api.calls == calls
 
 
-def test_destination_change_requires_explicit_migration_without_reassigning_journal(
+def test_destination_change_requires_migration_not_reassignment(
     rig,
 ):
     rig.journal.enqueue("material", projected())
     before = rig.journal.entity(KEY)
     with pytest.raises(ValueError, match="explicit migration required"):
-        NotionJournal(
+        notion_journal.NotionJournal(
             rig.store, {**DESTINATION, "editions": "another-destination"}
         )
     assert rig.journal.entity(KEY) == before

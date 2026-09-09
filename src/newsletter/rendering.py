@@ -3,29 +3,21 @@
 from __future__ import annotations
 
 import base64
+import datetime
+import functools
 import hashlib
+import importlib.resources as resources
 import json
-from datetime import date, datetime, timedelta
-from functools import lru_cache
-from importlib.resources import files
 from typing import cast
 
-from jinja2 import Environment, StrictUndefined, Template, select_autoescape
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import jinja2
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from .charts import chart_metadata, render_chart_png
-from .contracts import (
-    parse_message,
-    to_dict,
-    validate_draft,
-    validate_issue_date,
-    validate_personal_digest,
-    validate_public_url,
-)
-from .email_templates import render_template
-from .email_templates import validate_template as validate_template
-from .types import Payload, RenderResult
-from .usage import UsageSummary, normalize_usage_summary, usage_footer
+import newsletter.charts as charts
+import newsletter.contracts as contracts
+import newsletter.email_templates as email_templates
+import newsletter.types as types
+import newsletter.usage as newsletter_usage
 
 RENDERER_VERSION = "python-editorial/6"
 CHART_CID = "cid:newsletter-chart"
@@ -52,7 +44,7 @@ def _limitations(text: str) -> list[str]:
 
 
 def _reading_paragraphs(text: str) -> list[str]:
-    """Turn plain-text blank lines into paragraphs without interpreting markup."""
+    """Split plain text into paragraphs without interpreting markup."""
     paragraphs = []
     lines = []
     for line in text.splitlines():
@@ -66,199 +58,42 @@ def _reading_paragraphs(text: str) -> list[str]:
     return paragraphs
 
 
-@lru_cache(maxsize=1)
-def load_template() -> Template:
+@functools.lru_cache(maxsize=1)
+def load_template() -> jinja2.Template:
     """Load the packaged email template for rendering and startup validation."""
-    environment = Environment(
-        autoescape=select_autoescape(default=True, default_for_string=True),
-        undefined=StrictUndefined,
+    environment = jinja2.Environment(
+        autoescape=jinja2.select_autoescape(
+            default=True, default_for_string=True
+        ),
+        undefined=jinja2.StrictUndefined,
         trim_blocks=True,
         lstrip_blocks=True,
         keep_trailing_newline=True,
     )
     return environment.from_string(
-        files("newsletter")
+        resources.files("newsletter")
         .joinpath("templates/edition.html.j2")
         .read_text(encoding="utf-8")
     )
 
 
-def preview_html(rendered: RenderResult) -> str:
-    """Embed the frozen chart for a browser without altering the email output."""
+def preview_html(rendered: types.RenderResult) -> str:
+    """Embed a frozen chart in a browser copy without altering email output."""
     return rendered["html"].replace(
         'src="cid:newsletter-chart"',
         'src="data:image/png;base64,' + rendered.get("chart_png", "") + '"',
     )
 
 
-def render_edition(
-    draft: Payload,
-    packets: list[Payload],
-    issue_date: str,
-    is_fixture: bool = False,
-    personal_digest: Payload | None = None,
-    usage: UsageSummary | Payload | None = None,
-    *,
-    template_source: str | None = None,
-) -> RenderResult:
-    """Return frozen HTML/plain text/base64 PNG and a hash of those exact bytes.
-
-    Public URL validation is syntactic here: rendering makes no network calls.
-    Unknown citations or unsafe source links fail closed via the shared contract.
-    """
-    draft_message = parse_message(draft, pb.Draft)
-    packet_messages = [parse_message(packet, pb.Packet) for packet in packets]
-    validate_draft(draft_message, packet_messages)
-    validate_issue_date(issue_date)
-    personal = None
-    if personal_digest is not None:
-        validate_personal_digest(personal_digest)
-        personal = to_dict(parse_message(personal_digest, pb.PersonalDigest))
-        meta = []
-        if personal["time_window_hours"]:
-            meta.append(f"最近 {personal['time_window_hours']} 小时")
-        if "task_count" in personal:
-            meta.append(f"{personal['task_count']} 条来源记录")
-        provenance = (
-            [personal["source_label"]] if personal["source_label"] else []
-        )
-        if personal["fetched_at"]:
-            at = datetime.fromisoformat(
-                personal["fetched_at"].replace("Z", "+00:00")
-            )
-            # validate_personal_digest already requires an aware timestamp.
-            zone = (
-                "UTC"
-                if cast(timedelta, at.utcoffset()).total_seconds() == 0
-                else at.strftime("%z")
-            )
-            provenance.append(at.strftime("%m-%d %H:%M ") + zone + " 获取")
-        personal["meta"] = " · ".join(meta)
-        personal["provenance"] = " · ".join(provenance)
-    # Render the same normalized ProtoJSON shape that was validated, including
-    # optional scalar defaults and oneof presence, never the unchecked original.
-    draft = to_dict(draft_message)
-    packets = [to_dict(packet) for packet in packet_messages]
-    sources = {}
-    for packet in packets:
-        for source in packet["content"].get("sources", []):
-            sources[f"{packet['id']}/{source['id']}"] = source
-    references: list[Payload] = []
-    numbers: dict[str, int] = {}
-
-    def cite(citation: str) -> Payload:
-        if citation not in sources:
-            raise ValueError(f"UNKNOWN_CITATION: {citation}")
-        if citation not in numbers:
-            source = sources[citation]
-            validate_public_url(source["url"])
-            numbers[citation] = len(references) + 1
-            references.append(
-                {
-                    "number": numbers[citation],
-                    "citation": citation,
-                    "title": source["title"],
-                    "url": source["url"],
-                    "published_at": source.get("published_at", ""),
-                    "access_scope": _ACCESS_LABELS[source["access_scope"]],
-                }
-            )
-        return references[numbers[citation] - 1]
-
-    sections = [
-        {
-            "kind": section["kind"],
-            "label": _KIND_LABELS[section["kind"]],
-            "heading": section["heading"],
-            "limitations": _limitations(section.get("limitations", "")),
-            "paragraphs": [
-                {
-                    "text": p["text"],
-                    "references": [cite(c) for c in p.get("citations", [])],
-                }
-                for p in section["paragraphs"]
-            ],
-        }
-        for section in draft["sections"]
-    ]
-    fixture = bool(
-        is_fixture
-        or any(packet.get("is_fixture", False) for packet in packets)
-        or personal
-        and personal["is_fixture"]
-    )
-    chart = None
-    chart_bytes = b""
-    if draft.get("chart"):
-        chart = {
-            **draft["chart"],
-            "limitations": _limitations(draft["chart"].get("limitations", "")),
-            "rows": [
-                {
-                    "label": p["label"],
-                    "value": p["decimal_value"]
-                    if "decimal_value" in p
-                    else None,
-                    "missing_reason": p.get("missing_reason", ""),
-                    "references": [cite(c) for c in p.get("citations", [])],
-                }
-                for p in draft["chart"]["points"]
-            ],
-        }
-        chart["metadata"] = chart_metadata(chart)
-        chart_references = {
-            ref["number"]: ref
-            for row in chart["rows"]
-            for ref in row["references"]
-        }
-        chart["source_note"] = "来源：" + "；".join(
-            f"[{ref['number']}] {ref['title']}"
-            + (f" · {ref['published_at']}" if ref["published_at"] else "")
-            for ref in chart_references.values()
-        )
-        chart_bytes = render_chart_png(chart, fixture)
-    reading = None
-    if draft.get("recommended_reading"):
-        recommendation = draft["recommended_reading"]
-        reading = {
-            "reference": cite(recommendation["citation"]),
-            "supporting_references": [
-                cite(citation)
-                for citation in recommendation["supporting_citations"]
-            ],
-            "reason": recommendation["reason"],
-            "paragraphs": _reading_paragraphs(recommendation["reason"]),
-        }
-    footer = usage_footer(
-        normalize_usage_summary(usage) if usage is not None else None,
-        is_fixture=fixture,
-    )
-    context = {
-        "draft": {
-            **draft,
-            "introduction": draft.get("introduction", ""),
-            "limitations": _limitations(draft.get("limitations", "")),
-        },
-        "sections": sections,
-        "references": references,
-        "chart": chart,
-        "chart_cid": CHART_CID,
-        "reading": reading,
-        "issue_date": str(issue_date),
-        "date_label": date.fromisoformat(issue_date).strftime("%Y / %m / %d"),
-        "weekday_label": "星期"
-        + "一二三四五六日"[date.fromisoformat(issue_date).weekday()],
-        "is_fixture": fixture,
-        "personal": personal,
-        "usage_footer": footer,
-    }
-    # None deliberately preserves the packaged renderer for legacy runs. New
-    # runs supply source bytes from their frozen workflow inputs, never a path.
-    html = (
-        load_template().render(**context)
-        if template_source is None
-        else render_template(template_source, context)
-    )
+def _render_text(context: types.Payload, draft: types.Payload) -> str:
+    sections = context["sections"]
+    references = context["references"]
+    chart = context["chart"]
+    reading = context["reading"]
+    issue_date = context["issue_date"]
+    personal = context["personal"]
+    fixture = context["is_fixture"]
+    footer = context["usage_footer"]
     text_lines = []
     if fixture:
         text_lines.extend(["【试刊样张 · 模拟材料，非真实新闻】", ""])
@@ -338,7 +173,186 @@ def render_edition(
         text_lines.extend([personal["provenance"], personal["limitations"], ""])
     if footer:
         text_lines.extend([footer, ""])
-    text = "\n".join(text_lines).rstrip() + "\n"
+    return "\n".join(text_lines).rstrip() + "\n"
+
+
+def render_edition(
+    draft: types.Payload,
+    packets: list[types.Payload],
+    issue_date: str,
+    is_fixture: bool = False,
+    personal_digest: types.Payload | None = None,
+    usage: newsletter_usage.UsageSummary | types.Payload | None = None,
+    *,
+    template_source: str | None = None,
+) -> types.RenderResult:
+    """Return frozen HTML/plain text/base64 PNG and a hash of those exact bytes.
+
+    Public URL validation is syntactic here: rendering makes no network calls.
+    Unknown citations or unsafe source links fail the shared contract checks.
+    """
+    draft_message = contracts.parse_message(draft, editorial_pb2.Draft)
+    packet_messages = [
+        contracts.parse_message(packet, editorial_pb2.Packet)
+        for packet in packets
+    ]
+    contracts.validate_draft(draft_message, packet_messages)
+    contracts.validate_issue_date(issue_date)
+    personal = None
+    if personal_digest is not None:
+        contracts.validate_personal_digest(personal_digest)
+        personal = contracts.to_dict(
+            contracts.parse_message(
+                personal_digest, editorial_pb2.PersonalDigest
+            )
+        )
+        meta = []
+        if personal["time_window_hours"]:
+            meta.append(f"最近 {personal['time_window_hours']} 小时")
+        if "task_count" in personal:
+            meta.append(f"{personal['task_count']} 条来源记录")
+        provenance = (
+            [personal["source_label"]] if personal["source_label"] else []
+        )
+        if personal["fetched_at"]:
+            at = datetime.datetime.fromisoformat(
+                personal["fetched_at"].replace("Z", "+00:00")
+            )
+            # validate_personal_digest already requires an aware timestamp.
+            zone = (
+                "UTC"
+                if cast(datetime.timedelta, at.utcoffset()).total_seconds() == 0
+                else at.strftime("%z")
+            )
+            provenance.append(at.strftime("%m-%d %H:%M ") + zone + " 获取")
+        personal["meta"] = " · ".join(meta)
+        personal["provenance"] = " · ".join(provenance)
+    # Render the same normalized ProtoJSON shape that was validated, including
+    # optional scalar defaults and oneof presence, never the unchecked original.
+    draft = contracts.to_dict(draft_message)
+    packets = [contracts.to_dict(packet) for packet in packet_messages]
+    sources = {}
+    for packet in packets:
+        for source in packet["content"].get("sources", []):
+            sources[f"{packet['id']}/{source['id']}"] = source
+    references: list[types.Payload] = []
+    numbers: dict[str, int] = {}
+
+    def cite(citation: str) -> types.Payload:
+        if citation not in sources:
+            raise ValueError(f"UNKNOWN_CITATION: {citation}")
+        if citation not in numbers:
+            source = sources[citation]
+            contracts.validate_public_url(source["url"])
+            numbers[citation] = len(references) + 1
+            references.append(
+                {
+                    "number": numbers[citation],
+                    "citation": citation,
+                    "title": source["title"],
+                    "url": source["url"],
+                    "published_at": source.get("published_at", ""),
+                    "access_scope": _ACCESS_LABELS[source["access_scope"]],
+                }
+            )
+        return references[numbers[citation] - 1]
+
+    sections = [
+        {
+            "kind": section["kind"],
+            "label": _KIND_LABELS[section["kind"]],
+            "heading": section["heading"],
+            "limitations": _limitations(section.get("limitations", "")),
+            "paragraphs": [
+                {
+                    "text": p["text"],
+                    "references": [cite(c) for c in p.get("citations", [])],
+                }
+                for p in section["paragraphs"]
+            ],
+        }
+        for section in draft["sections"]
+    ]
+    fixture = bool(
+        is_fixture
+        or any(packet.get("is_fixture", False) for packet in packets)
+        or (personal and personal["is_fixture"])
+    )
+    chart = None
+    chart_bytes = b""
+    if draft.get("chart"):
+        chart = {
+            **draft["chart"],
+            "limitations": _limitations(draft["chart"].get("limitations", "")),
+            "rows": [
+                {
+                    "label": p["label"],
+                    "value": p.get("decimal_value"),
+                    "missing_reason": p.get("missing_reason", ""),
+                    "references": [cite(c) for c in p.get("citations", [])],
+                }
+                for p in draft["chart"]["points"]
+            ],
+        }
+        chart["metadata"] = charts.chart_metadata(chart)
+        chart_references = {
+            ref["number"]: ref
+            for row in chart["rows"]
+            for ref in row["references"]
+        }
+        chart["source_note"] = "来源：" + "；".join(
+            f"[{ref['number']}] {ref['title']}"
+            + (f" · {ref['published_at']}" if ref["published_at"] else "")
+            for ref in chart_references.values()
+        )
+        chart_bytes = charts.render_chart_png(chart, fixture)
+    reading = None
+    if draft.get("recommended_reading"):
+        recommendation = draft["recommended_reading"]
+        reading = {
+            "reference": cite(recommendation["citation"]),
+            "supporting_references": [
+                cite(citation)
+                for citation in recommendation["supporting_citations"]
+            ],
+            "reason": recommendation["reason"],
+            "paragraphs": _reading_paragraphs(recommendation["reason"]),
+        }
+    footer = newsletter_usage.usage_footer(
+        newsletter_usage.normalize_usage_summary(usage)
+        if usage is not None
+        else None,
+        is_fixture=fixture,
+    )
+    context = {
+        "draft": {
+            **draft,
+            "introduction": draft.get("introduction", ""),
+            "limitations": _limitations(draft.get("limitations", "")),
+        },
+        "sections": sections,
+        "references": references,
+        "chart": chart,
+        "chart_cid": CHART_CID,
+        "reading": reading,
+        "issue_date": str(issue_date),
+        "date_label": datetime.date.fromisoformat(issue_date).strftime(
+            "%Y / %m / %d"
+        ),
+        "weekday_label": "星期"
+        + "一二三四五六日"[datetime.date.fromisoformat(issue_date).weekday()],
+        "is_fixture": fixture,
+        "personal": personal,
+        "usage_footer": footer,
+    }
+    # None deliberately preserves the packaged renderer for legacy runs. New
+    # runs supply source bytes from their frozen workflow inputs, never a path.
+    html = (
+        load_template().render(**context)
+        if template_source is None
+        else email_templates.render_template(template_source, context)
+    )
+    text = _render_text(context, draft)
     result = {
         "html": html,
         "text": text,

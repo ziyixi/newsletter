@@ -1,10 +1,10 @@
-"""Bilingual counterexamples for local private selection; no real account data."""
+"""Test bilingual private-selection counterexamples with fictional data."""
 
 import copy
 
 import pytest
 
-from newsletter.personal import item_priority, select_personal_items
+import newsletter.personal as personal
 
 
 def item(title, detail, rank=1):
@@ -31,8 +31,8 @@ def test_routine_notices_do_not_manufacture_payment_actions_or_fill_slots(
     title, detail
 ):
     original = item(title, detail)
-    assert item_priority(original) == "routine"
-    selected = select_personal_items([original], 5)
+    assert personal.item_priority(original) == "routine"
+    selected = personal.select_personal_items([original], 5)
     assert selected.items == []
     assert selected.routine_omitted == 1
     assert original == item(title, detail)
@@ -64,8 +64,8 @@ def test_routine_notices_do_not_manufacture_payment_actions_or_fill_slots(
 )
 def test_autopay_and_statement_terms_never_suppress_an_exception(detail):
     candidate = item("Credit card statement available / 信用卡账单已出", detail)
-    selected = select_personal_items([candidate], 1)
-    assert item_priority(candidate) == "risk"
+    selected = personal.select_personal_items([candidate], 1)
+    assert personal.item_priority(candidate) == "risk"
     assert selected.items == [candidate]
 
 
@@ -105,16 +105,16 @@ def test_unknown_manual_deadline_or_nonroutine_document_is_retained(
     title, detail
 ):
     candidate = item(title, detail)
-    assert item_priority(candidate) != "routine"
-    assert select_personal_items([candidate], 5).items == [candidate]
+    assert personal.item_priority(candidate) != "routine"
+    assert personal.select_personal_items([candidate], 5).items == [candidate]
 
 
 def test_unknown_autopay_word_alone_is_not_confirmation():
     candidate = item(
         "Payment settings", "Autopay information is provided without a status."
     )
-    assert item_priority(candidate) == "unknown"
-    assert select_personal_items([candidate], 1).items == [candidate]
+    assert personal.item_priority(candidate) == "unknown"
+    assert personal.select_personal_items([candidate], 1).items == [candidate]
 
 
 @pytest.mark.parametrize(
@@ -125,7 +125,7 @@ def test_concrete_pickup_action_precedes_unclassified_notice(detail):
         item("普通通知", "没有具体行动要求。", 1),
         item("Parcel", detail, 9),
     ]
-    selected = select_personal_items(candidates, 1)
+    selected = personal.select_personal_items(candidates, 1)
     assert selected.items[0]["title"] == "Parcel"
     assert selected.items[0]["detail"] == detail
 
@@ -139,7 +139,7 @@ def test_separate_cards_do_not_inherit_each_others_autopay():
             2,
         ),
     ]
-    selected = select_personal_items(candidates, 5)
+    selected = personal.select_personal_items(candidates, 5)
     assert [entry["title"] for entry in selected.items] == [
         candidates[1]["title"]
     ]
@@ -158,8 +158,8 @@ def test_risk_then_action_then_unknown_is_stable_and_does_not_mutate():
         item("Other security alert", "Review suspicious activity.", 10),
     ]
     before = copy.deepcopy(candidates)
-    first = select_personal_items(candidates, 3)
-    assert first == select_personal_items(candidates, 3)
+    first = personal.select_personal_items(candidates, 3)
+    assert first == personal.select_personal_items(candidates, 3)
     assert [entry["title"] for entry in first.items] == [
         "Bank notice",
         "Other security alert",
@@ -174,7 +174,9 @@ def test_only_exact_duplicates_are_removed_not_similar_risk_alerts():
     first = item("Security alert", "Account A reported an unknown login.", 1)
     exact_duplicate = {**first, "rank": 2}
     distinct = item("Security alert", "Account B reported an unknown login.", 3)
-    selected = select_personal_items([first, exact_duplicate, distinct], 5)
+    selected = personal.select_personal_items(
+        [first, exact_duplicate, distinct], 5
+    )
     assert len(selected.items) == 2
     assert selected.duplicates_omitted == 1
     assert selected.items[1]["detail"] == distinct["detail"]
@@ -182,15 +184,15 @@ def test_only_exact_duplicates_are_removed_not_similar_risk_alerts():
 
 @pytest.mark.parametrize("limit", [0, 11, True])
 def test_invalid_selection_limits_fail_closed(limit):
-    with pytest.raises(ValueError):
-        select_personal_items([], limit)
+    with pytest.raises(ValueError, match="Invalid personal selection limit"):
+        personal.select_personal_items([], limit)
 
 
-def test_negated_risk_is_retained_when_summary_context_cannot_verify_resolution():
+def test_negated_risk_is_kept_without_verified_resolution():
     candidate = item(
         "Statement available",
         "Autopay is enabled. No overdue balance was reported.",
     )
     # A conservative false positive is preferable to deriving resolved state
     # from a fragment of a model-generated description.
-    assert select_personal_items([candidate], 1).items == [candidate]
+    assert personal.select_personal_items([candidate], 1).items == [candidate]

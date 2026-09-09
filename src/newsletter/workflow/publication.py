@@ -1,44 +1,32 @@
 """Publish reviewed stories, not an all-or-nothing model-written issue.
 
 Only code-owned, independently reviewed component receipts can admit text to the
-edition. The assembler never rewrites a claim, turns a failed review into a pass,
+edition. The assembler never rewrites claims, turns failed reviews into passes,
 or calls a model. Immutable brief/deep results survive a later research failure;
 the frozen publication records an explicit disposition for every selected topic.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+import copy
 import json
 import re
-from collections.abc import Mapping, Sequence
-from copy import deepcopy
-from typing import Any
-from urllib.parse import urldefrag
+import urllib.parse as parse
 
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from newsletter.contracts import (
-    IDENTIFIER_PATTERN,
-    MAX_MESSAGE_BYTES,
-    MAX_PACKETS,
-    canonical_json,
-    content_hash,
-    parse_message,
-    validate_draft,
-    validate_issue_date,
-    validate_packet_body,
-    validate_public_url,
-)
-from newsletter.store import Store, StoreError, now
-from newsletter.types import Payload
+import newsletter.contracts as contracts
+import newsletter.store as newsletter_store
+import newsletter.types as types
+import newsletter.workflow.components as components
 
 MAX_STORIES = 99
 MAX_VERSIONS = 8
 MAX_RESULT_BYTES = 4 * 1024 * 1024
-_ID = re.compile(IDENTIFIER_PATTERN + r"\Z")
+_ID = re.compile(contracts.IDENTIFIER_PATTERN + r"\Z")
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _MODES = frozenset({"brief", "deep"})
-_OPTIONAL_COMPONENTS = ("recommended_reading", "chart")
 _RESULT_FIELDS = frozenset(
     {
         "story_id",
@@ -71,20 +59,30 @@ _WITHDRAWAL_FIELDS = frozenset(
 
 
 class PublicationError(ValueError):
-    """Finite diagnostics never include model text, secrets or upstream errors."""
+    """Emit finite diagnostics without model text or upstream errors."""
 
     def __init__(self, code: str = "invalid_publication_result") -> None:
         self.code = code
         super().__init__(code)
 
 
-def body_content(content: Mapping[str, Any]) -> Payload:
-    """The exact body reviewed independently of removable reading/chart extras."""
-    return {
-        key: value
-        for key, value in content.items()
-        if key not in _OPTIONAL_COMPONENTS
-    }
+def _stored_object(body: str) -> types.Payload:
+    value: object = json.loads(body)
+    if not isinstance(value, dict):
+        raise PublicationError()
+    return value
+
+
+def _stored_objects(body: str) -> list[types.Payload]:
+    values: object = json.loads(body)
+    if not isinstance(values, list):
+        raise PublicationError()
+    objects: list[types.Payload] = []
+    for value in values:
+        if not isinstance(value, dict):
+            raise PublicationError()
+        objects.append(value)
+    return objects
 
 
 def _identifier(value: object) -> None:
@@ -92,9 +90,9 @@ def _identifier(value: object) -> None:
         raise PublicationError()
 
 
-def _task(task: Payload) -> None:
+def _task(task: types.Payload) -> None:
     try:
-        parse_message(task, pb.ResearchTask)
+        contracts.parse_message(task, editorial_pb2.ResearchTask)
         _identifier(task.get("id"))
         if (
             type(task.get("priority")) is not int
@@ -121,42 +119,27 @@ def _task(task: Payload) -> None:
         ):
             raise PublicationError()
         for url in task["source_urls"]:
-            validate_public_url(url)
+            contracts.validate_public_url(url)
     except PublicationError:
         raise
     except (ValueError, TypeError, KeyError, AttributeError):
         raise PublicationError() from None
 
 
-def _citations(value: object) -> set[str]:
-    result: set[str] = set()
-    if isinstance(value, dict):
-        for name, child in value.items():
-            if name == "citation" and isinstance(child, str):
-                result.add(child)
-            elif name in {"citations", "supporting_citations"} and isinstance(
-                child, list
-            ):
-                result.update(item for item in child if isinstance(item, str))
-            else:
-                result.update(_citations(child))
-    elif isinstance(value, list):
-        for child in value:
-            result.update(_citations(child))
-    return result
-
-
 def _receipt(
-    component: str, value: Payload, result: Payload, sources: Payload
+    component: str,
+    value: types.Payload,
+    result: types.Payload,
+    sources: types.Payload,
 ) -> None:
-    references = _citations(value)
+    references = components.citations(value)
     if not references or any(
         ref not in sources or sources[ref]["access_scope"] == "metadata"
         for ref in references
     ):
         raise PublicationError()
-    urls = {urldefrag(sources[ref]["url"])[0] for ref in references}
-    digest = content_hash(value)
+    urls = {parse.urldefrag(sources[ref]["url"])[0] for ref in references}
+    digest = contracts.content_hash(value)
     for assessment in result["assessments"]:
         if not isinstance(assessment, dict):
             continue
@@ -193,33 +176,14 @@ def _receipt(
             continue
         if any(not isinstance(url, str) for url in opened):
             continue
-        if urls <= {urldefrag(url)[0] for url in opened}:
+        if urls <= {parse.urldefrag(url)[0] for url in opened}:
             return
     raise PublicationError()
 
 
-def _single_draft(content: Payload) -> Payload:
-    draft: Payload = {
-        "subject": "每日简报",
-        "title": "每日简报",
-        "introduction": "",
-        "limitations": "",
-        "sections": [
-            {
-                "kind": content["kind"],
-                "heading": content["title"],
-                "paragraphs": content["paragraphs"],
-                "limitations": content["limitations"],
-            }
-        ],
-    }
-    for name in _OPTIONAL_COMPONENTS:
-        if name in content:
-            draft[name] = content[name]
-    return draft
-
-
-def _validate_withdrawals(result: Payload, sources: Payload) -> None:
+def _validate_withdrawals(
+    result: types.Payload, sources: types.Payload
+) -> None:
     withdrawals = result.get("withdrawals", [])
     if not isinstance(withdrawals, list) or len(withdrawals) > 1:
         raise PublicationError()
@@ -272,24 +236,26 @@ def _validate_withdrawals(result: Payload, sources: Payload) -> None:
             )
         ):
             raise PublicationError()
-        if not {urldefrag(sources[ref]["url"])[0] for ref in evidence} <= {
-            urldefrag(url)[0] for url in opened
-        }:
+        if not {
+            parse.urldefrag(sources[ref]["url"])[0] for ref in evidence
+        } <= {parse.urldefrag(url)[0] for url in opened}:
             raise PublicationError()
 
 
 def _withdrawn(
-    results: Sequence[Payload],
+    results: Sequence[types.Payload],
 ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """A fresh evidence-backed correction invalidates only exact old components."""
+    """Invalidate exact old components using an evidence-backed correction."""
     bodies: dict[str, set[str]] = {}
     signals: dict[str, set[str]] = {}
-    prior_bodies: dict[tuple[str, str], list[Payload]] = {}
+    prior_bodies: dict[tuple[str, str], list[types.Payload]] = {}
     for prior in results:
         if prior["mode"] == "brief" and prior["content"] is not None:
             key = (
                 prior["story_id"],
-                content_hash(body_content(prior["content"])),
+                contracts.content_hash(
+                    components.body_content(prior["content"], copy_values=False)
+                ),
             )
             prior_bodies.setdefault(key, []).append(prior)
     for result in results:
@@ -313,7 +279,8 @@ def _withdrawn(
                 signal = prior["signal"]
                 if item["affected_signal_hash"] and (
                     signal is None
-                    or content_hash(signal) != item["affected_signal_hash"]
+                    or contracts.content_hash(signal)
+                    != item["affected_signal_hash"]
                 ):
                     continue
                 bodies.setdefault(item["story_id"], set()).add(
@@ -327,16 +294,18 @@ def _withdrawn(
 
 
 def _available(
-    result: Payload, field: str, withdrawn: dict[str, set[str]]
+    result: types.Payload, field: str, withdrawn: dict[str, set[str]]
 ) -> bool:
     content = result[field]
-    return content is not None and content_hash(
-        body_content(content) if field == "content" else content
+    return content is not None and contracts.content_hash(
+        components.body_content(content, copy_values=False)
+        if field == "content"
+        else content
     ) not in withdrawn.get(result["story_id"], set())
 
 
-def validate_result(result: Payload) -> None:
-    """Check exact content/packet bindings, not a model's naked approval boolean.
+def validate_result(result: types.Payload) -> None:
+    """Check exact content/packet bindings, not model approval alone.
 
     These receipts are generated by the trusted StoryEditor from separate writer
     and reviewer calls and observed search/open events. They are an internal
@@ -345,65 +314,46 @@ def validate_result(result: Payload) -> None:
     try:
         if (
             not isinstance(result, dict)
-            or not _RESULT_FIELDS <= set(result)
+            or not set(result) >= _RESULT_FIELDS
             or set(result) - (_RESULT_FIELDS | {"withdrawals"})
             or result.get("mode") not in _MODES
             or not isinstance(result.get("reason"), str)
             or not result["reason"].strip()
             or len(result["reason"]) > 4000
-            or len(canonical_json(result).encode()) > MAX_RESULT_BYTES
+            or len(contracts.canonical_json(result).encode()) > MAX_RESULT_BYTES
         ):
             raise PublicationError()
         _identifier(result["story_id"])
         packets = result["packets"]
-        if not isinstance(packets, list) or len(packets) > MAX_PACKETS:
+        if (
+            not isinstance(packets, list)
+            or len(packets) > contracts.MAX_PACKETS
+        ):
             raise PublicationError()
-        if result["provenance"] != {"packets_hash": content_hash(packets)}:
+        if result["provenance"] != {
+            "packets_hash": contracts.content_hash(packets)
+        }:
             raise PublicationError()
         for name in ("assessments", "issues"):
             if not isinstance(result[name], list) or len(result[name]) > 64:
                 raise PublicationError()
-        sources: Payload = {}
+        sources: types.Payload = {}
         packet_ids: set[str] = set()
         for packet in packets:
-            parse_message(packet, pb.Packet)
+            contracts.parse_message(packet, editorial_pb2.Packet)
             _identifier(packet["id"])
             if packet["id"] in packet_ids:
                 raise PublicationError()
             packet_ids.add(packet["id"])
-            validate_packet_body(packet["content"])
-            if packet["content_hash"] != content_hash(packet["content"]):
+            contracts.validate_packet_body(packet["content"])
+            if packet["content_hash"] != contracts.content_hash(
+                packet["content"]
+            ):
                 raise PublicationError()
             for source in packet["content"]["sources"]:
                 sources[packet["id"] + "/" + source["id"]] = source
         _validate_withdrawals(result, sources)
-        for name in ("content", "signal"):
-            content = result[name]
-            if content is None:
-                continue
-            # Shared protobuf owns the public shape; this module only adds trust
-            # and admission constraints. Preserve exact submitted bytes for hash.
-            parse_message(content, getattr(pb, "StoryContent"))
-            if content["story_id"] != result["story_id"]:
-                raise PublicationError()
-            validate_draft(_single_draft(content), packets)
-            if any(
-                not paragraph["citations"]
-                for paragraph in content["paragraphs"]
-            ):
-                raise PublicationError()
-            if name == "signal":
-                if any(key in content for key in _OPTIONAL_COMPONENTS):
-                    raise PublicationError()
-                _receipt("signal", content, result, sources)
-            else:
-                _receipt("body", body_content(content), result, sources)
-                for field, component in (
-                    ("recommended_reading", "reading"),
-                    ("chart", "chart"),
-                ):
-                    if field in content:
-                        _receipt(component, content[field], result, sources)
+        _validate_components(result, sources)
     except PublicationError:
         raise
     except (
@@ -417,10 +367,50 @@ def validate_result(result: Payload) -> None:
         raise PublicationError() from None
 
 
-def _merge_packets(chosen: Sequence[Payload]) -> list[Payload]:
-    by_id: Payload = {}
+def _validate_components(result: types.Payload, sources: types.Payload) -> None:
+    packets = result["packets"]
+    for name in ("content", "signal"):
+        content = result[name]
+        if content is None:
+            continue
+        # Shared protobuf owns the public shape; this module only adds trust
+        # and admission constraints. Preserve exact submitted bytes for hash.
+        contracts.parse_message(content, editorial_pb2.StoryContent)
+        if content["story_id"] != result["story_id"]:
+            raise PublicationError()
+        contracts.validate_draft(
+            components.validation_draft(
+                content, subject="每日简报", title="每日简报"
+            ),
+            packets,
+        )
+        if any(
+            not paragraph["citations"] for paragraph in content["paragraphs"]
+        ):
+            raise PublicationError()
+        if name == "signal":
+            if any(key in content for key in components.OPTIONAL_COMPONENTS):
+                raise PublicationError()
+            _receipt("signal", content, result, sources)
+        else:
+            _receipt(
+                "body",
+                components.body_content(content, copy_values=False),
+                result,
+                sources,
+            )
+            for field, component in (
+                ("recommended_reading", "reading"),
+                ("chart", "chart"),
+            ):
+                if field in content:
+                    _receipt(component, content[field], result, sources)
+
+
+def _merge_packets(chosen: Sequence[types.Payload]) -> list[types.Payload]:
+    by_id: types.Payload = {}
     for choice in chosen:
-        refs = _citations(choice["content"])
+        refs = components.citations(choice["content"])
         wanted = {reference.split("/", 1)[0] for reference in refs}
         for packet in choice["result"]["packets"]:
             if packet["id"] not in wanted:
@@ -428,79 +418,56 @@ def _merge_packets(chosen: Sequence[Payload]) -> list[Payload]:
             if packet["id"] in by_id and by_id[packet["id"]] != packet:
                 raise PublicationError("conflicting_publication_evidence")
             by_id[packet["id"]] = packet
-    if len(by_id) > MAX_PACKETS:
+    if len(by_id) > contracts.MAX_PACKETS:
         raise PublicationError("publication_capacity")
     return list(by_id.values())
 
 
-def _section(content: Payload) -> Payload:
+def _section(content: types.Payload) -> types.Payload:
     return {
         "kind": content["kind"],
         "heading": content["title"],
-        "paragraphs": deepcopy(content["paragraphs"]),
+        "paragraphs": copy.deepcopy(content["paragraphs"]),
         "limitations": content["limitations"],
     }
 
 
-def _draft(choices: Sequence[Payload], issue_date: str) -> Payload:
+def _draft(choices: Sequence[types.Payload], issue_date: str) -> types.Payload:
     # Topic identity is independent of publication depth: an AI brief is not
     # world news, and a world deep-dive is not automatically a research paper.
     # Each reviewed title/body/limitation stays together in its own section.
-    # Preserve priority order and the reviewed kind; never infer it from a title.
+    # Preserve priority order and the reviewed kind; never infer it from a
+    # title.
     sections = [_section(item["content"]) for item in choices]
-    draft: Payload = {
+    draft: types.Payload = {
         "subject": f"每日简报 · {issue_date}",
         "title": "每日简报",
         "introduction": "从已核实的信息开始，重要的进展持续跟进。",
         "sections": sections,
         "limitations": "",
     }
-    # An optional component can never veto its story. Only the first independently
+    # An optional component can never veto its story. Only the first
+    # independently
     # approved extra is displayed; every story body itself remains complete.
-    for name in _OPTIONAL_COMPONENTS:
+    for name in components.OPTIONAL_COMPONENTS:
         for choice in choices:
             if name in choice["content"]:
-                draft[name] = deepcopy(choice["content"][name])
+                draft[name] = copy.deepcopy(choice["content"][name])
                 break
     return draft
 
 
-def assemble(
-    run_id: str,
-    issue_date: str,
-    tasks: Sequence[Payload],
-    results: Sequence[Payload],
-    *,
-    max_features: int = 2,
-    reason: str = "completed",
-) -> Payload:
-    """Freeze the best approved form of each topic; never synthesize new claims."""
-    _identifier(run_id)
-    validate_issue_date(issue_date)
-    if (
-        len(tasks) > MAX_STORIES
-        or type(max_features) is not int
-        or not 0 <= max_features <= 2
-        or not isinstance(reason, str)
-        or not reason.strip()
-        or len(reason) > 2000
-        or len(results) > MAX_STORIES * 2 * MAX_VERSIONS
-    ):
-        raise PublicationError()
-    if not tasks:
-        if results:
-            raise PublicationError()
-        raise PublicationError("no_publishable_content")
-    by_task: dict[str, dict[str, list[Payload]]] = {}
+def _group_results(
+    tasks: Sequence[types.Payload], results: Sequence[types.Payload]
+) -> tuple[dict[str, dict[str, list[types.Payload]]], set[str]]:
+    """Group immutable versions and retain invalid-topic diagnostics."""
+    by_task: dict[str, dict[str, list[types.Payload]]] = {}
     invalid: set[str] = set()
     for task in tasks:
         _task(task)
         if task["id"] in by_task:
             raise PublicationError()
         by_task[task["id"]] = {}
-    ordered = sorted(
-        enumerate(tasks), key=lambda item: (item[1]["priority"], item[0])
-    )
     for result in results:
         if (
             not isinstance(result, dict)
@@ -519,8 +486,41 @@ def assemble(
             mode_versions.append(result)
         if len(mode_versions) > MAX_VERSIONS:
             raise PublicationError("publication_capacity")
-    choices: list[Payload] = []
-    coverage: list[Payload] = []
+    return by_task, invalid
+
+
+def assemble(
+    run_id: str,
+    issue_date: str,
+    tasks: Sequence[types.Payload],
+    results: Sequence[types.Payload],
+    *,
+    max_features: int = 2,
+    reason: str = "completed",
+) -> types.Payload:
+    """Freeze the best approved topic forms without creating new claims."""
+    _identifier(run_id)
+    contracts.validate_issue_date(issue_date)
+    if (
+        len(tasks) > MAX_STORIES
+        or type(max_features) is not int
+        or not 0 <= max_features <= 2
+        or not isinstance(reason, str)
+        or not reason.strip()
+        or len(reason) > 2000
+        or len(results) > MAX_STORIES * 2 * MAX_VERSIONS
+    ):
+        raise PublicationError()
+    if not tasks:
+        if results:
+            raise PublicationError()
+        raise PublicationError("no_publishable_content")
+    by_task, invalid = _group_results(tasks, results)
+    ordered = sorted(
+        enumerate(tasks), key=lambda item: (item[1]["priority"], item[0])
+    )
+    choices: list[types.Payload] = []
+    coverage: list[types.Payload] = []
     withdrawn_bodies, withdrawn_signals = _withdrawn(
         [
             version
@@ -532,7 +532,7 @@ def assemble(
     feature_count = 0
     for _, task in ordered:
         versions = by_task[task["id"]]
-        options: list[tuple[str, Payload, Payload]] = []
+        options: list[tuple[str, types.Payload, types.Payload]] = []
         deeps = list(reversed(versions.get("deep", [])))
         briefs = list(reversed(versions.get("brief", [])))
         if feature_count < max_features:
@@ -551,7 +551,7 @@ def assemble(
             for result in [*briefs, *deeps]
             if _available(result, "signal", withdrawn_signals)
         )
-        admitted: Payload | None = None
+        admitted: types.Payload | None = None
         capacity = feature_count >= max_features and any(
             result["content"] for result in deeps
         )
@@ -564,7 +564,9 @@ def assemble(
             try:
                 candidate_choices = [*choices, choice]
                 packets = _merge_packets(candidate_choices)
-                validate_draft(_draft(candidate_choices, issue_date), packets)
+                contracts.validate_draft(
+                    _draft(candidate_choices, issue_date), packets
+                )
             except (ValueError, TypeError, KeyError):
                 capacity = True
                 continue
@@ -577,20 +579,30 @@ def assemble(
             title = admitted["content"]["title"]
             explanation = {
                 "deep": "独立核验通过，完整解读已发布。",
-                "brief": "已发布独立核验的简讯；未完成或未采用的深读不阻塞本期。",
+                "brief": (
+                    "已发布独立核验的简讯；未完成或未采用的深读不阻塞本期。"
+                ),
                 "watch": "已发布独立核验的事件与边界，核心结论继续跟进。",
             }[disposition]
         else:
             disposition, title = "deferred", task["question"][:300]
-            explanation = (
-                "先前简讯存在经独立核实的明确事实错误，已撤回对应正文；此选题保留继续跟进。"
-                if task["id"] in withdrawn_bodies
-                else "已核实内容超出本期容量，完整保留至后续选题，不裁剪已审正文。"
-                if capacity
-                else "审核凭证不完整，未发布未经独立核验的内容。"
-                if task["id"] in invalid
-                else "截至编排时没有独立核验通过的正文或观察短讯，保留选题继续跟进。"
-            )
+            if task["id"] in withdrawn_bodies:
+                explanation = (
+                    "先前简讯存在经独立核实的明确事实错误，已撤回对"
+                    "应正文；此选题保留继续跟进。"
+                )
+            elif capacity:
+                explanation = (
+                    "已核实内容超出本期容量，完整保留至后续选题，不"
+                    "裁剪已审正文。"
+                )
+            elif task["id"] in invalid:
+                explanation = "审核凭证不完整，未发布未经独立核验的内容。"
+            else:
+                explanation = (
+                    "截至编排时没有独立核验通过的正文或观察短讯，保"
+                    "留选题继续跟进。"
+                )
         coverage.append(
             {
                 "story_id": task["id"],
@@ -608,15 +620,17 @@ def assemble(
     deferred = sum(story["disposition"] == "deferred" for story in coverage)
     if deferred:
         # Capacity and an evidence-backed withdrawal also defer a topic; do not
-        # falsely describe every omission as a research failure or name its claims.
+        # falsely describe every omission as a research failure or name its
+        # claims.
         draft["introduction"] = (
-            f"本期采用已完成独立核验的内容；另有 {deferred} 个入选选题暂未刊出，已保留继续跟进。"
+            f"本期采用已完成独立核验的内容；另有 {deferred} "
+            "个入选选题暂未刊出，已保留继续跟进。"
         )
     elif reason != "completed":
         draft["introduction"] = (
             "本期采用已完成独立核验的内容；尚未完成的深入调查继续跟进。"
         )
-    validate_draft(draft, packets)
+    contracts.validate_draft(draft, packets)
     summary = {
         "mode": "complete"
         if not deferred and reason == "completed"
@@ -640,42 +654,58 @@ def assemble(
 
 
 class PublicationRepository:
-    """Append-only approved-content and publication ledgers, separate from sending."""
+    """Store append-only approved-content and publication ledgers."""
 
-    def __init__(self, store: Store) -> None:
+    def __init__(self, store: newsletter_store.Store) -> None:
         self.store = store
         with store.lock:
-            store.db.executescript("""
-                CREATE TABLE IF NOT EXISTS publication_units (
-                    run_id TEXT NOT NULL, story_id TEXT NOT NULL, mode TEXT NOT NULL,
-                    issue_date TEXT NOT NULL, task TEXT NOT NULL, body TEXT NOT NULL,
-                    digest TEXT NOT NULL, created_at TEXT NOT NULL,
-                    PRIMARY KEY(run_id,story_id,mode,digest));
-                CREATE TABLE IF NOT EXISTS publication_plans (
-                    run_id TEXT PRIMARY KEY, issue_date TEXT NOT NULL,
-                    tasks TEXT NOT NULL, digest TEXT NOT NULL, created_at TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS publication_snapshots (
-                    run_id TEXT PRIMARY KEY, issue_date TEXT NOT NULL,
-                    tasks TEXT NOT NULL, body TEXT NOT NULL, digest TEXT NOT NULL,
-                    created_at TEXT NOT NULL);
-            """)
+            store.db.executescript(
+                "\n"
+                "                CREATE TABLE IF NOT EXISTS pub"
+                "lication_units (\n"
+                "                    run_id TEXT NOT NULL, stor"
+                "y_id TEXT NOT NULL, mode TEXT NOT NULL,\n"
+                "                    issue_date TEXT NOT NULL, "
+                "task TEXT NOT NULL, body TEXT NOT NULL,\n"
+                "                    digest TEXT NOT NULL, crea"
+                "ted_at TEXT NOT NULL,\n"
+                "                    PRIMARY KEY(run_id,story_i"
+                "d,mode,digest));\n"
+                "                CREATE TABLE IF NOT EXISTS pub"
+                "lication_plans (\n"
+                "                    run_id TEXT PRIMARY KEY, i"
+                "ssue_date TEXT NOT NULL,\n"
+                "                    tasks TEXT NOT NULL, diges"
+                "t TEXT NOT NULL, created_at TEXT NOT NULL);\n"
+                "                CREATE TABLE IF NOT EXISTS pub"
+                "lication_snapshots (\n"
+                "                    run_id TEXT PRIMARY KEY, i"
+                "ssue_date TEXT NOT NULL,\n"
+                "                    tasks TEXT NOT NULL, body "
+                "TEXT NOT NULL, digest TEXT NOT NULL,\n"
+                "                    created_at TEXT NOT NULL);"
+                "\n"
+                "            "
+            )
 
     def save_plan(
-        self, run_id: str, issue_date: str, tasks: Sequence[Payload]
-    ) -> list[Payload]:
-        """Remember every selected topic even if no model attempt ever completes."""
+        self, run_id: str, issue_date: str, tasks: Sequence[types.Payload]
+    ) -> list[types.Payload]:
+        """Record selected topics even if no model attempt completes."""
         _identifier(run_id)
-        validate_issue_date(issue_date)
+        contracts.validate_issue_date(issue_date)
         if len(tasks) > MAX_STORIES:
             raise PublicationError()
         for task in tasks:
             _task(task)
         if len({task["id"] for task in tasks}) != len(tasks):
             raise PublicationError()
-        body = canonical_json(list(tasks))
-        if len(body.encode()) > MAX_MESSAGE_BYTES:
+        body = contracts.canonical_json(list(tasks))
+        if len(body.encode()) > contracts.MAX_MESSAGE_BYTES:
             raise PublicationError("publication_capacity")
-        digest = content_hash({"issue_date": issue_date, "tasks": list(tasks)})
+        digest = contracts.content_hash(
+            {"issue_date": issue_date, "tasks": list(tasks)}
+        )
         with self.store.transaction():
             previous = self.store.db.execute(
                 "SELECT digest,tasks FROM publication_plans WHERE run_id=?",
@@ -683,13 +713,18 @@ class PublicationRepository:
             ).fetchone()
             if previous:
                 if previous["digest"] != digest:
-                    raise StoreError(
+                    raise newsletter_store.StoreError(
                         "conflict", "Frozen publication plan cannot change"
                     )
-                return json.loads(previous["tasks"])
-            by_id = {task["id"]: canonical_json(task) for task in tasks}
+                return _stored_objects(previous["tasks"])
+            by_id = {
+                task["id"]: contracts.canonical_json(task) for task in tasks
+            }
             rows = self.store.db.execute(
-                "SELECT story_id,issue_date,task FROM publication_units WHERE run_id=?",
+                (
+                    "SELECT story_id,issue_date,task FROM publication_units "
+                    "WHERE run_id=?"
+                ),
                 (run_id,),
             ).fetchall()
             if any(
@@ -697,28 +732,29 @@ class PublicationRepository:
                 or by_id.get(row["story_id"]) != row["task"]
                 for row in rows
             ):
-                raise StoreError(
+                raise newsletter_store.StoreError(
                     "conflict",
                     "Publication plan conflicts with existing results",
                 )
             self.store.db.execute(
                 "INSERT INTO publication_plans VALUES(?,?,?,?,?)",
-                (run_id, issue_date, body, digest, now()),
+                (run_id, issue_date, body, digest, newsletter_store.now()),
             )
-        return json.loads(body)
+        return _stored_objects(body)
 
     def save(
         self,
         run_id: str,
-        task: Payload,
+        task: types.Payload,
         mode: str,
-        result: Payload,
+        result: types.Payload,
         *,
         issue_date: str,
-    ) -> Payload:
+    ) -> types.Payload:
+        """Append a validated story checkpoint or replay its receipt."""
         _identifier(run_id)
         _task(task)
-        validate_issue_date(issue_date)
+        contracts.validate_issue_date(issue_date)
         validate_result(result)
         if (
             mode not in _MODES
@@ -726,8 +762,11 @@ class PublicationRepository:
             or result["story_id"] != task["id"]
         ):
             raise PublicationError()
-        body, task_body = canonical_json(result), canonical_json(task)
-        digest = content_hash(
+        body, task_body = (
+            contracts.canonical_json(result),
+            contracts.canonical_json(task),
+        )
+        digest = contracts.content_hash(
             {"issue_date": issue_date, "task": task, "result": result}
         )
         with self.store.transaction():
@@ -737,11 +776,11 @@ class PublicationRepository:
                 (run_id, task["id"], mode, digest),
             ).fetchone()
             if row is not None:
-                return json.loads(row["body"])
+                return _stored_object(row["body"])
             if self.store.db.execute(
                 "SELECT 1 FROM publication_snapshots WHERE run_id=?", (run_id,)
             ).fetchone():
-                raise StoreError(
+                raise newsletter_store.StoreError(
                     "conflict", "Published content snapshot is already frozen"
                 )
             plan = self.store.db.execute(
@@ -752,12 +791,16 @@ class PublicationRepository:
                 plan["issue_date"] != issue_date
                 or task not in json.loads(plan["tasks"])
             ):
-                raise StoreError(
+                raise newsletter_store.StoreError(
                     "conflict",
                     "Result is not part of the frozen publication plan",
                 )
             siblings = self.store.db.execute(
-                "SELECT story_id,issue_date,task,mode FROM publication_units WHERE run_id=?",
+                (
+                    "SELECT story_id,issue_date,task,mode FROM "
+                    "publication_units WHERE "
+                    "run_id=?"
+                ),
                 (run_id,),
             ).fetchall()
             if any(
@@ -765,7 +808,7 @@ class PublicationRepository:
                 or (row["story_id"] == task["id"] and row["task"] != task_body)
                 for row in siblings
             ):
-                raise StoreError(
+                raise newsletter_store.StoreError(
                     "conflict", "Publication task identity cannot change"
                 )
             if (
@@ -791,13 +834,13 @@ class PublicationRepository:
                     task_body,
                     body,
                     digest,
-                    now(),
+                    newsletter_store.now(),
                 ),
             )
-        return json.loads(body)
+        return _stored_object(body)
 
-    def plan(self, run_id: str) -> list[Payload]:
-        """Read the complete selected-topic set, including never-started items."""
+    def plan(self, run_id: str) -> list[types.Payload]:
+        """Read all selected topics, including never-started items."""
         _identifier(run_id)
         with self.store.lock:
             row = self.store.db.execute(
@@ -805,19 +848,23 @@ class PublicationRepository:
             ).fetchone()
         return json.loads(row["tasks"]) if row else []
 
-    def results(self, run_id: str) -> list[Payload]:
+    def results(self, run_id: str) -> list[types.Payload]:
+        """Read story checkpoints in their persisted admission order."""
         _identifier(run_id)
         with self.store.lock:
             rows = self.store.db.execute(
-                "SELECT body FROM publication_units WHERE run_id=? ORDER BY rowid",
+                (
+                    "SELECT body FROM publication_units WHERE run_id=? ORDER "
+                    "BY rowid"
+                ),
                 (run_id,),
             ).fetchall()
         return [json.loads(row["body"]) for row in rows]
 
     def best_result(
         self, run_id: str, story_id: str, mode: str = "brief"
-    ) -> Payload | None:
-        """Prefer an approved complete body over a signal or a later failed job."""
+    ) -> types.Payload | None:
+        """Prefer an approved body over a signal or a later failed job."""
         _identifier(story_id)
         if mode not in _MODES:
             raise PublicationError()
@@ -831,7 +878,7 @@ class PublicationRepository:
                 continue
             valid.append(result)
         bodies, signals = _withdrawn(valid)
-        best: Payload | None = None
+        best: types.Payload | None = None
         score = 0
         for result in valid:
             if result["mode"] != mode:
@@ -840,7 +887,12 @@ class PublicationRepository:
                 _available(result, "content", bodies),
                 _available(result, "signal", signals),
             )
-            value = 2 if body_ok else 1 if signal_ok else 0
+            if body_ok:
+                value = 2
+            elif signal_ok:
+                value = 1
+            else:
+                value = 0
             if value and value >= score:
                 best, score = result, value
                 if not body_ok:
@@ -849,35 +901,39 @@ class PublicationRepository:
                     best["signal"] = None
         return best
 
-    def get_publication(self, run_id: str) -> Payload | None:
+    def get_publication(self, run_id: str) -> types.Payload | None:
+        """Read the first frozen publication, if one has been recorded."""
         _identifier(run_id)
         with self.store.lock:
             row = self.store.db.execute(
                 "SELECT body FROM publication_snapshots WHERE run_id=?",
                 (run_id,),
             ).fetchone()
-        return json.loads(row["body"]) if row else None
+        return _stored_object(row["body"]) if row else None
 
     def record_publication(
         self,
         run_id: str,
         issue_date: str,
-        tasks: Sequence[Payload],
-        assembled: Payload,
-    ) -> Payload:
-        """Freeze only a reconstruction from our own immutable accepted receipts."""
+        tasks: Sequence[types.Payload],
+        assembled: types.Payload,
+    ) -> types.Payload:
+        """Freeze a reconstruction from immutable accepted receipts."""
         _identifier(run_id)
-        validate_issue_date(issue_date)
+        contracts.validate_issue_date(issue_date)
         self.save_plan(run_id, issue_date, tasks)
-        body, task_body = canonical_json(assembled), canonical_json(list(tasks))
-        digest = content_hash(
+        body, task_body = (
+            contracts.canonical_json(assembled),
+            contracts.canonical_json(list(tasks)),
+        )
+        digest = contracts.content_hash(
             {
                 "issue_date": issue_date,
                 "tasks": list(tasks),
                 "result": assembled,
             }
         )
-        if len(body.encode()) > MAX_MESSAGE_BYTES:
+        if len(body.encode()) > contracts.MAX_MESSAGE_BYTES:
             raise PublicationError("publication_capacity")
         with self.store.transaction():
             row = self.store.db.execute(
@@ -886,13 +942,13 @@ class PublicationRepository:
             ).fetchone()
             if row is not None:
                 if row["digest"] != digest:
-                    raise StoreError(
+                    raise newsletter_store.StoreError(
                         "conflict", "Frozen publication snapshot cannot change"
                     )
                 # A persisted layout is authoritative across renderer/assembler
                 # upgrades. Verify its exact receipt, not today's layout rules;
                 # otherwise a restart could rewrite or reject an older issue.
-                return json.loads(row["body"])
+                return _stored_object(row["body"])
             reason = assembled.get("coverage", {}).get("reason")
             max_features = sum(
                 story["disposition"] == "deep"
@@ -910,32 +966,42 @@ class PublicationRepository:
                 raise PublicationError("invalid_publication_snapshot")
             self.store.db.execute(
                 "INSERT INTO publication_snapshots VALUES(?,?,?,?,?,?)",
-                (run_id, issue_date, task_body, body, digest, now()),
+                (
+                    run_id,
+                    issue_date,
+                    task_body,
+                    body,
+                    digest,
+                    newsletter_store.now(),
+                ),
             )
-        return json.loads(body)
+        return _stored_object(body)
 
     def pending_history(
         self, issue_date: str, limit: int = 30
-    ) -> list[Payload]:
-        """Carry unresolved selected topics forward without recycling published claims.
+    ) -> list[types.Payload]:
+        """Carry unresolved topics forward without recycling published claims.
 
         A later publication of the same story/candidate supersedes its earlier
-        disposition. History is public research context, never evidence by itself.
+        disposition. History supplies research context, not evidence itself.
         """
-        validate_issue_date(issue_date)
+        contracts.validate_issue_date(issue_date)
         if type(limit) is not int or not 1 <= limit <= MAX_STORIES:
             raise PublicationError()
         with self.store.lock:
             rows = self.store.db.execute(
-                "SELECT p.issue_date,p.tasks,s.body,e.body AS edition,"
-                "COALESCE(d.edition_id,v.edition_id) AS attempted "
-                "FROM publication_plans p "
-                "LEFT JOIN publication_snapshots s ON p.run_id=s.run_id "
-                "LEFT JOIN workflow_editions w ON w.run_id=p.run_id "
-                "LEFT JOIN editions e ON e.id=w.edition_id "
-                "LEFT JOIN sends d ON d.edition_id=e.id "
-                "LEFT JOIN verification_sends v ON v.edition_id=e.id WHERE p.issue_date<? "
-                "ORDER BY p.issue_date DESC,p.rowid DESC LIMIT 120",
+                (
+                    "SELECT p.issue_date,p.tasks,s.body,e.body AS e"
+                    "dition,COALESCE(d.edition_id,v.edition_id) AS "
+                    "attempted FROM publication_plans p LEFT JOIN p"
+                    "ublication_snapshots s ON p.run_id=s.run_id LE"
+                    "FT JOIN workflow_editions w ON w.run_id=p.run_"
+                    "id LEFT JOIN editions e ON e.id=w.edition_id L"
+                    "EFT JOIN sends d ON d.edition_id=e.id LEFT JOI"
+                    "N verification_sends v ON v.edition_id=e.id WH"
+                    "ERE p.issue_date<? ORDER BY p.issue_date DESC,"
+                    "p.rowid DESC LIMIT 120"
+                ),
                 (issue_date,),
             ).fetchall()
         seen: set[str] = set()
@@ -960,7 +1026,10 @@ class PublicationRepository:
                         "title": task["question"][:300],
                         "candidate_ids": task["candidate_ids"],
                         "disposition": "deferred",
-                        "reason": "此选题尚无冻结的可发布版本，继续核验；历史任务本身不是证据。",
+                        "reason": (
+                            "此选题尚无冻结的可发布版本，继续核验；历史任务"
+                            "本身不是证据。"
+                        ),
                     }
                     for task in tasks.values()
                 ]
@@ -978,15 +1047,22 @@ class PublicationRepository:
                         **story,
                         "disposition": "deferred",
                         "reason": (
-                            "该深读已有冻结版本，但发送状态尚未确认；先核对投递结果，再调查新进展，勿自动重发原稿。"
+                            (
+                                "该深读已有冻结版本，"
+                                "但发送状态尚未确认；先核对投递结果，"
+                                "再调查新进展，勿自动重发原稿。"
+                            )
                             if delivery in {"unknown", "submitting"}
-                            else "该深读已有冻结版本，但邮件服务尚未确认接收；继续调查新进展，勿自动重发原稿。"
+                            else (
+                                "该深读已有冻结版本，但邮件服务尚未确认接收；继"
+                                "续调查新进展，勿自动重发原稿。"
+                            )
                         ),
                     }
                 task = tasks[story["story_id"]]
                 pending.append(
                     {
-                        **deepcopy(task),
+                        **copy.deepcopy(task),
                         "story_id": story["story_id"],
                         "title": story["title"],
                         "issue_date": row["issue_date"],

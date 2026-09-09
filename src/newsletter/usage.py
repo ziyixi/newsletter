@@ -9,14 +9,21 @@ of underlying model requests. Missing or interrupted reports are not zero.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
-from contextvars import ContextVar
-from copy import deepcopy
-from typing import Literal, TypedDict, cast
-from uuid import uuid4
+import contextlib
+import contextvars
+import copy
+import logging
+from typing import cast, Literal, TypedDict
+import uuid
+
+import newsletter.diagnostics as diagnostics
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class TokenCounts(TypedDict):
+    """Provider totals whose cached and reasoning counts are subsets."""
+
     input_tokens: int
     cached_input_tokens: int
     output_tokens: int
@@ -25,6 +32,8 @@ class TokenCounts(TypedDict):
 
 
 class UsageRecord(TypedDict):
+    """Latest cumulative counters and completeness for one Codex invocation."""
+
     id: str
     provider: Literal["codex"]
     model: str
@@ -40,6 +49,8 @@ class UsageRecord(TypedDict):
 
 
 class UsageSummary(TypedDict):
+    """Aggregated invocation totals, retaining missing and partial reports."""
+
     usage: TokenCounts | None
     invocations: int
     missing_invocations: int
@@ -47,10 +58,12 @@ class UsageSummary(TypedDict):
 
 
 UsageSink = Callable[[UsageRecord], None]
-_SCOPE: ContextVar[tuple[UsageSink, str] | None] = ContextVar(
-    "usage_scope", default=None
+_SCOPE: contextvars.ContextVar[tuple[UsageSink, str] | None] = (
+    contextvars.ContextVar("usage_scope", default=None)
 )
-_CODEX: ContextVar[CodexUsage | None] = ContextVar("codex_usage", default=None)
+_CODEX: contextvars.ContextVar[CodexUsage | None] = contextvars.ContextVar(
+    "codex_usage", default=None
+)
 _CountField = Literal[
     "input_tokens",
     "cached_input_tokens",
@@ -87,9 +100,9 @@ def _consistent(counts: TokenCounts) -> bool:
     )
 
 
-@contextmanager
+@contextlib.contextmanager
 def usage_scope(sink: UsageSink, stage: str) -> Iterator[None]:
-    """Attach a persistence sink to this async task, never to global process state."""
+    """Attach a persistence sink to this task, not global process state."""
     token = _SCOPE.set((sink, stage))
     try:
         yield
@@ -98,13 +111,13 @@ def usage_scope(sink: UsageSink, stage: str) -> Iterator[None]:
 
 
 class CodexUsage:
-    """One fresh ephemeral thread, including all its bounded correction turns."""
+    """One ephemeral thread, including all its bounded correction turns."""
 
     def __init__(self, model: str) -> None:
         scope = _SCOPE.get()
         self.sink = scope[0] if scope else None
         self.record = UsageRecord(
-            id=str(uuid4()),
+            id=str(uuid.uuid4()),
             provider="codex",
             model=model,
             stage=scope[1] if scope else "unscoped",
@@ -124,12 +137,20 @@ class CodexUsage:
     def _save(self) -> None:
         if self.sink is not None:
             try:
-                self.sink(deepcopy(self.record))
-            except Exception:
-                # A failed durable write must not silently yield an accepted total.
+                self.sink(copy.deepcopy(self.record))
+            # A user-supplied sink may fail with any implementation exception.
+            except Exception as error:  # noqa: BLE001
+                diagnostics.record_failure(
+                    _LOGGER,
+                    phase="usage_save",
+                    error=error,
+                    reference=self.record["id"],
+                )
+                # A failed write must not yield an accepted durable total.
                 raise RuntimeError("usage_recording_failed") from None
 
     def start_turn(self) -> None:
+        """Persist a new turn attempt before the provider is invoked."""
         self.turn_id = None
         self._turn_has_usage = False
         self.record["turns_started"] += 1
@@ -137,18 +158,25 @@ class CodexUsage:
         self._save()
 
     def bind_turn(self, thread_id: str | None, turn_id: str | None) -> None:
+        """Bind provider identities used to reject unrelated usage events."""
         self.turn_id = turn_id
         if thread_id is not None:
             self.record["thread_id"] = thread_id
 
     def observe(self, method: str, payload: object) -> None:
+        """Persist trusted cumulative events and retain gaps as partial usage.
+
+        Malformed, decreasing, or unrelated counters never replace a trusted
+        snapshot. A valid but inconsistent subset is retained with a gap flag.
+        """
         if not isinstance(payload, dict):
             return
         if method == "thread/tokenUsage/updated":
             if (
                 self.turn_id is not None
                 and payload.get("turnId") != self.turn_id
-                or self.record["thread_id"] is not None
+            ) or (
+                self.record["thread_id"] is not None
                 and payload.get("threadId") != self.record["thread_id"]
             ):
                 return
@@ -157,9 +185,8 @@ class CodexUsage:
                 _counts(usage.get("total")) if isinstance(usage, dict) else None
             )
             previous = self.record["usage"]
-            if (
-                counts is None
-                or previous is not None
+            if counts is None or (
+                previous is not None
                 and any(counts[key] < previous[key] for key in _FIELDS)
             ):
                 # Retain the last trusted snapshot, but never claim completeness
@@ -185,6 +212,7 @@ class CodexUsage:
             self._save()
 
     def finish(self, success: bool) -> None:
+        """Persist invocation completion without inventing missing counters."""
         if not self.record["turns_started"]:
             return  # Startup/authentication made no model attempt.
         self.record["status"] = "completed" if success else "failed"
@@ -197,8 +225,9 @@ class CodexUsage:
         self._save()
 
 
-@contextmanager
+@contextlib.contextmanager
 def codex_usage(model: str) -> Iterator[CodexUsage]:
+    """Track one invocation and finalize its partial state on interruption."""
     usage = CodexUsage(model)
     token = _CODEX.set(usage)
     success = False
@@ -213,6 +242,7 @@ def codex_usage(model: str) -> Iterator[CodexUsage]:
 
 
 def observe_codex_usage(method: str, payload: object) -> None:
+    """Route a provider notification to this task's active usage tracker."""
     usage = _CODEX.get()
     if usage is not None:
         usage.observe(method, payload)
@@ -247,7 +277,7 @@ def summarize_usage(records: Sequence[UsageRecord]) -> UsageSummary:
 
 
 def normalize_usage_summary(value: object) -> UsageSummary:
-    """Accept internal ints and public protobuf JSON uint64 strings, fail closed."""
+    """Validate internal ints or public protobuf JSON uint64 strings."""
     if not isinstance(value, dict):
         raise ValueError("invalid_usage_summary")
 
@@ -292,6 +322,7 @@ def normalize_usage_summary(value: object) -> UsageSummary:
 def usage_footer(
     summary: UsageSummary | None, *, is_fixture: bool = False
 ) -> str:
+    """Format reported totals, explicitly marking mock or incomplete usage."""
     if summary is None:
         return ""
     if is_fixture:
@@ -301,11 +332,15 @@ def usage_footer(
         return "模型用量未取得 · Todofy/Gemini 用量未计入。"
     consistent = _consistent(usage)
     detail = (
-        f"非缓存输入 {usage['input_tokens'] - usage['cached_input_tokens']:,} · "
-        f"缓存输入 {usage['cached_input_tokens']:,} · 输出 {usage['output_tokens']:,}"
+        f"非缓存输入 {usage['input_tokens'] - usage['cached_input_tokens']:,}"
+        f" · 缓存输入 {usage['cached_input_tokens']:,}"
+        f" · 输出 {usage['output_tokens']:,}"
         if consistent
         else "用量分类不一致，输入/输出拆分不可确定"
     )
     if summary["partial"] or not consistent:
         detail += "；部分用量，未含未返回用量的调用"
-    return f"Codex 已记录 {usage['total_tokens']:,} tokens（{detail}） · Todofy/Gemini 用量未计入。"
+    return (
+        f"Codex 已记录 {usage['total_tokens']:,} tokens（{detail}）"
+        " · Todofy/Gemini 用量未计入。"
+    )

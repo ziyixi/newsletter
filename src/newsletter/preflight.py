@@ -11,46 +11,39 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import dataclasses
 import hashlib
+import importlib.metadata as importlib_metadata
+import importlib.resources as resources
 import json
 import logging
 import os
+import pathlib
 import re
 import sqlite3
 import sys
 import tempfile
-from contextlib import closing
-from dataclasses import dataclass
-from importlib.metadata import distribution, version
-from importlib.resources import files
-from pathlib import Path
-from types import ModuleType
-from typing import TYPE_CHECKING, cast
-from uuid import UUID
+import types
+from typing import cast, TYPE_CHECKING
+import uuid
 
 import httpx
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from newsletter.adapters import AdapterError, Notion, Resend
-from newsletter.charts import load_font, render_chart_png
-from newsletter.codex_runtime import (
-    SDK_VERSION,
-    assert_no_skills,
-    check_codex_home,
-    launch_args,
-    load_sdk,
-    runtime_env,
-    runtime_overrides,
-)
-from newsletter.notion_api import NotionWorkspace
-from newsletter.rendering import load_template
-from newsletter.schema_compat import check_production_output_schemas
-from newsletter.settings import Settings
-from newsletter.todofy import validate_todofy_configuration
-from newsletter.types import Payload
+import newsletter.adapters as adapters
+import newsletter.charts as charts
+import newsletter.codex_runtime as codex_runtime
+import newsletter.diagnostics as diagnostics
+import newsletter.notion_api as notion_api
+import newsletter.rendering as rendering
+import newsletter.schema_compat as schema_compat
+import newsletter.settings as newsletter_settings
+import newsletter.todofy as todofy
+import newsletter.types as newsletter_types
 
 if TYPE_CHECKING:
-    from newsletter.store import Store
+    import newsletter.store as newsletter_store
 
 HTTP_TIMEOUT = 15.0
 CODEX_TIMEOUT = 45.0
@@ -59,37 +52,43 @@ logger = logging.getLogger(__name__)
 
 
 class PreflightError(RuntimeError):
-    """Stable, secret-free error code; upstream exception text is never exposed."""
+    """Stable, secret-free error code that excludes upstream exception text."""
 
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class PreflightReport:
+    """Completed checks and explicit limits of a non-writing startup probe."""
+
     checks: tuple[str, ...]
     limitations: tuple[str, ...]
 
 
-def _check_storage(settings: Settings, store: Store | None) -> None:
+def _check_storage(
+    settings: newsletter_settings.Settings, store: newsletter_store.Store | None
+) -> None:
     directory = settings.data_dir.resolve()
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     # Exercise writes/WAL in the actual mounted directory without touching any
     # newsletter records. Temporary files are closed and removed on every path.
-    with tempfile.TemporaryDirectory(
-        prefix=".preflight-storage-", dir=directory
-    ) as temporary:
-        with closing(
-            sqlite3.connect(Path(temporary) / "probe.sqlite3")
-        ) as probe:
-            if probe.execute("PRAGMA journal_mode=WAL").fetchone() != ("wal",):
-                raise PreflightError("STORAGE_WAL_UNAVAILABLE")
-            probe.execute("CREATE TABLE probe (value INTEGER NOT NULL)")
-            probe.execute("INSERT INTO probe VALUES (1)")
-            probe.commit()
-            if probe.execute("SELECT value FROM probe").fetchone() != (1,):
-                raise PreflightError("STORAGE_WRITE_FAILED")
+    with (
+        tempfile.TemporaryDirectory(
+            prefix=".preflight-storage-", dir=directory
+        ) as temporary,
+        contextlib.closing(
+            sqlite3.connect(pathlib.Path(temporary) / "probe.sqlite3")
+        ) as probe,
+    ):
+        if probe.execute("PRAGMA journal_mode=WAL").fetchone() != ("wal",):
+            raise PreflightError("STORAGE_WAL_UNAVAILABLE")
+        probe.execute("CREATE TABLE probe (value INTEGER NOT NULL)")
+        probe.execute("INSERT INTO probe VALUES (1)")
+        probe.commit()
+        if probe.execute("SELECT value FROM probe").fetchone() != (1,):
+            raise PreflightError("STORAGE_WRITE_FAILED")
     if store is not None:
         with store.lock:
             result = store.db.execute("PRAGMA quick_check(1)").fetchall()
@@ -98,12 +97,15 @@ def _check_storage(settings: Settings, store: Store | None) -> None:
 
 
 def check_proto_dependency() -> None:
-    """Check the installed public wheel; no sibling checkout or protoc is needed."""
-    installed = distribution("ziyixi-protos")
+    """Check the installed public wheel without a sibling checkout or protoc."""
+    installed = importlib_metadata.distribution("ziyixi-protos")
     module = installed.locate_file("ziyixi_protos/newsletter/editorial_pb2.py")
-    if Path(pb.__file__).resolve() != Path(str(module)).resolve():
+    if (
+        pathlib.Path(editorial_pb2.__file__).resolve()
+        != pathlib.Path(str(module)).resolve()
+    ):
         raise PreflightError("PROTO_SOURCE_INVALID")
-    generated = files("ziyixi_protos.newsletter")
+    generated = resources.files("ziyixi_protos.newsletter")
     manifest = json.loads(
         generated.joinpath("provenance.json").read_text(encoding="utf-8")
     )
@@ -111,7 +113,7 @@ def check_proto_dependency() -> None:
         raise PreflightError("PROTO_SOURCE_INVALID")
     expected = {
         "descriptor_sha256": hashlib.sha256(
-            pb.DESCRIPTOR.serialized_pb
+            editorial_pb2.DESCRIPTOR.serialized_pb
         ).hexdigest(),
         "generated_sha256": hashlib.sha256(
             generated.joinpath("editorial_pb2.py").read_bytes()
@@ -140,7 +142,7 @@ def _check_resources() -> None:
         raise PreflightError("PYTHON_VERSION_UNSUPPORTED")
     # Read pins from the installed application's own metadata, not another
     # hand-maintained dependency list. Optional Codex is checked when enabled.
-    declared = distribution("personal-newsletter").requires
+    declared = importlib_metadata.distribution("personal-newsletter").requires
     if not declared:
         raise PreflightError("PACKAGE_METADATA_UNAVAILABLE")
     for requirement in declared:
@@ -150,10 +152,14 @@ def _check_resources() -> None:
         match = re.fullmatch(
             r"([A-Za-z0-9_.-]+)==([A-Za-z0-9_.+-]+)", pin.strip()
         )
-        if marker or match is None or version(match[1]) != match[2]:
+        if (
+            marker
+            or match is None
+            or importlib_metadata.version(match[1]) != match[2]
+        ):
             raise PreflightError("DEPENDENCY_VERSION_MISMATCH")
     check_proto_dependency()
-    package = files("newsletter")
+    package = resources.files("newsletter")
     for filename in ("editorial.md", "story-editorial.md", "reader-profile.md"):
         if (
             not package.joinpath("policy", filename)
@@ -161,13 +167,13 @@ def _check_resources() -> None:
             .strip()
         ):
             raise PreflightError("EDITOR_POLICY_UNAVAILABLE")
-    load_template()
-    font = load_font(24)
+    rendering.load_template()
+    font = charts.load_font(24)
     glyphs = [bytes(font.getmask(character)) for character in ("中", "文")]
     if not all(any(glyph) for glyph in glyphs) or glyphs[0] == glyphs[1]:
         raise PreflightError("CJK_FONT_UNAVAILABLE")
-    # Exercise CJK font loading, FreeType and actual PNG encoding; do not save it.
-    chart = render_chart_png(
+    # Exercise CJK fonts, FreeType, and PNG encoding without saving a file.
+    chart = charts.render_chart_png(
         {
             "kind": "bar",
             "metric": "启动检查",
@@ -181,22 +187,24 @@ def _check_resources() -> None:
         raise PreflightError("RENDERER_UNAVAILABLE")
 
 
-def _runtime_files() -> tuple[Path, Path]:
-    from codex_cli_bin import bundled_codex_path  # type: ignore[import-untyped]
+def _runtime_files() -> tuple[pathlib.Path, pathlib.Path]:
+    # Mock startup must not require the optional live Codex runtime package.
+    import codex_cli_bin  # type: ignore[import-untyped]  # noqa: PLC0415
 
     if (
-        version("openai-codex") != SDK_VERSION
-        or version("openai-codex-cli-bin") != SDK_VERSION
+        importlib_metadata.version("openai-codex") != codex_runtime.SDK_VERSION
+        or importlib_metadata.version("openai-codex-cli-bin")
+        != codex_runtime.SDK_VERSION
     ):
         raise PreflightError("CODEX_VERSION_MISMATCH")
-    executable = Path(bundled_codex_path())
+    executable = pathlib.Path(codex_cli_bin.bundled_codex_path())
     host = executable.with_name("codex-code-mode-host")
     metadata = json.loads(
         executable.parent.parent.joinpath("codex-package.json").read_text()
     )
-    if metadata.get("version") != SDK_VERSION:
+    if metadata.get("version") != codex_runtime.SDK_VERSION:
         raise PreflightError("CODEX_VERSION_MISMATCH")
-    installed = distribution("openai-codex-cli-bin")
+    installed = importlib_metadata.distribution("openai-codex-cli-bin")
     records = {str(record): record for record in installed.files or ()}
     for binary in (executable, host):
         if (
@@ -224,9 +232,9 @@ def _runtime_files() -> tuple[Path, Path]:
     return executable, host
 
 
-async def _host_executable(host: Path, workspace: Path) -> None:
-    # --help exits before hosting tools. An exact non-secret environment prevents
-    # inheriting service/provider keys, auth homes, proxies or injected originators.
+async def _host_executable(host: pathlib.Path, workspace: pathlib.Path) -> None:
+    # --help exits before hosting tools. An exact, non-secret environment
+    # excludes service keys, auth homes, proxies, and injected originators.
     process = await asyncio.create_subprocess_exec(
         str(host),
         "--help",
@@ -249,32 +257,37 @@ async def _host_executable(host: Path, workspace: Path) -> None:
             await process.wait()
 
 
-async def _check_codex(settings: Settings, sdk: ModuleType | None) -> None:
-    from openai_codex.generated.v2_all import ModelListResponse
+async def _check_codex(
+    settings: newsletter_settings.Settings, sdk: types.ModuleType | None
+) -> None:
+    # Only the live backend requires the optional SDK and response schema.
+    import openai_codex.generated.v2_all as v2_all  # noqa: PLC0415
 
     _, host = _runtime_files()
-    sdk = sdk or load_sdk()
+    sdk = sdk or codex_runtime.load_sdk()
     with tempfile.TemporaryDirectory(
         prefix=".preflight-codex-", dir=settings.data_dir
     ) as name:
-        workspace = Path(name).resolve()
-        home = check_codex_home(cast(Path, settings.codex_home), workspace)
+        workspace = pathlib.Path(name).resolve()
+        home = codex_runtime.check_codex_home(
+            cast(pathlib.Path, settings.codex_home), workspace
+        )
         await _host_executable(host, workspace)
-        overrides = runtime_overrides(home)
+        overrides = codex_runtime.runtime_overrides(home)
         client = sdk.AsyncCodex(
             sdk.CodexConfig(
                 cwd=str(workspace),
-                env=runtime_env(home),
+                env=codex_runtime.runtime_env(home),
                 config_overrides=overrides,
-                launch_args_override=launch_args(overrides),
+                launch_args_override=codex_runtime.launch_args(overrides),
                 client_name="newsletter_preflight",
             )
         )
         try:
             async with asyncio.timeout(CODEX_TIMEOUT):
                 await client.__aenter__()
-                check_codex_home(home, workspace)
-                await assert_no_skills(client, workspace, home)
+                codex_runtime.check_codex_home(home, workspace)
+                await codex_runtime.assert_no_skills(client, workspace, home)
                 account = await client.account(refresh_token=True)
                 if (
                     account.account is None
@@ -284,13 +297,17 @@ async def _check_codex(settings: Settings, sdk: ModuleType | None) -> None:
                 cursor = None
                 seen = set()
                 for _ in range(20):
-                    params: Payload = {"limit": 100, "includeHidden": True}
+                    params: newsletter_types.Payload = {
+                        "limit": 100,
+                        "includeHidden": True,
+                    }
                     if cursor is not None:
                         params["cursor"] = cursor
-                    result = await client._client.request(
+                    # SDK 0.147's public models() omits pagination parameters.
+                    result = await client._client.request(  # noqa: SLF001
                         "model/list",
                         params,
-                        response_model=ModelListResponse,
+                        response_model=v2_all.ModelListResponse,
                     )
                     if any(
                         model.model == settings.model for model in result.data
@@ -313,7 +330,7 @@ async def _get_json(
     headers: dict[str, str] | None,
     transport: httpx.AsyncBaseTransport | None,
     provider: str,
-) -> Payload:
+) -> newsletter_types.Payload:
     async with asyncio.timeout(HTTP_TIMEOUT):
         async with httpx.AsyncClient(
             transport=transport,
@@ -354,18 +371,19 @@ async def _get_json(
 
 
 async def _check_notion(
-    settings: Settings, transport: httpx.AsyncBaseTransport | None
+    settings: newsletter_settings.Settings,
+    transport: httpx.AsyncBaseTransport | None,
 ) -> None:
     if settings.notion_v2:
         try:
             async with asyncio.timeout(2 * HTTP_TIMEOUT):
-                await NotionWorkspace(
+                await notion_api.NotionWorkspace(
                     settings.notion_token,
                     settings.notion_materials_data_source_id,
                     settings.notion_editions_data_source_id,
                     transport=transport,
                 ).validate()
-        except AdapterError as exc:
+        except adapters.AdapterError as exc:
             codes = {
                 "NOTION_UNAVAILABLE": "NOTION_TEMPORARILY_UNAVAILABLE",
                 "NOTION_RATE_LIMITED": "NOTION_TEMPORARILY_UNAVAILABLE",
@@ -379,8 +397,8 @@ async def _check_notion(
                 codes.get(exc.code, "NOTION_CHECK_FAILED")
             ) from None
         return
-    Notion(settings.notion_token, settings.notion_data_source_id)
-    identifier = str(UUID(settings.notion_data_source_id))
+    adapters.Notion(settings.notion_token, settings.notion_data_source_id)
+    identifier = str(uuid.UUID(settings.notion_data_source_id))
     value = await _get_json(
         "https://api.notion.com/v1/data_sources/" + identifier,
         headers={
@@ -409,9 +427,10 @@ async def _check_notion(
 
 
 async def _check_todofy(
-    settings: Settings, transport: httpx.AsyncBaseTransport | None
+    settings: newsletter_settings.Settings,
+    transport: httpx.AsyncBaseTransport | None,
 ) -> None:
-    origin = validate_todofy_configuration(
+    origin = todofy.validate_todofy_configuration(
         settings.todofy_base_url,
         settings.todofy_user,
         settings.todofy_password,
@@ -425,16 +444,103 @@ async def _check_todofy(
         raise PreflightError("TODOFY_UNHEALTHY")
 
 
+async def _check_notion_availability(
+    settings: newsletter_settings.Settings,
+    transport: httpx.AsyncBaseTransport | None,
+    checks: list[str],
+    limitations: list[str],
+) -> None:
+    try:
+        await _check_notion(settings, transport)
+    except PreflightError as exc:
+        if exc.code != "NOTION_TEMPORARILY_UNAVAILABLE":
+            raise
+        checks.append("notion_temporarily_unavailable")
+    except (httpx.RequestError, TimeoutError):
+        checks.append("notion_temporarily_unavailable")
+    else:
+        checks.append(
+            "notion_dual_data_sources_and_managed_schema"
+            if settings.notion_v2
+            else "notion_data_source_read_and_title_schema"
+        )
+        limitations.append(
+            "Notion read access does not prove Insert content or Update "
+            "content "
+            "permission; no page or column was created or changed."
+        )
+    if "notion_temporarily_unavailable" in checks:
+        if settings.notion_v2:
+            logger.warning(
+                "Notion startup check degraded; local evidence remains "
+                "authoritative. "
+                "Dual-database synchronization may be delayed."
+            )
+            limitations.append(
+                "Notion is temporarily unavailable; local SQLite remains "
+                "authoritative. "
+                "Dual-database synchronization may be delayed without "
+                "blocking email. "
+                "No page was created or retried by startup checks."
+            )
+        else:
+            logger.warning(
+                "Notion startup check degraded; local evidence remains "
+                "authoritative. "
+                "Legacy projection gates still apply."
+            )
+            limitations.append(
+                "Notion is temporarily unavailable; local SQLite remains "
+                "authoritative. "
+                "Publication policies that require confirmed projection "
+                "still apply. "
+                "No page was created or retried by startup checks."
+            )
+
+
+async def _check_todofy_availability(
+    settings: newsletter_settings.Settings,
+    transport: httpx.AsyncBaseTransport | None,
+    checks: list[str],
+    limitations: list[str],
+) -> None:
+    try:
+        await _check_todofy(settings, transport)
+    except PreflightError as exc:
+        if exc.code != "TODOFY_TEMPORARILY_UNAVAILABLE":
+            raise
+        checks.append("todofy_temporarily_unavailable")
+    except (httpx.RequestError, TimeoutError):
+        checks.append("todofy_temporarily_unavailable")
+    else:
+        checks.append("todofy_public_health_and_configuration")
+        limitations.append(
+            "Todofy public health does not validate Basic Auth or "
+            "downstream summary generation."
+        )
+    if "todofy_temporarily_unavailable" in checks:
+        logger.warning(
+            "Todofy startup check degraded; the personal digest may be "
+            "unavailable."
+        )
+        limitations.append(
+            "Todofy is temporarily unavailable; the personal digest may be "
+            "omitted "
+            "without stopping independently prepared news. No summary was "
+            "generated."
+        )
+
+
 async def preflight(
-    settings: Settings,
+    settings: newsletter_settings.Settings,
     *,
-    store: Store | None = None,
+    store: newsletter_store.Store | None = None,
     http_transport: httpx.AsyncBaseTransport | None = None,
-    sdk: ModuleType | None = None,
+    sdk: types.ModuleType | None = None,
 ) -> PreflightReport:
     """Raise on mandatory failures; explicit dependency injection is for tests.
 
-    No environment switch can bypass these gates. Adapters supplied to create_app
+    No environment switch can bypass these gates. Injected create_app adapters
     must not implicitly replace these independent startup checks.
     """
     checks: list[str] = []
@@ -443,7 +549,7 @@ async def preflight(
     try:
         settings.validate()
         stage = "MODEL_SCHEMA"
-        check_production_output_schemas()
+        schema_compat.check_production_output_schemas()
         checks.append("model_output_schema_subset")
         stage = "STORAGE"
         _check_storage(settings, store)
@@ -456,85 +562,36 @@ async def preflight(
             await _check_codex(settings, sdk)
             checks.append("codex_runtime_host_auth_skills_model_catalog")
             limitations.append(
-                "Codex catalog/auth checks do not execute a model or verify web-search tools."
+                "Codex catalog/auth checks do not execute a model or "
+                "verify web-search tools."
             )
         if settings.notion_backend == "notion":
             stage = "NOTION"
-            try:
-                await _check_notion(settings, http_transport)
-            except PreflightError as exc:
-                if exc.code != "NOTION_TEMPORARILY_UNAVAILABLE":
-                    raise
-                checks.append("notion_temporarily_unavailable")
-            except (httpx.RequestError, TimeoutError):
-                checks.append("notion_temporarily_unavailable")
-            else:
-                checks.append(
-                    "notion_dual_data_sources_and_managed_schema"
-                    if settings.notion_v2
-                    else "notion_data_source_read_and_title_schema"
-                )
-                limitations.append(
-                    "Notion read access does not prove Insert content or Update content "
-                    "permission; no page or column was created or changed."
-                )
-            if "notion_temporarily_unavailable" in checks:
-                if settings.notion_v2:
-                    logger.warning(
-                        "Notion startup check degraded; local evidence remains authoritative. "
-                        "Dual-database synchronization may be delayed."
-                    )
-                    limitations.append(
-                        "Notion is temporarily unavailable; local SQLite remains authoritative. "
-                        "Dual-database synchronization may be delayed without blocking email. "
-                        "No page was created or retried by startup checks."
-                    )
-                else:
-                    logger.warning(
-                        "Notion startup check degraded; local evidence remains authoritative. "
-                        "Legacy projection gates still apply."
-                    )
-                    limitations.append(
-                        "Notion is temporarily unavailable; local SQLite remains authoritative. "
-                        "Publication policies that require confirmed projection still apply. "
-                        "No page was created or retried by startup checks."
-                    )
+            await _check_notion_availability(
+                settings, http_transport, checks, limitations
+            )
         if settings.todofy_backend == "todofy":
             stage = "TODOFY"
-            try:
-                await _check_todofy(settings, http_transport)
-            except PreflightError as exc:
-                if exc.code != "TODOFY_TEMPORARILY_UNAVAILABLE":
-                    raise
-                checks.append("todofy_temporarily_unavailable")
-            except (httpx.RequestError, TimeoutError):
-                checks.append("todofy_temporarily_unavailable")
-            else:
-                checks.append("todofy_public_health_and_configuration")
-                limitations.append(
-                    "Todofy public health does not validate Basic Auth or downstream summary generation."
-                )
-            if "todofy_temporarily_unavailable" in checks:
-                logger.warning(
-                    "Todofy startup check degraded; the personal digest may be unavailable."
-                )
-                limitations.append(
-                    "Todofy is temporarily unavailable; the personal digest may be omitted "
-                    "without stopping independently prepared news. No summary was generated."
-                )
+            await _check_todofy_availability(
+                settings, http_transport, checks, limitations
+            )
         if settings.mail_backend == "resend":
             stage = "MAIL"
-            Resend(
+            adapters.Resend(
                 settings.resend_api_key,
                 settings.from_email,
                 settings.recipient_email,
             )
             checks.append("resend_configuration_only")
             limitations.append(
-                "Resend sending-only keys lack a universal read probe; key validity, domain and delivery remain unverified. No email was sent."
+                "Resend sending-only keys lack a universal read probe; key "
+                "validity, domain and delivery remain unverified. No email "
+                "was sent."
             )
     except PreflightError:
         raise
-    except Exception:
+    # Startup is a provider boundary; report only safe stage/type metadata.
+    except Exception as error:  # noqa: BLE001
+        diagnostics.record_failure(logger, phase=stage.lower(), error=error)
         raise PreflightError(stage + "_CHECK_FAILED") from None
     return PreflightReport(tuple(checks), tuple(limitations))

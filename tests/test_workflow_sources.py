@@ -1,4 +1,4 @@
-"""Synthetic Crossref/RSS fixtures and a fixed-endpoint MockTransport; never live HTTP."""
+"""Test Crossref/RSS with synthetic fixtures and fixed mock endpoints."""
 
 import asyncio
 import json
@@ -6,8 +6,8 @@ import json
 import httpx
 import pytest
 
-from newsletter.errors import EditorError
-from newsletter.workflow import sources
+import newsletter.errors as errors
+import newsletter.workflow.sources as sources
 
 DAY = "2026-09-06"
 
@@ -31,11 +31,16 @@ def crossref(*items):
 def rss(
     url="https://www.nature.com/articles/synthetic", published="2026-09-05"
 ):
-    return f"""<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-      xmlns="http://purl.org/rss/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/">
-      <item><title>Synthetic Nature research</title><link>{url}</link><dc:date>{published}</dc:date>
-      <description>Unverified experimental claim must not enter a packet.</description></item>
-      </rdf:RDF>""".encode()
+    return (
+        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"\n'
+        '      xmlns="http://purl.org/rss/1.0/" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
+        "      <item><title>Synthetic Nature research</title>"
+        f"<link>{url}</link><dc:date>{published}</dc:date>\n"
+        "      <description>Unverified experimental claim must not enter "
+        "a packet.</description></item>\n"
+        "      </rdf:RDF>"
+    ).encode()
 
 
 def test_crossref_metadata_never_asserts_abstract_or_follow_up_url_access():
@@ -89,7 +94,7 @@ def test_invalid_future_or_irrelevant_crossref_records_are_not_candidates(item):
     ],
 )
 def test_malformed_crossref_envelopes_fail_safely(raw):
-    with pytest.raises((ValueError, EditorError)):
+    with pytest.raises((ValueError, errors.EditorError)):
         sources.parse_crossref(raw, DAY)
 
 
@@ -135,7 +140,7 @@ def test_rss_future_date_is_not_current_evidence_and_rfc2822_is_supported():
     ],
 )
 def test_rss_rejects_entities_and_large_bodies_without_following_them(raw):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Unsafe or oversized RSS"):
         sources.parse_rss(raw, DAY)
 
 
@@ -150,7 +155,7 @@ def fast_metadata(monkeypatch):
     return sleeps
 
 
-async def test_metadata_adapter_uses_only_fixed_https_origins_and_serial_bounded_public_queries(
+async def test_metadata_fetch_uses_fixed_serial_bounded_https(
     fast_metadata,
 ):
     requests = []

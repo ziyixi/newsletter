@@ -1,42 +1,43 @@
-"""Frozen legacy DAG + durable service tail, with deliberately synthetic node outputs.
+"""Test the frozen legacy DAG and durable tail with synthetic node outputs.
 
-No lifecycle/live preflight, SDK execution, provider HTTP, or mail adapter is used.
-Only the content handlers are replaced; scheduling, artifacts, packets, projection
-dispatch, edition binding, rendering, usage accounting and send guards stay real.
+No live preflight, SDK execution, provider HTTP or mail adapter is used.
+Only content handlers are replaced. Scheduling, artifacts, packets,
+projection dispatch, binding, rendering, usage and send guards stay real.
 """
 
 import asyncio
+import collections
+import copy
+import datetime
+import importlib.resources as resources
 import json
-from collections import Counter
-from copy import deepcopy
-from datetime import UTC, datetime, timedelta
-from importlib.resources import files
-from pathlib import Path
-from types import SimpleNamespace
+import pathlib
+import types
 
 import pytest
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from newsletter.adapters import AdapterError
-from newsletter.collection.collector import MockCollector
-from newsletter.collection.repository import RunRepository
-from newsletter.contracts import parse_message, to_dict, validate_draft
-from newsletter.editor import CodexEditor, MockEditor
-from newsletter.errors import EditorError
-from newsletter.settings import Settings
-from newsletter.store import Store, StoreError
-from newsletter.usage import codex_usage, observe_codex_usage
-from newsletter.worker import Worker
-from newsletter.workflow.nodes import EditorialNodes
-from newsletter.workflow.pipeline import DagPipeline, freeze_workflow
-from newsletter.workflow.state import WorkflowState
+import newsletter.adapters as adapters
+import newsletter.collection.collector as collector
+import newsletter.collection.repository as repository
+import newsletter.contracts as contracts
+import newsletter.editor as newsletter_editor
+import newsletter.errors as errors
+import newsletter.settings as settings
+import newsletter.store as newsletter_store
+import newsletter.usage as newsletter_usage
+import newsletter.worker as worker
+import newsletter.workflow.nodes as newsletter_workflow_nodes
+import newsletter.workflow.pipeline as pipeline
+import newsletter.workflow.state as state
 
 ISSUE_DATE = "2026-09-06"
 DISCOVERY_COUNT = 8
-# Eight discovery calls; the existing eight downstream model calls are unchanged.
+# Eight discovery calls; the existing eight downstream model calls are
+# unchanged.
 BASE_MODEL_INVOCATIONS = DISCOVERY_COUNT + 8
-LEGACY_RECIPE = Path(
-    str(files("newsletter").joinpath("workflows/legacy-daily.yaml"))
+LEGACY_RECIPE = pathlib.Path(
+    str(resources.files("newsletter").joinpath("workflows/legacy-daily.yaml"))
 )
 MODEL_KINDS = {
     "discovery",
@@ -73,7 +74,9 @@ def task(identifier, source=None):
         "question": "检验固定材料中的证据边界。",
         "why": "这是离线集成测试，不生成真实报道。",
         "priority": 1,
-        "evidence_context": "补查任务可以没有候选 ID，但必须携带明确的证据问题。",
+        "evidence_context": (
+            "补查任务可以没有候选 ID，但必须携带明确的证据问题。"
+        ),
         "source_urls": [source["url"]]
         if source
         else ["https://example.org/gap"],
@@ -102,7 +105,10 @@ def draft(packets):
         ],
         "recommended_reading": {
             "citation": adopted[0]["id"] + "/source",
-            "reason": "问题、方法、结果和限制均为测试构造；这里检验自足介绍卡及出处渲染。",
+            "reason": (
+                "问题、方法、结果和限制均为测试构造；"
+                "这里检验自足介绍卡及出处渲染。"
+            ),
         },
         "limitations": "本稿全部为 fixture。",
     }
@@ -110,10 +116,10 @@ def draft(packets):
 
 def record_synthetic_usage():
     # Exercise the real ContextVar sink and cumulative-snapshot replacement.
-    with codex_usage("synthetic-no-model") as usage:
+    with newsletter_usage.codex_usage("synthetic-no-model") as usage:
         usage.start_turn()
         for count in (80, 100, 100):
-            observe_codex_usage(
+            newsletter_usage.observe_codex_usage(
                 "thread/tokenUsage/updated",
                 {
                     "tokenUsage": {
@@ -127,7 +133,7 @@ def record_synthetic_usage():
                     }
                 },
             )
-        observe_codex_usage("turn/completed", {})
+        newsletter_usage.observe_codex_usage("turn/completed", {})
 
 
 class FakeNotion:
@@ -140,25 +146,27 @@ class FakeNotion:
         assert packet["is_fixture"] is True
         self.calls.append(packet["id"])
         if self.failed_tags.intersection(packet["content"]["tags"]):
-            raise AdapterError(
+            raise adapters.AdapterError(
                 "NOTION_FIXTURE_FAILURE", ambiguous=self.ambiguous
             )
 
 
 def attach(rig):
-    rig.runs = RunRepository(rig.store)
-    rig.pipeline = DagPipeline(
+    rig.runs = repository.RunRepository(rig.store)
+    rig.pipeline = pipeline.DagPipeline(
         rig.runs,
-        MockCollector(),
+        collector.MockCollector(),
         rig.path / "collection",
         10,
         32,
-        editor=CodexEditor(rig.path / "nonexistent-auth-home"),
+        editor=newsletter_editor.CodexEditor(
+            rig.path / "nonexistent-auth-home"
+        ),
         recipe_path=LEGACY_RECIPE,
     )
-    rig.worker = Worker(
+    rig.worker = worker.Worker(
         rig.store,
-        MockEditor(),
+        newsletter_editor.MockEditor(),
         rig.notion,
         rig.path / "editor",
         10,
@@ -168,11 +176,11 @@ def attach(rig):
 
 @pytest.fixture
 def rig(tmp_path, monkeypatch, request):
-    rig = SimpleNamespace(
+    rig = types.SimpleNamespace(
         path=tmp_path,
-        store=Store(tmp_path / "state.sqlite3", "mock"),
+        store=newsletter_store.Store(tmp_path / "state.sqlite3", "mock"),
         notion=FakeNotion(),
-        calls=Counter(),
+        calls=collections.Counter(),
         forbidden_calls=[],
         review_passed=True,
         revision_passed=True,
@@ -194,7 +202,7 @@ def rig(tmp_path, monkeypatch, request):
         if "prior_draft_untrusted" in value:
             kind = "revision"
             packets = value["research_packets_untrusted"]
-            revised = deepcopy(value["prior_draft_untrusted"])
+            revised = copy.deepcopy(value["prior_draft_untrusted"])
             revised["title"] += " · synthetic revision"
             output = {
                 "draft": revised,
@@ -226,12 +234,14 @@ def rig(tmp_path, monkeypatch, request):
         }
         return json.dumps(output, ensure_ascii=False), opened, True
 
-    monkeypatch.setattr(CodexEditor, "execute", synthetic_tail)
-    monkeypatch.setattr(CodexEditor, "prepare", forbidden)
-    monkeypatch.setattr(MockEditor, "prepare", forbidden)
-    monkeypatch.setattr(MockCollector, "collect", forbidden)
+    monkeypatch.setattr(
+        newsletter_editor.CodexEditor, "execute", synthetic_tail
+    )
+    monkeypatch.setattr(newsletter_editor.CodexEditor, "prepare", forbidden)
+    monkeypatch.setattr(newsletter_editor.MockEditor, "prepare", forbidden)
+    monkeypatch.setattr(collector.MockCollector, "collect", forbidden)
 
-    real_execute = EditorialNodes.execute
+    real_execute = newsletter_workflow_nodes.EditorialNodes.execute
 
     async def execute(nodes, kind, ctx, path):
         rig.calls[(ctx.node_id, ctx.item_id)] += 1
@@ -273,7 +283,9 @@ def rig(tmp_path, monkeypatch, request):
             supplied = ctx.item
             packet = nodes.store.put_packet(
                 {
-                    "request_key": f"{ctx.run_id}:{ctx.node_id}:{supplied['id']}",
+                    "request_key": (
+                        f"{ctx.run_id}:{ctx.node_id}:{supplied['id']}"
+                    ),
                     "workflow_id": ctx.node_id,
                     "content": {
                         "title": "Synthetic " + supplied["id"],
@@ -311,7 +323,7 @@ def rig(tmp_path, monkeypatch, request):
                 "note": "只执行一轮有界补查。",
             }
         if kind == "review":
-            result = deepcopy(nodes.one(ctx, "finalization"))
+            result = copy.deepcopy(nodes.one(ctx, "finalization"))
             result["review"] = {
                 "passed": rig.review_passed,
                 "findings": []
@@ -321,10 +333,12 @@ def rig(tmp_path, monkeypatch, request):
             return result
         raise AssertionError("Unexpected registered node type")
 
-    monkeypatch.setattr(EditorialNodes, "execute", execute)
+    monkeypatch.setattr(
+        newsletter_workflow_nodes.EditorialNodes, "execute", execute
+    )
     attach(rig)
-    instructions, snapshot = freeze_workflow(
-        Settings(data_dir=tmp_path, workflow_file=LEGACY_RECIPE),
+    instructions, snapshot = pipeline.freeze_workflow(
+        settings.Settings(data_dir=tmp_path, workflow_file=LEGACY_RECIPE),
         rig.pipeline.state,
         ISSUE_DATE,
     )
@@ -356,9 +370,15 @@ def rig(tmp_path, monkeypatch, request):
 
 def receipt(rig):
     value = rig.pipeline.receipt(rig.run["id"])
-    # Exact public API conversion, including uint64 usage counts and optional data.
-    message = parse_message(value, pb.CollectionRun)
-    assert parse_message(to_dict(message), pb.CollectionRun) == message
+    # Exact public API conversion, including uint64 usage counts and optional
+    # data.
+    message = contracts.parse_message(value, editorial_pb2.CollectionRun)
+    assert (
+        contracts.parse_message(
+            contracts.to_dict(message), editorial_pb2.CollectionRun
+        )
+        == message
+    )
     assert message.id == rig.run["id"]
     assert message.is_fixture
     return value
@@ -391,16 +411,16 @@ def assert_no_mail(rig):
 
 def expire_budget(rig, monkeypatch):
     frozen = rig.snapshot["inputs"]
-    deadline = datetime.fromisoformat(frozen["started_at"]) + timedelta(
-        seconds=frozen["timeout_seconds"] + 1
-    )
+    deadline = datetime.datetime.fromisoformat(
+        frozen["started_at"]
+    ) + datetime.timedelta(seconds=frozen["timeout_seconds"] + 1)
 
-    class PastDeadline(datetime):
+    class PastDeadline(datetime.datetime):
         @classmethod
         def now(cls, tz=None):
-            return deadline.astimezone(tz or UTC)
+            return deadline.astimezone(tz or datetime.UTC)
 
-    monkeypatch.setattr("newsletter.workflow.pipeline.datetime", PastDeadline)
+    monkeypatch.setattr(datetime, "datetime", PastDeadline)
 
 
 async def legacy_hold(rig):
@@ -417,7 +437,7 @@ async def legacy_hold(rig):
 
 
 @pytest.mark.asyncio
-async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_receipt(
+async def test_default_dag_persists_ready_edition_usage_and_receipt(
     rig,
 ):
     assert receipt(rig)["state"] == "queued"
@@ -433,9 +453,9 @@ async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_rec
     assert not rig.tail_model_calls
     assert all(count == 1 for count in rig.calls.values())
     edition = rig.store.get(finished["edition_id"])
-    bound = WorkflowState(rig.store).edition(edition["id"])
+    bound = state.WorkflowState(rig.store).edition(edition["id"])
     packets = rig.pipeline.repository.output(rig.run["id"], "review")["packets"]
-    validate_draft(edition["draft"], packets)
+    contracts.validate_draft(edition["draft"], packets)
     assert (
         len(edition["packet_ids"]) == 3 and len(bound["required_packets"]) == 2
     )
@@ -466,13 +486,13 @@ async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_rec
     )  # Three research packets plus optional candidate index.
     assert_no_mail(rig)
 
-    with pytest.raises(StoreError):
+    with pytest.raises(newsletter_store.StoreError):
         rig.store.reserve_send(
             {**approval(edition), "expected_render_hash": "wrong"}
         )
     adopted = bound["required_packets"][0]
     rig.store.projection_result(adopted, "pending")
-    with pytest.raises(StoreError):
+    with pytest.raises(newsletter_store.StoreError):
         rig.store.reserve_send(approval(edition))
     assert_no_mail(rig)
     rig.store.projection_result(adopted, "done")
@@ -487,7 +507,7 @@ async def test_default_dag_reaches_bound_ready_edition_with_usage_and_public_rec
 
 
 @pytest.mark.asyncio
-async def test_restart_after_completed_research_preserves_artifacts_and_does_not_repeat(
+async def test_restart_preserves_completed_research_without_repeating(
     rig,
 ):
     for _ in range(40):
@@ -501,7 +521,7 @@ async def test_restart_after_completed_research_preserves_artifacts_and_does_not
     before_attempts = rig.pipeline.repository.attempts(rig.run["id"])
     frozen = rig.runs.workflow_snapshot(rig.run["id"])
     rig.store.close()
-    rig.store = Store(rig.path / "state.sqlite3", "mock")
+    rig.store = newsletter_store.Store(rig.path / "state.sqlite3", "mock")
     attach(rig)
     rig.store.recover()
     rig.runs.recover()
@@ -541,13 +561,13 @@ async def test_independent_review_hold_blocks_worker_render_and_send(rig):
     )
     assert rig.pipeline.state.repair(rig.run["id"]) is None
     assert await rig.worker.step() is False
-    with pytest.raises(StoreError):
+    with pytest.raises(newsletter_store.StoreError):
         rig.store.reserve_send(approval(edition))
     assert_no_mail(rig)
 
 
 @pytest.mark.asyncio
-async def test_initial_hold_revises_once_then_independently_reviews_before_publication(
+async def test_initial_hold_revises_once_then_gets_independent_review(
     rig,
 ):
     rig.review_passed = False
@@ -583,7 +603,7 @@ async def test_initial_hold_revises_once_then_independently_reviews_before_publi
 
 
 @pytest.mark.asyncio
-async def test_revision_author_hold_cannot_be_overruled_by_a_passing_final_review(
+async def test_passing_final_review_cannot_overrule_author_hold(
     rig,
 ):
     rig.review_passed = rig.revision_passed = False
@@ -603,14 +623,14 @@ async def test_revision_author_hold_cannot_be_overruled_by_a_passing_final_revie
     ]
     assert not edition.get("rendered")
     assert await rig.worker.step() is False
-    with pytest.raises(StoreError):
+    with pytest.raises(newsletter_store.StoreError):
         rig.store.reserve_send(approval(edition))
     assert_no_mail(rig)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rig", ["legacy"], indirect=True)
-async def test_legacy_hold_upgrade_preserves_original_records_and_combines_child_usage(
+async def test_legacy_upgrade_preserves_source_and_combines_child_usage(
     rig,
 ):
     held = await legacy_hold(rig)
@@ -639,7 +659,7 @@ async def test_legacy_hold_upgrade_preserves_original_records_and_combines_child
 
     # Reopen all repositories at the durable parent/child handoff boundary.
     rig.store.close()
-    rig.store = Store(rig.path / "state.sqlite3", "mock")
+    rig.store = newsletter_store.Store(rig.path / "state.sqlite3", "mock")
     attach(rig)
     rig.store.recover()
     rig.runs.recover()
@@ -685,7 +705,7 @@ async def test_legacy_hold_upgrade_preserves_original_records_and_combines_child
         "final_review",
     ]
     assert_no_mail(rig)
-    with pytest.raises(StoreError):
+    with pytest.raises(newsletter_store.StoreError):
         rig.store.reserve_send(approval(original_edition))
     assert rig.store.reserve_send(approval(edition))[1] is True
     assert rig.store.reserve_send(approval(edition))[1] is False
@@ -693,7 +713,7 @@ async def test_legacy_hold_upgrade_preserves_original_records_and_combines_child
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rig", ["legacy"], indirect=True)
-async def test_legacy_repair_final_hold_is_terminal_and_cannot_create_a_third_round(
+async def test_legacy_final_hold_is_terminal_without_a_third_round(
     rig,
 ):
     held = await legacy_hold(rig)
@@ -715,7 +735,7 @@ async def test_legacy_repair_final_hold_is_terminal_and_cannot_create_a_third_ro
     for identifier in (held["edition_id"], finished["edition_id"]):
         edition = rig.store.get(identifier)
         assert not edition.get("rendered")
-        with pytest.raises(StoreError):
+        with pytest.raises(newsletter_store.StoreError):
             rig.store.reserve_send(approval(edition))
     assert_no_mail(rig)
 
@@ -736,14 +756,14 @@ async def test_expired_legacy_hold_does_not_start_a_new_repair(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rig", ["legacy"], indirect=True)
-async def test_completed_repair_recovers_local_publication_after_deadline_without_model_retry(
+async def test_completed_repair_recovers_after_deadline_without_models(
     rig, monkeypatch
 ):
     await legacy_hold(rig)
     rig.pipeline.recipe_path = rig.current_recipe
 
     def interrupted_tail(*args, **kwargs):
-        raise StoreError(
+        raise newsletter_store.StoreError(
             "busy", "Synthetic interruption before edition receipt"
         )
 
@@ -764,7 +784,7 @@ async def test_completed_repair_recovers_local_publication_after_deadline_withou
     projections = list(rig.notion.calls)
     expire_budget(rig, monkeypatch)
     rig.store.close()
-    rig.store = Store(rig.path / "state.sqlite3", "mock")
+    rig.store = newsletter_store.Store(rig.path / "state.sqlite3", "mock")
     attach(rig)
     rig.store.recover()
     rig.runs.recover()
@@ -778,7 +798,7 @@ async def test_completed_repair_recovers_local_publication_after_deadline_withou
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rig", ["legacy"], indirect=True)
-async def test_persisted_repair_receipt_recovers_after_deadline_but_cannot_start_models(
+async def test_repair_receipt_recovers_after_deadline_without_models(
     rig, monkeypatch
 ):
     held = await legacy_hold(rig)
@@ -811,7 +831,7 @@ async def test_persisted_repair_receipt_recovers_after_deadline_but_cannot_start
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rig", ["legacy"], indirect=True)
 @pytest.mark.parametrize("failure", ["invalid_output", "interrupted"])
-async def test_terminal_repair_attempt_recovers_original_failure_before_deadline_classification(
+async def test_terminal_repair_retains_failure_before_deadline_check(
     rig, monkeypatch, failure
 ):
     await legacy_hold(rig)
@@ -824,7 +844,7 @@ async def test_terminal_repair_attempt_recovers_original_failure_before_deadline
         record_synthetic_usage()
         if failure == "interrupted":
             raise asyncio.CancelledError
-        raise EditorError("invalid_output")
+        raise errors.EditorError("invalid_output")
 
     original_finish = rig.pipeline.finish_graph
 
@@ -835,7 +855,7 @@ async def test_terminal_repair_attempt_recovers_original_failure_before_deadline
             )
         return original_finish(run, definition, execution_id, status)
 
-    monkeypatch.setattr(CodexEditor, "execute", failed_model)
+    monkeypatch.setattr(newsletter_editor.CodexEditor, "execute", failed_model)
     monkeypatch.setattr(
         rig.pipeline, "finish_graph", crash_after_failed_artifact
     )
@@ -848,7 +868,7 @@ async def test_terminal_repair_attempt_recovers_original_failure_before_deadline
     assert attempted == [failure]
     expire_budget(rig, monkeypatch)
     rig.store.close()
-    rig.store = Store(rig.path / "state.sqlite3", "mock")
+    rig.store = newsletter_store.Store(rig.path / "state.sqlite3", "mock")
     attach(rig)
     rig.store.recover()
     rig.runs.recover()
@@ -865,19 +885,21 @@ async def test_terminal_repair_attempt_recovers_original_failure_before_deadline
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["write", "projection"])
-async def test_optional_archive_and_unused_projection_failure_do_not_block_adopted_packets(
+async def test_optional_projection_failures_allow_adopted_packets(
     rig, monkeypatch, failure
 ):
     rig.notion.failed_tags.add("unused")
     if failure == "write":
-        put_packet = Store.put_packet
+        put_packet = newsletter_store.Store.put_packet
 
         def fail_only_archive(store, request, principal="ingest"):
             if request["workflow_id"] == "candidate-index":
                 raise OSError("synthetic optional archive failure")
             return put_packet(store, request, principal)
 
-        monkeypatch.setattr(Store, "put_packet", fail_only_archive)
+        monkeypatch.setattr(
+            newsletter_store.Store, "put_packet", fail_only_archive
+        )
     else:
         rig.notion.failed_tags.add("candidate-index")
     finished = await drain(rig)
@@ -903,9 +925,7 @@ async def test_optional_archive_and_unused_projection_failure_do_not_block_adopt
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ambiguous", [False, True])
-async def test_adopted_projection_failure_blocks_publication_and_is_never_auto_retried(
-    rig, ambiguous
-):
+async def test_adopted_projection_failure_blocks_without_retry(rig, ambiguous):
     rig.notion.failed_tags.add("adopted")
     rig.notion.ambiguous = ambiguous
     finished = await drain(rig)
@@ -915,7 +935,7 @@ async def test_adopted_projection_failure_blocks_publication_and_is_never_auto_r
     assert (
         edition["state"] == "ready"
     )  # Rendering success alone does not authorize sending.
-    with pytest.raises(StoreError):
+    with pytest.raises(newsletter_store.StoreError):
         rig.store.reserve_send(approval(edition))
     calls = list(rig.notion.calls)
     rig.store.recover()

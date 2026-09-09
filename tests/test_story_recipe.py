@@ -1,26 +1,21 @@
-"""The editable topic graph cannot bypass history, verification or publication."""
+"""Test topic-graph history, verification and publication barriers."""
 
-from copy import deepcopy
-from dataclasses import replace
-from importlib.resources import files
+import copy
+import dataclasses
+import importlib.resources as resources
 
 import pytest
 
-from newsletter.workflow.definition import (
-    DefinitionError,
-    load_definition,
-    parse_definition,
-)
-from newsletter.workflow.nodes import validate_recipe
-from newsletter.workflow.story_recipe import (
-    is_story_recipe,
-    validate_story_recipe,
-)
+import newsletter.workflow.definition as newsletter_workflow_definition
+import newsletter.workflow.nodes as nodes
+import newsletter.workflow.story_recipe as story_recipe
 
 
 def recipe():
-    return load_definition(
-        files("newsletter").joinpath("workflows/daily.yaml").read_bytes()
+    return newsletter_workflow_definition.load_definition(
+        resources.files("newsletter")
+        .joinpath("workflows/daily.yaml")
+        .read_bytes()
     ).snapshot()
 
 
@@ -29,15 +24,15 @@ def role(value, kind):
 
 
 def validate(value):
-    definition = parse_definition(value)
-    validate_story_recipe(definition)
-    validate_recipe(definition)
+    definition = newsletter_workflow_definition.parse_definition(value)
+    story_recipe.validate_story_recipe(definition)
+    nodes.validate_recipe(definition)
     return definition
 
 
 def test_default_recipe_is_publication_by_deadline_not_a_global_review_tail():
     definition = validate(recipe())
-    assert is_story_recipe(definition)
+    assert story_recipe.is_story_recipe(definition)
     kinds = [node.type for node in definition.nodes]
     assert kinds[-4:] == ["story_plan", "story_brief", "story_deep", "publish"]
     assert not set(kinds) & {
@@ -75,13 +70,13 @@ def test_each_critical_role_is_required_exactly_once(kind):
         ]
         if node.get("map", {}).get("from", "").startswith(removed + "."):
             node["map"]["from"] = "run.instructions"
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
     value = recipe()
-    duplicate = deepcopy(role(value, kind))
+    duplicate = copy.deepcopy(role(value, kind))
     duplicate["id"] += "-duplicate"
     value["nodes"].append(duplicate)
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
 
 
@@ -114,7 +109,7 @@ def test_required_predecessors_cannot_be_removed(kind, dependency):
     value = recipe()
     target, predecessor = role(value, kind), role(value, dependency)
     target["needs"].remove(predecessor["id"])
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
 
 
@@ -128,12 +123,12 @@ def test_required_predecessors_cannot_be_removed(kind, dependency):
         "run.policy",
     ],
 )
-def test_discovery_must_scan_frozen_instructions_not_an_arbitrary_empty_collection(
+def test_discovery_scans_frozen_instructions(
     source,
 ):
     value = recipe()
     role(value, "discovery")["map"]["from"] = source
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
 
 
@@ -151,7 +146,7 @@ def test_discovery_must_scan_frozen_instructions_not_an_arbitrary_empty_collecti
 def test_scalar_critical_or_metadata_nodes_cannot_be_mapped(kind):
     value = recipe()
     role(value, kind)["map"] = {"from": "run.instructions", "max_items": 1}
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
 
 
@@ -159,7 +154,7 @@ def test_scalar_critical_or_metadata_nodes_cannot_be_mapped(kind):
 def test_required_map_cannot_be_deleted(kind):
     value = recipe()
     role(value, kind).pop("map")
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
 
 
@@ -175,7 +170,7 @@ def test_required_map_cannot_be_deleted(kind):
 def test_story_maps_use_their_actual_frozen_plan_fields(kind, source):
     value = recipe()
     role(value, kind)["map"]["from"] = source
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
 
 
@@ -185,7 +180,7 @@ def test_story_maps_use_their_actual_frozen_plan_fields(kind, source):
 def test_a_single_optional_leaf_cannot_be_configured_to_stop_the_issue(kind):
     value = recipe()
     role(value, kind)["on_error"] = "stop"
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
 
 
@@ -195,7 +190,7 @@ def test_a_single_optional_leaf_cannot_be_configured_to_stop_the_issue(kind):
 def test_local_critical_nodes_cannot_silently_continue_after_failure(kind):
     value = recipe()
     role(value, kind)["on_error"] = "continue"
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
 
 
@@ -213,7 +208,7 @@ def test_capacity_cannot_silently_omit_selected_briefs_or_exceed_deep_budget(
 ):
     value = recipe()
     role(value, kind)["map"]["max_items"] = maximum
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
 
 
@@ -241,11 +236,11 @@ def test_parameters_are_registered_literals_with_explicit_bounds(
 ):
     value_recipe = recipe()
     role(value_recipe, kind)["params"][key] = value
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value_recipe)
 
 
-def test_optional_public_feed_can_be_removed_without_removing_discovery_or_history():
+def test_optional_feed_removal_keeps_discovery_and_history():
     value = recipe()
     identity = role(value, "api_feed")["id"]
     value["nodes"] = [node for node in value["nodes"] if node["id"] != identity]
@@ -260,16 +255,16 @@ def test_discovery_itself_cannot_be_removed_to_publish_stale_history():
     value["nodes"] = [node for node in value["nodes"] if node["id"] != identity]
     for node in value["nodes"]:
         node["needs"] = [dep for dep in node["needs"] if dep != identity]
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
 
 
 def test_extra_discovery_must_also_feed_the_candidate_pool():
     value = recipe()
-    extra = deepcopy(role(value, "discovery"))
+    extra = copy.deepcopy(role(value, "discovery"))
     extra["id"] = "second-discovery"
     value["nodes"].append(extra)
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
     role(value, "deduplicate")["needs"].append(extra["id"])
     validate(value)
@@ -303,39 +298,41 @@ def test_old_global_review_types_cannot_be_inserted_into_new_publication_recipe(
 ):
     value = recipe()
     value["nodes"].append({"id": "legacy-step", "type": kind})
-    with pytest.raises(DefinitionError):
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
         validate(value)
 
 
 def test_partial_story_recipe_is_detected_even_without_story_plan():
-    definition = parse_definition(
+    definition = newsletter_workflow_definition.parse_definition(
         {
             "id": "partial",
             "version": 1,
             "nodes": [{"id": "publish", "type": "publish"}],
         }
     )
-    assert is_story_recipe(definition)
-    with pytest.raises(DefinitionError):
-        validate_story_recipe(definition)
+    assert story_recipe.is_story_recipe(definition)
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        story_recipe.validate_story_recipe(definition)
 
 
-def test_direct_dataclass_construction_does_not_bypass_syntax_or_edge_validation():
-    definition = parse_definition(recipe())
-    broken = replace(
+def test_direct_dataclasses_still_validate_syntax_and_edges():
+    definition = newsletter_workflow_definition.parse_definition(recipe())
+    broken = dataclasses.replace(
         definition,
         nodes=(
-            replace(definition.nodes[0], needs=("missing",)),
+            dataclasses.replace(definition.nodes[0], needs=("missing",)),
             *definition.nodes[1:],
         ),
     )
-    with pytest.raises(DefinitionError):
-        validate_story_recipe(broken)
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        story_recipe.validate_story_recipe(broken)
 
 
 def test_legacy_definition_is_still_accepted_by_its_own_validator():
-    legacy = load_definition(
-        files("newsletter").joinpath("workflows/legacy-daily.yaml").read_bytes()
+    legacy = newsletter_workflow_definition.load_definition(
+        resources.files("newsletter")
+        .joinpath("workflows/legacy-daily.yaml")
+        .read_bytes()
     )
-    assert not is_story_recipe(legacy)
-    validate_recipe(legacy)
+    assert not story_recipe.is_story_recipe(legacy)
+    nodes.validate_recipe(legacy)

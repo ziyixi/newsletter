@@ -1,56 +1,57 @@
-"""Strict model output shapes derived from the shared public protobuf contract."""
+"""Strict model output shapes from the public protobuf contract."""
 
-import re
 from collections.abc import Sequence
+import re
 from typing import cast
 
-from google.protobuf.descriptor import Descriptor, FieldDescriptor
-from ziyixi_protos.newsletter.editorial_pb2 import Draft, PacketBody
+import google.protobuf.descriptor as google_protobuf_descriptor
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from newsletter.contracts import (
-    CHART_KINDS,
-    IDENTIFIER_PATTERN,
-    SECTION_KINDS,
-    SOURCE_ACCESS_SCOPES,
-)
-from newsletter.types import Payload
+import newsletter.contracts as contracts
+import newsletter.types as types
 
 _FIELD_ENUMS = {
-    ("Source", "access_scope"): SOURCE_ACCESS_SCOPES,
-    ("Section", "kind"): SECTION_KINDS,
-    ("Chart", "kind"): CHART_KINDS,
+    ("Source", "access_scope"): contracts.SOURCE_ACCESS_SCOPES,
+    ("Section", "kind"): contracts.SECTION_KINDS,
+    ("Chart", "kind"): contracts.CHART_KINDS,
 }
 _SUPPLEMENT_IDS = tuple(f"supplement-{number}" for number in range(1, 7))
 
 
-def _identifier_schema() -> Payload:
+def _identifier_schema() -> types.Payload:
     # JSON Schema uses portable anchors; the application validator retains its
     # strict full-string check (including rejection of trailing line endings).
     return {
         "type": "string",
-        "pattern": f"^{IDENTIFIER_PATTERN}$",
+        "pattern": f"^{contracts.IDENTIFIER_PATTERN}$",
         "description": (
-            "Local citation identifier, 1-128 ASCII characters: start with a letter or "
-            "digit, then only letters, digits, underscore, dot, colon or hyphen. "
-            "No slash, whitespace, URL or DOI; use a short label such as source-1. "
+            "Local citation identifier, 1-128 ASCII characters: start with "
+            "a letter or "
+            "digit, then only letters, digits, underscore, dot, colon or "
+            "hyphen. "
+            "No slash, whitespace, URL or DOI; use a short label such as "
+            "source-1. "
             "Put the actual source URL in source.url, never in this identifier."
         ),
     }
 
 
-def _message_schema(descriptor: Descriptor) -> Payload:
+def message_schema(
+    descriptor: google_protobuf_descriptor.Descriptor,
+) -> types.Payload:
     """Translate public proto fields; each call owns its mutable schema tree."""
-    props: Payload = {}
+    props: types.Payload = {}
     for proto_field in descriptor.fields:
-        item: Payload = (
-            _message_schema(proto_field.message_type)
-            if proto_field.message_type
-            else {
-                "type": "boolean"
-                if proto_field.type == FieldDescriptor.TYPE_BOOL
-                else "string"
-            }
-        )
+        item: types.Payload
+        if proto_field.message_type:
+            item = message_schema(proto_field.message_type)
+        elif (
+            proto_field.type
+            == google_protobuf_descriptor.FieldDescriptor.TYPE_BOOL
+        ):
+            item = {"type": "boolean"}
+        else:
+            item = {"type": "string"}
         if values := _FIELD_ENUMS.get((descriptor.name, proto_field.name)):
             item["enum"] = list(values)
         if (descriptor.name, proto_field.name) == ("Source", "id"):
@@ -93,13 +94,23 @@ def _message_schema(descriptor: Descriptor) -> Payload:
     }
 
 
-def packet_body_schema() -> Payload:
+def packet_body_schema() -> types.Payload:
     """Shared material contract, independent of editor or research envelopes."""
-    return _message_schema(cast(Descriptor, PacketBody.DESCRIPTOR))
+    return message_schema(
+        cast(
+            google_protobuf_descriptor.Descriptor,
+            editorial_pb2.PacketBody.DESCRIPTOR,
+        )
+    )
 
 
-def _draft_schema(packets: Sequence[Payload]) -> Payload:
-    draft = _message_schema(cast(Descriptor, Draft.DESCRIPTOR))
+def _draft_schema(packets: Sequence[types.Payload]) -> types.Payload:
+    draft = message_schema(
+        cast(
+            google_protobuf_descriptor.Descriptor,
+            editorial_pb2.Draft.DESCRIPTOR,
+        )
+    )
     # Existing references are data, not a grammar the model should reconstruct.
     # Group source alternatives per packet instead of repeating long packet IDs.
     alternatives = [
@@ -111,13 +122,16 @@ def _draft_schema(packets: Sequence[Payload]) -> Payload:
         + ")"
         for packet in packets
     ]
-    alternatives.append(f"supplement-[1-6]/{IDENTIFIER_PATTERN}")
+    alternatives.append(f"supplement-[1-6]/{contracts.IDENTIFIER_PATTERN}")
     citation = {
         "pattern": "^(?:" + "|".join(alternatives) + ")$",
         "description": (
-            "Copy an exact reference from available_citations, or reference a source "
-            "in your own supplement-1 through supplement-6 packet. Never invent or "
-            "abbreviate existing packet/source IDs. The server does not repair citations."
+            "Copy an exact reference from available_citations, or "
+            "reference a source "
+            "in your own supplement-1 through supplement-6 packet. Never "
+            "invent or "
+            "abbreviate existing packet/source IDs. The server does not "
+            "repair citations."
         ),
     }
     props = draft["properties"]
@@ -140,7 +154,8 @@ def _draft_schema(packets: Sequence[Payload]) -> Payload:
     return draft
 
 
-def editor_schema(packets: Sequence[Payload] = ()) -> Payload:
+def editor_schema(packets: Sequence[types.Payload] = ()) -> types.Payload:
+    """Bind the legacy editor envelope to the available packet citations."""
     return {
         "type": "object",
         "additionalProperties": False,
@@ -176,7 +191,8 @@ def editor_schema(packets: Sequence[Payload] = ()) -> Payload:
     }
 
 
-def research_schema() -> Payload:
+def research_schema() -> types.Payload:
+    """Describe a collector result with explicit findings or an empty search."""
     return {
         "type": "object",
         "additionalProperties": False,
@@ -193,8 +209,8 @@ def research_schema() -> Payload:
     }
 
 
-def legacy_review_schema() -> Payload:
-    """Independent final-review envelope retained for immutable legacy graphs."""
+def legacy_review_schema() -> types.Payload:
+    """Return the final-review envelope for immutable legacy graphs."""
     return {
         "type": "object",
         "additionalProperties": False,

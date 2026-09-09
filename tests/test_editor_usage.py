@@ -2,17 +2,17 @@
 
 import asyncio
 import json
-from types import SimpleNamespace
+import types
 
+import openai_codex.generated.v2_all as v2_all
+import openai_codex.models as models
 import pytest
-from test_editor import FakeTurn, live_editor
-from test_editor import bundle as bundle
-from test_editor import fake_sdk as fake_sdk
-from test_editor import packet as packet
-from test_usage import notification
 
-from newsletter.editor import EditorError, _collect
-from newsletter.usage import codex_usage, summarize_usage, usage_scope
+import newsletter.editor as newsletter_editor
+import newsletter.errors as newsletter_errors
+import newsletter.usage as newsletter_usage
+import tests.support.editor as editor
+import tests.support.usage as tests_support_usage
 
 
 class EventTurn:
@@ -27,17 +27,17 @@ class EventTurn:
 
 
 def usage_event():
-    from openai_codex.generated.v2_all import (
-        ThreadTokenUsageUpdatedNotification,
-    )
-    from openai_codex.models import Notification
 
-    payload = ThreadTokenUsageUpdatedNotification.model_validate(notification())
-    return Notification(method="thread/tokenUsage/updated", payload=payload)
+    payload = v2_all.ThreadTokenUsageUpdatedNotification.model_validate(
+        tests_support_usage.notification()
+    )
+    return models.Notification(
+        method="thread/tokenUsage/updated", payload=payload
+    )
 
 
 def final_event():
-    return SimpleNamespace(
+    return types.SimpleNamespace(
         method="item/completed",
         payload={
             "item": {
@@ -50,21 +50,27 @@ def final_event():
 
 
 def end_event(status="completed"):
-    return SimpleNamespace(
+    return types.SimpleNamespace(
         method="turn/completed", payload={"turn": {"status": status}}
     )
 
 
 async def test_collect_captures_real_sdk_usage_without_changing_return_tuple():
     records = []
-    with usage_scope(records.append, "editor"), codex_usage("fixture") as usage:
+    with (
+        newsletter_usage.usage_scope(records.append, "editor"),
+        newsletter_usage.codex_usage("fixture") as usage,
+    ):
         usage.start_turn()
-        result = await _collect(
+        result = await newsletter_editor._collect(
             EventTurn([usage_event(), final_event(), end_event()])
         )
     assert result == ('{"synthetic": true}', set(), False)
-    assert summarize_usage(records)["usage"]["total_tokens"] == 120
-    assert not summarize_usage(records)["partial"]
+    assert (
+        newsletter_usage.summarize_usage(records)["usage"]["total_tokens"]
+        == 120
+    )
+    assert not newsletter_usage.summarize_usage(records)["partial"]
 
 
 @pytest.mark.parametrize(
@@ -73,27 +79,43 @@ async def test_collect_captures_real_sdk_usage_without_changing_return_tuple():
 )
 async def test_collect_keeps_reported_usage_even_when_stream_fails(ending):
     records = []
-    error = type(ending) if isinstance(ending, BaseException) else EditorError
-    with pytest.raises(error):
+    error = (
+        type(ending)
+        if isinstance(ending, BaseException)
+        else newsletter_errors.EditorError
+    )
+
+    async def collect_with_usage():
         with (
-            usage_scope(records.append, "research:fixture"),
-            codex_usage("fixture") as usage,
+            newsletter_usage.usage_scope(records.append, "research:fixture"),
+            newsletter_usage.codex_usage("fixture") as usage,
         ):
             usage.start_turn()
-            await _collect(EventTurn([usage_event(), ending]))
-    assert summarize_usage(records)["usage"]["total_tokens"] == 120
-    assert summarize_usage(records)["partial"]
+            await newsletter_editor._collect(EventTurn([usage_event(), ending]))
+
+    with pytest.raises(error):
+        await collect_with_usage()
+    assert (
+        newsletter_usage.summarize_usage(records)["usage"]["total_tokens"]
+        == 120
+    )
+    assert newsletter_usage.summarize_usage(records)["partial"]
 
 
 async def test_no_usage_event_is_unknown_not_an_empty_successful_measurement():
     records = []
-    with usage_scope(records.append, "editor"), codex_usage("fixture") as usage:
+    with (
+        newsletter_usage.usage_scope(records.append, "editor"),
+        newsletter_usage.codex_usage("fixture") as usage,
+    ):
         usage.start_turn()
-        await _collect(EventTurn([final_event(), end_event()]))
-    assert summarize_usage(records)["usage"] is None
+        await newsletter_editor._collect(
+            EventTurn([final_event(), end_event()])
+        )
+    assert newsletter_usage.summarize_usage(records)["usage"] is None
 
 
-async def test_execute_captures_original_and_provenance_correction_as_one_thread(
+async def test_execute_captures_original_provenance_correction_as_one_thread(
     tmp_path, fake_sdk, packet
 ):
     research = {
@@ -102,35 +124,38 @@ async def test_execute_captures_original_and_provenance_correction_as_one_thread
         "packets": [packet["content"]],
     }
 
-    class MeteredTurn(FakeTurn):
+    class MeteredTurn(editor.FakeTurn):
         def __init__(self, tokens, research_enabled):
             super().__init__(research, research=research_enabled)
             self.tokens = tokens
 
         async def stream(self):
-            yield SimpleNamespace(
+            yield types.SimpleNamespace(
                 method="thread/tokenUsage/updated",
-                payload=notification(self.tokens),
+                payload=tests_support_usage.notification(self.tokens),
             )
             async for event in super().stream():
                 yield event
 
     fake_sdk.turns = [MeteredTurn(100, False), MeteredTurn(300, True)]
     records = []
-    with usage_scope(records.append, "research:synthetic"):
-        await live_editor(tmp_path).execute(
+    with newsletter_usage.usage_scope(records.append, "research:synthetic"):
+        await editor.live_editor(tmp_path).execute(
             "{}", {}, "synthetic", tmp_path / "workspace"
         )
     assert len(fake_sdk.prompts) == 2
-    assert summarize_usage(records)["invocations"] == 1
-    assert summarize_usage(records)["usage"]["total_tokens"] == 320
+    assert newsletter_usage.summarize_usage(records)["invocations"] == 1
+    assert (
+        newsletter_usage.summarize_usage(records)["usage"]["total_tokens"]
+        == 320
+    )
     assert records[-1]["turns_started"] == 2
 
 
 async def test_invalid_model_result_still_has_reported_usage(
     tmp_path, fake_sdk
 ):
-    class InvalidTurn(FakeTurn):
+    class InvalidTurn(editor.FakeTurn):
         async def stream(self):
             yield usage_event()
             async for event in super().stream():
@@ -138,10 +163,15 @@ async def test_invalid_model_result_still_has_reported_usage(
 
     fake_sdk.turn = InvalidTurn("not JSON", research=False)
     records = []
-    with pytest.raises(EditorError):
-        with usage_scope(records.append, "editor"):
-            await live_editor(tmp_path).execute(
-                "{}", {}, "synthetic", tmp_path / "workspace"
-            )
-    assert summarize_usage(records)["usage"]["total_tokens"] == 120
+    with (
+        pytest.raises(newsletter_errors.EditorError),
+        newsletter_usage.usage_scope(records.append, "editor"),
+    ):
+        await editor.live_editor(tmp_path).execute(
+            "{}", {}, "synthetic", tmp_path / "workspace"
+        )
+    assert (
+        newsletter_usage.summarize_usage(records)["usage"]["total_tokens"]
+        == 120
+    )
     assert records[-1]["status"] == "failed"

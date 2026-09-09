@@ -1,11 +1,11 @@
-"""Configuration errors must never echo values accidentally pasted into numeric fields."""
+"""Prevent numeric config errors from echoing accidentally pasted secrets."""
 
 import math
 import traceback
 
 import pytest
 
-from newsletter import settings
+import newsletter.settings as settings
 
 FIELDS = (
     ("NEWSLETTER_JOB_TIMEOUT_SECONDS", "job_timeout_seconds", float, 900.0),
@@ -45,7 +45,9 @@ def test_bad_numeric_value_is_absent_from_message_and_formatted_traceback(
 ):
     sentinel = "synthetic-private-value-NEVER-LOG-THIS"
     settings.os.environ[name] = sentinel
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(
+        ValueError, match=f"Set a valid numeric value for {name}"
+    ) as caught:
         settings.Settings.from_env()
     error = caught.value
     assert str(error) == f"Set a valid numeric value for {name}"

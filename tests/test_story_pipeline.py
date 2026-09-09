@@ -1,4 +1,4 @@
-"""Real durable publication tail with synthetic approved stories, no model or mail.
+"""Test durable publication with synthetic stories, without models or mail.
 
 These tests deliberately fail the *new* topic DAG after saving a checked brief.
 The legacy all-or-nothing recipe has separate tests and must not be mistaken for
@@ -6,131 +6,38 @@ coverage of deadline publication, local-first evidence, or topic dispositions.
 """
 
 import asyncio
-from copy import deepcopy
-from datetime import UTC, datetime, timedelta
-from importlib.resources import files
-from pathlib import Path
-from types import SimpleNamespace
+import copy
 
 import pytest
-from test_publication import DAY, delivery_receipt, result, task
-from test_workflow_content import Engine as ContentEngine
-from test_workflow_content import candidate as discovery_candidate
-from test_workflow_content import discovered, planned
 
-from newsletter.adapters import AdapterError
-from newsletter.collection.collector import MockCollector
-from newsletter.collection.repository import RunRepository
-from newsletter.contracts import content_hash
-from newsletter.editor import CodexEditor, MockEditor
-from newsletter.settings import Settings
-from newsletter.store import Store, StoreError
-from newsletter.todofy import unavailable_digest
-from newsletter.worker import Worker
-from newsletter.workflow.content import ContentPreparation, parse_discovery
-from newsletter.workflow.definition import parse_definition
-from newsletter.workflow.engine import NodeContext
-from newsletter.workflow.nodes import EditorialNodes
-from newsletter.workflow.pipeline import DagPipeline, freeze_workflow
-from newsletter.workflow.publication import PublicationRepository, assemble
-from newsletter.workflow.sources import candidate_id
-from newsletter.workflow.story_editor import StoryEditor
-from newsletter.workflow.story_nodes import StoryNodes
-
-
-class FailingNotion:
-    def __init__(self):
-        self.calls = []
-
-    async def project(self, packet):
-        self.calls.append(packet["id"])
-        raise AdapterError("NOTION_REJECTED")
-
-
-@pytest.fixture
-def rig_factory(tmp_path, monkeypatch):
-    stores = []
-
-    async def forbidden(*args, **kwargs):
-        raise AssertionError(
-            "A publication checkpoint must never run another model or collector"
-        )
-
-    monkeypatch.setattr(CodexEditor, "execute", forbidden)
-    monkeypatch.setattr(CodexEditor, "prepare", forbidden)
-    monkeypatch.setattr(MockCollector, "collect", forbidden)
-
-    def make(*, expired=False, legacy=False):
-        directory = tmp_path / str(len(stores))
-        store = Store(directory / "newsletter.sqlite3", "mock")
-        stores.append(store)
-        recipe = Path(
-            str(
-                files("newsletter").joinpath(
-                    "workflows/legacy-daily.yaml"
-                    if legacy
-                    else "workflows/daily.yaml"
-                )
-            )
-        )
-        runs = RunRepository(store)
-        pipeline = DagPipeline(
-            runs,
-            MockCollector(),
-            directory / "collection",
-            10,
-            32,
-            editor=CodexEditor(directory / "nonexistent-auth"),
-            recipe_path=recipe,
-        )
-        instructions, snapshot = freeze_workflow(
-            Settings(data_dir=directory, workflow_file=recipe),
-            pipeline.state,
-            DAY,
-        )
-        if expired:
-            snapshot["inputs"]["started_at"] = (
-                datetime.now(UTC) - timedelta(days=1)
-            ).isoformat()
-        request = {"request_key": "synthetic-topics", "issue_date": DAY}
-        run = runs.start(request, instructions, workflow_snapshot=snapshot)
-        definition = parse_definition(snapshot["definition"])
-        pipeline.repository.start(run["id"], definition, snapshot["inputs"])
-        notion = FailingNotion()
-        return SimpleNamespace(
-            path=directory,
-            store=store,
-            runs=runs,
-            pipeline=pipeline,
-            publications=PublicationRepository(store),
-            run=run,
-            definition=definition,
-            instructions=instructions,
-            snapshot=snapshot,
-            request=request,
-            tasks=[task(1), task(2), task(3)],
-            notion=notion,
-            worker=Worker(
-                store,
-                MockEditor(),
-                notion,
-                directory / "editor",
-                10,
-                pipeline=pipeline,
-            ),
-        )
-
-    yield make
-    for store in stores:
-        store.close()
+import newsletter.contracts as contracts
+import newsletter.settings as settings
+import newsletter.store as store
+import newsletter.todofy as todofy
+import newsletter.workflow.content as content
+import newsletter.workflow.engine as newsletter_workflow_engine
+import newsletter.workflow.nodes as newsletter_workflow_nodes
+import newsletter.workflow.pipeline as pipeline
+import newsletter.workflow.publication as newsletter_workflow_publication
+import newsletter.workflow.sources as sources
+import newsletter.workflow.story_editor as story_editor
+import newsletter.workflow.story_nodes as story_nodes
+import tests.support.publication as tests_support_publication
+import tests.support.workflow_content as workflow_content
 
 
 def seed_checkpoint(rig, *, approved=True):
-    rig.publications.save_plan(rig.run["id"], DAY, rig.tasks)
-    value = result(content=approved)
+    rig.publications.save_plan(
+        rig.run["id"], tests_support_publication.DAY, rig.tasks
+    )
+    value = tests_support_publication.result(content=approved)
     rig.store.save_workflow_supplements(rig.run["id"], value["packets"])
     rig.publications.save(
-        rig.run["id"], rig.tasks[0], "brief", value, issue_date=DAY
+        rig.run["id"],
+        rig.tasks[0],
+        "brief",
+        value,
+        issue_date=tests_support_publication.DAY,
     )
     return value
 
@@ -190,7 +97,7 @@ def assert_partial_publication(rig):
 
 
 @pytest.mark.parametrize("terminal", ["failed", "unknown"])
-def test_deep_terminal_attempt_preserves_approved_brief_and_all_topic_dispositions(
+def test_terminal_deep_attempt_preserves_brief_and_dispositions(
     rig_factory, terminal
 ):
     rig = rig_factory()
@@ -205,7 +112,7 @@ def test_deep_terminal_attempt_preserves_approved_brief_and_all_topic_dispositio
         assert rig.pipeline.repository.recover() == 1
     status = rig.pipeline.repository.get(rig.run["id"])
     assert status["state"] == terminal
-    attempts = deepcopy(rig.pipeline.repository.attempts(rig.run["id"]))
+    attempts = copy.deepcopy(rig.pipeline.repository.attempts(rig.run["id"]))
     assert rig.pipeline.finish_graph(
         rig.run, rig.definition, rig.run["id"], status
     )
@@ -216,12 +123,12 @@ def test_deep_terminal_attempt_preserves_approved_brief_and_all_topic_dispositio
 
 
 @pytest.mark.asyncio
-async def test_expired_budget_publishes_saved_brief_without_reset_or_another_model(
+async def test_expired_budget_publishes_saved_brief_without_models(
     rig_factory,
 ):
     rig = rig_factory(expired=True)
     seed_checkpoint(rig)
-    frozen = deepcopy(rig.snapshot)
+    frozen = copy.deepcopy(rig.snapshot)
     assert await rig.pipeline.collect_next()
     assert_partial_publication(rig)
     assert rig.runs.workflow_snapshot(rig.run["id"]) == frozen
@@ -230,14 +137,16 @@ async def test_expired_budget_publishes_saved_brief_without_reset_or_another_mod
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("has_unapproved_result", [False, True])
-async def test_no_checked_content_stays_blocked_without_mailing_empty_or_unverified_issue(
+async def test_unverified_content_remains_blocked_without_mail(
     rig_factory, has_unapproved_result
 ):
     rig = rig_factory(expired=True)
     if has_unapproved_result:
         seed_checkpoint(rig, approved=False)
     else:
-        rig.publications.save_plan(rig.run["id"], DAY, rig.tasks)
+        rig.publications.save_plan(
+            rig.run["id"], tests_support_publication.DAY, rig.tasks
+        )
     assert await rig.pipeline.collect_next()
     run = rig.runs.get(rig.run["id"])
     assert run["state"] == "blocked"
@@ -252,7 +161,7 @@ async def test_no_checked_content_stays_blocked_without_mailing_empty_or_unverif
 
 
 @pytest.mark.asyncio
-async def test_local_publication_reaches_ready_despite_failed_notion_and_reserves_once(
+async def test_notion_failure_allows_local_publication_and_one_reserve(
     rig_factory,
 ):
     rig = rig_factory(expired=True)
@@ -283,21 +192,21 @@ async def test_local_publication_reaches_ready_despite_failed_notion_and_reserve
 
 
 @pytest.mark.asyncio
-async def test_frozen_publication_reentry_is_idempotent_and_rejects_late_content(
+async def test_frozen_publication_reentry_rejects_late_content(
     rig_factory,
 ):
     rig = rig_factory(expired=True)
     seed_checkpoint(rig)
     assert await rig.pipeline.collect_next()
     edition, original = assert_partial_publication(rig)
-    frozen_hash = content_hash(original)
+    frozen_hash = contracts.content_hash(original)
     rig.pipeline.publish_available(
         rig.runs.get(rig.run["id"]), rig.definition, reason="completed"
     )
     again = rig.runs.get(rig.run["id"])
     assert again["edition_id"] == edition["id"]
     assert (
-        content_hash(rig.publications.get_publication(rig.run["id"]))
+        contracts.content_hash(rig.publications.get_publication(rig.run["id"]))
         == frozen_hash
     )
     assert (
@@ -310,13 +219,13 @@ async def test_frozen_publication_reentry_is_idempotent_and_rejects_late_content
         rig.store.db.execute("SELECT COUNT(*) FROM editions").fetchone()[0] == 1
     )
     assert not rig.pipeline.repository.attempts(rig.run["id"])
-    with pytest.raises(StoreError):
+    with pytest.raises(store.StoreError):
         rig.publications.save(
             rig.run["id"],
             rig.tasks[0],
             "deep",
-            result(mode="deep"),
-            issue_date=DAY,
+            tests_support_publication.result(mode="deep"),
+            issue_date=tests_support_publication.DAY,
         )
 
 
@@ -351,12 +260,14 @@ async def test_legacy_deadline_does_not_adopt_new_local_first_policy(
 
 
 @pytest.mark.asyncio
-async def test_approved_checkpoint_from_interrupted_story_handler_is_still_publishable(
+async def test_interrupted_handler_checkpoint_remains_publishable(
     rig_factory, monkeypatch
 ):
     rig = rig_factory()
-    rig.publications.save_plan(rig.run["id"], DAY, rig.tasks)
-    checked = result()
+    rig.publications.save_plan(
+        rig.run["id"], tests_support_publication.DAY, rig.tasks
+    )
+    checked = tests_support_publication.result()
     calls = []
 
     async def interrupted_after_checkpoint(self, **kwargs):
@@ -367,11 +278,13 @@ async def test_approved_checkpoint_from_interrupted_story_handler_is_still_publi
         # optional component/provider operation stopped completing.
         raise TimeoutError()
 
-    monkeypatch.setattr(StoryEditor, "prepare", interrupted_after_checkpoint)
-    nodes = StoryNodes(
+    monkeypatch.setattr(
+        story_editor.StoryEditor, "prepare", interrupted_after_checkpoint
+    )
+    nodes = story_nodes.StoryNodes(
         rig.store, rig.definition, rig.pipeline.editor, rig.path / "jobs"
     )
-    context = NodeContext(
+    context = newsletter_workflow_engine.NodeContext(
         run_id=rig.run["id"],
         node_id="briefs",
         item_id=rig.tasks[0]["id"],
@@ -394,7 +307,7 @@ async def test_approved_checkpoint_from_interrupted_story_handler_is_still_publi
 
 
 @pytest.mark.asyncio
-async def test_complete_default_topic_graph_freezes_all_briefs_before_deepening_and_renders(
+async def test_default_graph_freezes_briefs_before_deepening_and_render(
     rig_factory, monkeypatch
 ):
     rig = rig_factory()
@@ -405,7 +318,7 @@ async def test_complete_default_topic_graph_freezes_all_briefs_before_deepening_
             "summary": "Synthetic discovery metadata, not reviewed evidence.",
             "why_now": "Synthetic new result.",
             "url": f"https://example.org/research/{number}",
-            "published_at": DAY,
+            "published_at": tests_support_publication.DAY,
         }
         for number in range(1, 4)
     ]
@@ -417,11 +330,12 @@ async def test_complete_default_topic_graph_freezes_all_briefs_before_deepening_
         if kind == "api_feed":
             return {"candidates": []}
         if kind in {"discovery", "deduplicate"}:
-            return {"candidates": deepcopy(candidates)}
+            return {"candidates": copy.deepcopy(candidates)}
         if kind == "selection":
-            return {"research_tasks": deepcopy(rig.tasks)}
+            return {"research_tasks": copy.deepcopy(rig.tasks)}
         raise AssertionError(
-            "Topic graph must not invoke legacy composition or whole-issue review"
+            "Topic graph must not invoke legacy composition or "
+            "whole-issue review"
         )
 
     async def synthetic_story(self, **kwargs):
@@ -436,12 +350,14 @@ async def test_complete_default_topic_graph_freezes_all_briefs_before_deepening_
         else:
             assert kwargs["prior"] is None
         assert kwargs["is_fixture"] is True
-        value = result(number, mode)
+        value = tests_support_publication.result(number, mode)
         kwargs["on_checkpoint"](value)
         return value
 
-    monkeypatch.setattr(EditorialNodes, "execute", synthetic_discovery)
-    monkeypatch.setattr(StoryEditor, "prepare", synthetic_story)
+    monkeypatch.setattr(
+        newsletter_workflow_nodes.EditorialNodes, "execute", synthetic_discovery
+    )
+    monkeypatch.setattr(story_editor.StoryEditor, "prepare", synthetic_story)
     for _ in range(60):
         if rig.runs.get(rig.run["id"])["state"] == "ready":
             break
@@ -473,9 +389,10 @@ async def test_complete_default_topic_graph_freezes_all_briefs_before_deepening_
     assert "Synthetic result 3" in edition["rendered"]["text"]
     assert not rig.notion.calls
     assert rig.store.db.execute("SELECT COUNT(*) FROM sends").fetchone()[0] == 0
-    attempts = deepcopy(rig.pipeline.repository.attempts(run["id"]))
+    attempts = copy.deepcopy(rig.pipeline.repository.attempts(run["id"]))
     while await rig.worker.step():
-        pass  # Only background projections remain; none retries or edits the issue.
+        # Only background projections remain; none retries or edits the issue.
+        pass
     assert len(calls) == 6
     assert rig.pipeline.repository.attempts(run["id"]) == attempts
     assert len(rig.notion.calls) == len(set(rig.notion.calls)) == 4
@@ -485,25 +402,25 @@ async def test_complete_default_topic_graph_freezes_all_briefs_before_deepening_
 @pytest.mark.parametrize(
     "match", ["candidate_id", "arxiv_url", "doi_url", "identity_title"]
 )
-async def test_next_day_unfinished_source_survives_all_history_filters_without_faking_novelty(
+async def test_unfinished_source_survives_history_without_false_novelty(
     rig_factory, match
 ):
     rig = rig_factory()
-    pending_candidate = discovery_candidate(
+    pending_candidate = workflow_content.candidate(
         title="A synthetic unfinished controlled study",
         doi="10.1234/unfinished",
-        published_at=DAY,
+        published_at=tests_support_publication.DAY,
         version="v2",
     )
-    covered_candidate = discovery_candidate(
+    covered_candidate = workflow_content.candidate(
         title="A different synthetic already delivered deep study",
         doi="10.1234/delivered",
         url="https://arxiv.org/abs/2609.00002v2",
-        published_at=DAY,
+        published_at=tests_support_publication.DAY,
         version="v2",
     )
     for candidate in (pending_candidate, covered_candidate):
-        candidate["id"] = candidate_id(candidate)
+        candidate["id"] = sources.candidate_id(candidate)
     alias = {
         **pending_candidate,
         "id": "older-source-alias",
@@ -513,57 +430,76 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
     # Alias first proves that a candidate-ID match propagates to older DOI/URL
     # identities, regardless of the order in the frozen historical snapshot.
     rig.pipeline.state.remember(
-        [alias, pending_candidate, covered_candidate], DAY
+        [alias, pending_candidate, covered_candidate],
+        tests_support_publication.DAY,
     )
-    selected = task(
+    if match == "arxiv_url":
+        source_url = "https://arxiv.org/pdf/2609.00001v2"
+    elif match == "doi_url":
+        source_url = "https://doi.org/10.1234/unfinished"
+    else:
+        source_url = "https://example.org/discovery-route"
+    selected = tests_support_publication.task(
         candidate_ids=[pending_candidate["id"]]
         if match == "candidate_id"
         else ["old-selection-id"],
-        source_urls=[
-            "https://arxiv.org/pdf/2609.00001v2"
-            if match == "arxiv_url"
-            else "https://doi.org/10.1234/unfinished"
-            if match == "doi_url"
-            else "https://example.org/discovery-route"
-        ],
+        source_urls=[source_url],
         question=pending_candidate["title"]
         if match == "identity_title"
-        else task()["question"],
+        else tests_support_publication.task()["question"],
     )
-    covered_task = task(
+    covered_task = tests_support_publication.task(
         2,
         candidate_ids=[covered_candidate["id"]],
         source_urls=[covered_candidate["url"]],
     )
     previous_tasks = [selected, covered_task]
-    approved_deep = result(2, "deep")
-    rig.publications.save_plan("previous-issue", DAY, previous_tasks)
+    approved_deep = tests_support_publication.result(2, "deep")
+    rig.publications.save_plan(
+        "previous-issue", tests_support_publication.DAY, previous_tasks
+    )
     rig.publications.save(
-        "previous-issue", covered_task, "deep", approved_deep, issue_date=DAY
+        "previous-issue",
+        covered_task,
+        "deep",
+        approved_deep,
+        issue_date=tests_support_publication.DAY,
     )
-    previous = assemble("previous-issue", DAY, previous_tasks, [approved_deep])
+    previous = newsletter_workflow_publication.assemble(
+        "previous-issue",
+        tests_support_publication.DAY,
+        previous_tasks,
+        [approved_deep],
+    )
     rig.publications.record_publication(
-        "previous-issue", DAY, previous_tasks, previous
+        "previous-issue",
+        tests_support_publication.DAY,
+        previous_tasks,
+        previous,
     )
-    delivery_receipt(rig.publications, "previous-issue", previous)
+    tests_support_publication.delivery_receipt(
+        rig.publications, "previous-issue", previous
+    )
 
     next_day = "2026-09-07"
-    _, snapshot = freeze_workflow(
-        Settings(data_dir=rig.path, workflow_file=rig.pipeline.recipe_path),
+    _, snapshot = pipeline.freeze_workflow(
+        settings.Settings(
+            data_dir=rig.path, workflow_file=rig.pipeline.recipe_path
+        ),
         rig.pipeline.state,
         next_day,
     )
-    original_inputs = deepcopy(snapshot["inputs"])
+    original_inputs = copy.deepcopy(snapshot["inputs"])
     assert len(snapshot["inputs"]["pending_stories"]) == 1
     assert (
         snapshot["inputs"]["pending_stories"][0]["story_id"] == selected["id"]
     )
-    nodes = StoryNodes(
+    nodes = story_nodes.StoryNodes(
         rig.store, rig.definition, rig.pipeline.editor, rig.path / "followup"
     )
 
     def context(node_id, inputs, item=None):
-        return NodeContext(
+        return newsletter_workflow_engine.NodeContext(
             run_id="next-day",
             node_id=node_id,
             item_id=item["id"] if item else "",
@@ -579,21 +515,23 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
     assert [candidate["id"] for candidate in history["candidates"]] == [
         covered_candidate["id"]
     ]
-    assert history["watchlist"][0]["issue_date"] == DAY
+    assert (
+        history["watchlist"][0]["issue_date"] == tests_support_publication.DAY
+    )
     assert "不是新发表或新版本" in history["watchlist"][0]["summary"]
-    chosen = task(
+    chosen = tests_support_publication.task(
         candidate_ids=[pending_candidate["id"]],
         source_urls=[pending_candidate["url"]],
     )
-    engine = ContentEngine(
+    engine = workflow_content.Engine(
         (
-            discovered(pending_candidate, covered_candidate),
+            workflow_content.discovered(pending_candidate, covered_candidate),
             {pending_candidate["url"], covered_candidate["url"]},
             True,
         ),
-        (planned(chosen), set(), False),
+        (workflow_content.planned(chosen), set(), False),
     )
-    nodes.content = ContentPreparation(engine)
+    nodes.content = content.ContentPreparation(engine)
     instruction = rig.instructions[0].snapshot()
     found = await nodes.execute(
         "discovery",
@@ -607,7 +545,9 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
     assert [candidate["id"] for candidate in found["candidates"]] == [
         pending_candidate["id"]
     ]
-    assert found["candidates"][0]["published_at"] == DAY
+    assert (
+        found["candidates"][0]["published_at"] == tests_support_publication.DAY
+    )
     assert found["candidates"][0]["version"] == "v2"
     # Ordinary same-pool deduplication is unchanged even when two discovery
     # directions both rediscover the permissible unfinished investigation.
@@ -615,7 +555,7 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
         "deduplicate",
         context(
             "candidates",
-            {"history": history, "discovery": [found, deepcopy(found)]},
+            {"history": history, "discovery": [found, copy.deepcopy(found)]},
         ),
         rig.path / "next-pool",
     )
@@ -631,17 +571,20 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
         engine.calls[0][0]["history_untrusted"][0]["id"]
         == covered_candidate["id"]
     )
-    assert engine.calls[1][0]["candidates_untrusted"][0]["published_at"] == DAY
+    assert (
+        engine.calls[1][0]["candidates_untrusted"][0]["published_at"]
+        == tests_support_publication.DAY
+    )
     assert snapshot["inputs"] == original_inputs
 
     # Only the new story recipe opts unfinished topics out of covered history.
     # The generic/legacy boundary still suppresses unchanged historical sources.
-    legacy_history = await EditorialNodes.execute(
+    legacy_history = await newsletter_workflow_nodes.EditorialNodes.execute(
         nodes, "history", context("history", {}), rig.path / "legacy-history"
     )
     assert len(legacy_history["candidates"]) == 3
-    legacy_found = parse_discovery(
-        discovered(pending_candidate),
+    legacy_found = content.parse_discovery(
+        workflow_content.discovered(pending_candidate),
         {pending_candidate["url"]},
         True,
         instruction["id"],
@@ -652,16 +595,16 @@ async def test_next_day_unfinished_source_survives_all_history_filters_without_f
 
 
 @pytest.mark.asyncio
-async def test_restart_during_local_render_recovers_same_edition_and_reuses_completed_personal_digest(
+async def test_render_restart_reuses_edition_and_personal_digest(
     rig_factory, monkeypatch
 ):
     rig = rig_factory(expired=True)
     seed_checkpoint(rig)
     assert await rig.pipeline.collect_next()
     edition, publication = assert_partial_publication(rig)
-    binding = deepcopy(rig.pipeline.state.edition(edition["id"]))
+    binding = copy.deepcopy(rig.pipeline.state.edition(edition["id"]))
     assert rig.store.claim()[0]["id"] == edition["id"]
-    personal = unavailable_digest()
+    personal = todofy.unavailable_digest()
     rig.store.finish(edition["id"], personal_digest=personal)
     rig.store.recover()
     rig.runs.recover()
@@ -702,7 +645,7 @@ async def test_graceful_cancellation_during_render_uses_same_safe_resume_policy(
 
     async def personal(edition):
         personal_calls.append(edition["id"])
-        return unavailable_digest()
+        return todofy.unavailable_digest()
 
     async def paused_render(*args, **kwargs):
         entered.set()
@@ -740,7 +683,7 @@ async def test_graceful_cancellation_during_render_uses_same_safe_resume_policy(
         "already_failed",
     ],
 )
-def test_local_render_recovery_never_weakens_frozen_evidence_legacy_or_send_guards(
+def test_render_recovery_keeps_evidence_legacy_and_send_guards(
     rig_factory, interruption, unsafe
 ):
     rig = rig_factory(expired=True)
@@ -773,7 +716,7 @@ def test_local_render_recovery_never_weakens_frozen_evidence_legacy_or_send_guar
         rig.store.db.execute(
             "INSERT INTO sends VALUES(?,?,?,?)",
             (
-                DAY,
+                tests_support_publication.DAY,
                 identifier if unsafe == "unknown_send" else "other-edition",
                 "test-send",
                 "frozen-hash",

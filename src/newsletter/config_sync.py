@@ -1,6 +1,6 @@
 """Pull validated editorial bundles without accessing service data or providers.
 
-The writer is a separate, least-privileged process. GitHub supplies one immutable
+The writer is a separate, least-privileged process. GitHub supplies one fixed
 commit, never independently fetched moving files. Failed pulls keep the last
 usable release; an explicit local pin survives future polls and restarts.
 """
@@ -8,28 +8,23 @@ usable release; an explicit local pin survives future polls and restarts.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+import contextlib
+import dataclasses
 import fcntl
 import json
 import os
+import pathlib
 import re
 import stat
 import sys
-import tempfile
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
 
-from newsletter.content_config import (
-    install_snapshot,
-    load_active,
-    packaged_snapshot,
-    validate_snapshot,
-)
+import newsletter.content_config as content_config
+import newsletter.files as files
 
 MAX_BUNDLE_BYTES = 2_000_000
 REPOSITORY = re.compile(
@@ -43,14 +38,17 @@ class SyncError(ValueError):
     """Only fixed, credential-free error codes cross the CLI boundary."""
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class SyncSettings:
-    root: Path
+    """Public source and polling settings for the isolated config writer."""
+
+    root: pathlib.Path
     repository: str = "ziyixi/newsletter"
     interval: int = 900
 
     @classmethod
     def from_env(cls) -> SyncSettings:
+        """Read validated non-secret poller settings from the environment."""
         try:
             interval = int(
                 os.environ.get("NEWSLETTER_CONFIG_POLL_SECONDS", "900")
@@ -60,7 +58,7 @@ class SyncSettings:
         if not 60 <= interval <= 86400:
             raise SyncError("CONFIG_INTERVAL_INVALID")
         directory = os.environ.get("NEWSLETTER_CONTENT_CONFIG_DIR", "")
-        if not directory or not Path(directory).is_absolute():
+        if not directory or not pathlib.Path(directory).is_absolute():
             raise SyncError("CONFIG_DIRECTORY_REQUIRED")
         repository = os.environ.get(
             "NEWSLETTER_CONFIG_REPOSITORY", "ziyixi/newsletter"
@@ -69,21 +67,19 @@ class SyncSettings:
             part in {".", ".."} for part in repository.split("/")
         ):
             raise SyncError("CONFIG_REPOSITORY_INVALID")
-        return cls(Path(directory), repository, interval)
+        return cls(pathlib.Path(directory), repository, interval)
 
 
-def _read_json(path: Path, limit: int = MAX_BUNDLE_BYTES) -> dict[str, Any]:
+def _read_json(
+    path: pathlib.Path, limit: int = MAX_BUNDLE_BYTES
+) -> dict[str, Any]:
     if (
         any(part.is_symlink() for part in (path, *path.parents))
         or not path.is_file()
     ):
         raise SyncError("CONFIG_LOCAL_STATE_INVALID")
     try:
-        with path.open("rb") as stream:
-            raw = stream.read(limit + 1)
-        if len(raw) > limit:
-            raise ValueError
-        value = _decode_json(raw)
+        value = files.read_json(path, limit)
     except (ValueError, UnicodeDecodeError, RecursionError):
         raise SyncError("CONFIG_LOCAL_STATE_INVALID") from None
     if not isinstance(value, dict):
@@ -91,41 +87,18 @@ def _read_json(path: Path, limit: int = MAX_BUNDLE_BYTES) -> dict[str, Any]:
     return value
 
 
-def _decode_json(raw: bytes) -> Any:
-    def unique_pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in items:
-            if key in result:
-                raise ValueError("CONFIG_JSON_DUPLICATE_KEY")
-            result[key] = value
-        return result
-
-    return json.loads(raw, object_pairs_hook=unique_pairs)
+def _atomic_json(path: pathlib.Path, value: dict[str, Any]) -> None:
+    files.atomic_write_text(
+        path, json.dumps(value, ensure_ascii=False, sort_keys=True)
+    )
 
 
-def _atomic_json(path: Path, value: dict[str, Any]) -> None:
-    fd, temporary = tempfile.mkstemp(prefix=".sync-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(value, stream, ensure_ascii=False, sort_keys=True)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+def _sync_directory(directory: pathlib.Path) -> None:
+    files.sync_directory(directory)
 
 
-def _sync_directory(directory: Path) -> None:
-    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-@contextmanager
-def _writer_lock(root: Path) -> Iterator[None]:
+@contextlib.contextmanager
+def _writer_lock(root: pathlib.Path) -> Iterator[None]:
     if (
         any(part.is_symlink() for part in (root, *root.parents))
         or not root.is_dir()
@@ -147,6 +120,8 @@ def _writer_lock(root: Path) -> Iterator[None]:
 
 
 class GitHubSource:
+    """Fetch one immutable public release without inherited credentials."""
+
     def __init__(
         self, repository: str, transport: httpx.BaseTransport | None = None
     ):
@@ -161,43 +136,46 @@ class GitHubSource:
         # Public configuration requires no credential. Only the fixed TLS
         # origin is read; redirects and download_url values are never followed.
         try:
-            with httpx.Client(
-                timeout=30,
-                follow_redirects=False,
-                trust_env=False,
-                transport=self.transport,
-                headers={
-                    "Accept": "application/vnd.github.raw+json"
-                    if raw
-                    else "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            ) as client:
-                with client.stream(
+            with (
+                httpx.Client(
+                    timeout=30,
+                    follow_redirects=False,
+                    trust_env=False,
+                    transport=self.transport,
+                    headers={
+                        "Accept": "application/vnd.github.raw+json"
+                        if raw
+                        else "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                ) as client,
+                client.stream(
                     "GET",
                     f"https://api.github.com/repos/{self.repository}/{suffix}",
-                ) as response:
-                    if response.status_code in {401, 403}:
-                        raise SyncError("CONFIG_GITHUB_ACCESS_OR_RATE_LIMIT")
-                    if response.status_code == 404:
-                        raise SyncError(
-                            "CONFIG_GITHUB_REPOSITORY_OR_RELEASE_UNAVAILABLE"
-                        )
-                    if response.status_code != 200:
-                        raise SyncError("CONFIG_GITHUB_UNAVAILABLE")
-                    result = bytearray()
-                    for chunk in response.iter_bytes():
-                        result.extend(chunk)
-                        if len(result) > limit:
-                            raise SyncError("CONFIG_DOWNLOAD_TOO_LARGE")
-                    return bytes(result)
+                ) as response,
+            ):
+                if response.status_code in {401, 403}:
+                    raise SyncError("CONFIG_GITHUB_ACCESS_OR_RATE_LIMIT")
+                if response.status_code == 404:
+                    raise SyncError(
+                        "CONFIG_GITHUB_REPOSITORY_OR_RELEASE_UNAVAILABLE"
+                    )
+                if response.status_code != 200:
+                    raise SyncError("CONFIG_GITHUB_UNAVAILABLE")
+                result = bytearray()
+                for chunk in response.iter_bytes():
+                    result.extend(chunk)
+                    if len(result) > limit:
+                        raise SyncError("CONFIG_DOWNLOAD_TOO_LARGE")
+                return bytes(result)
         except httpx.HTTPError:
             raise SyncError("CONFIG_GITHUB_NETWORK_ERROR") from None
 
     def resolve(self) -> str:
+        """Resolve the published branch to one validated commit SHA."""
         raw = self._get("git/ref/heads/published", limit=16000)
         try:
-            data = _decode_json(raw)
+            data = files.decode_json(raw)
             commit = data["object"]["sha"]
             if data["object"]["type"] != "commit" or not COMMIT.fullmatch(
                 commit
@@ -208,16 +186,19 @@ class GitHubSource:
         return str(commit)
 
     def fetch(self, commit: str) -> dict[str, Any]:
+        """Download and validate the complete bundle at an exact commit."""
         if not COMMIT.fullmatch(commit):
             raise SyncError("CONFIG_PUBLISHED_REF_INVALID")
         raw = self._get(f"contents/bundle.json?ref={commit}", raw=True)
         try:
-            return validate_snapshot(_decode_json(raw))
+            return content_config.validate_snapshot(files.decode_json(raw))
         except (ValueError, TypeError, KeyError, RecursionError):
             raise SyncError("CONFIG_BUNDLE_INVALID") from None
 
 
 class ConfigSync:
+    """Activate compatible releases while preserving the last good baseline."""
+
     def __init__(
         self, settings: SyncSettings, source: GitHubSource | None = None
     ):
@@ -225,9 +206,10 @@ class ConfigSync:
         self.root = settings.root
         self.source = source
 
-    def _active(self) -> dict[str, Any]:
+    def active_snapshot(self) -> dict[str, Any]:
+        """Read the active baseline or report a safe initialization error."""
         try:
-            return load_active(self.root)
+            return content_config.load_active(self.root)
         except (OSError, ValueError, KeyError):
             raise SyncError("CONFIG_BASELINE_MISSING_OR_INVALID") from None
 
@@ -244,7 +226,7 @@ class ConfigSync:
         if not DIGEST.fullmatch(digest):
             raise SyncError("CONFIG_PIN_INVALID")
         try:
-            value = validate_snapshot(
+            value = content_config.validate_snapshot(
                 _read_json(self.root / "releases" / digest / "bundle.json")
             )
             if value["digest"] != digest:
@@ -254,6 +236,7 @@ class ConfigSync:
             raise SyncError("CONFIG_PIN_RELEASE_UNAVAILABLE") from None
 
     def status(self) -> dict[str, Any]:
+        """Read active, pinned and attempted releases without provider calls."""
         # This command is read-only and can run from the service's RO mount.
         path = self.root / "sync-status.json"
         report = _read_json(path, 8192) if path.exists() else {}
@@ -267,7 +250,7 @@ class ConfigSync:
             "repository",
         }
         result = {key: value for key, value in report.items() if key in allowed}
-        active = self._active()
+        active = self.active_snapshot()
         result.update(
             active_revision=active["revision"],
             active_digest=active["digest"],
@@ -276,10 +259,13 @@ class ConfigSync:
         return result
 
     def seed(self) -> dict[str, Any]:
+        """Initialize an absent baseline once using the packaged snapshot."""
         with _writer_lock(self.root):
             if (self.root / "active.json").exists():
                 raise SyncError("CONFIG_ALREADY_INITIALIZED")
-            install_snapshot(self.root, packaged_snapshot())
+            content_config.install_snapshot(
+                self.root, content_config.packaged_snapshot()
+            )
             _atomic_json(
                 self.root / "sync-status.json",
                 {"error": None, "last_success": None},
@@ -287,27 +273,30 @@ class ConfigSync:
             return self.status()
 
     def pin(self, digest: str | None = None) -> dict[str, Any]:
+        """Persist a cached release pin before activating it locally."""
         with _writer_lock(self.root):
-            active = self._active()
+            active = self.active_snapshot()
             digest = digest or active["digest"]
             release = self._release(digest)
             # Persist intent before activation. A crash between these writes
             # will complete the pin locally on the next poll, not fetch GitHub.
             _atomic_json(self.root / "pin.json", {"digest": digest})
             if active["digest"] != digest:
-                install_snapshot(self.root, release)
+                content_config.install_snapshot(self.root, release)
             return self.status()
 
     def unpin(self) -> dict[str, Any]:
+        """Resume future public updates without replacing the active release."""
         with _writer_lock(self.root):
-            self._active()
+            self.active_snapshot()
             (self.root / "pin.json").unlink(missing_ok=True)
             _sync_directory(self.root)
             return self.status()
 
     def once(self) -> dict[str, Any]:
+        """Attempt one serialized update and retain the baseline on error."""
         with _writer_lock(self.root):
-            active = self._active()
+            active = self.active_snapshot()
             report = self.status()
             report.update(
                 last_attempt=time.time(), repository=self.settings.repository
@@ -317,7 +306,7 @@ class ConfigSync:
                 if pinned:
                     release = self._release(pinned)
                     if active["digest"] != pinned:
-                        install_snapshot(self.root, release)
+                        content_config.install_snapshot(self.root, release)
                 else:
                     source = self.source or GitHubSource(
                         self.settings.repository
@@ -330,7 +319,7 @@ class ConfigSync:
                         wanted_digest=snapshot["digest"],
                     )
                     if active["digest"] != snapshot["digest"]:
-                        install_snapshot(self.root, snapshot)
+                        content_config.install_snapshot(self.root, snapshot)
                 report.update(error=None, last_success=time.time())
             except (OSError, ValueError, TypeError, KeyError) as error:
                 report["error"] = (
@@ -342,6 +331,7 @@ class ConfigSync:
             return self.status()
 
     def health(self) -> bool:
+        """Check poller liveness and its baseline, not remote update success."""
         report = self.status()
         attempted = report.get("last_attempt")
         # A failed remote update is degraded, not a reason to kill the reader.
@@ -353,6 +343,7 @@ class ConfigSync:
 
 
 def main() -> None:
+    """Run the isolated configuration operator CLI or periodic poller."""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for command in ("seed", "once", "run", "status", "health", "unpin"):
@@ -362,7 +353,7 @@ def main() -> None:
     try:
         sync = ConfigSync(SyncSettings.from_env())
         if args.command == "run":
-            sync._active()
+            sync.active_snapshot()
             while True:
                 try:
                     print(json.dumps(sync.once(), sort_keys=True), flush=True)

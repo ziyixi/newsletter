@@ -1,4 +1,4 @@
-"""Offline email design regressions, not a Gmail/Outlook rendering certification.
+"""Test offline email design without certifying Gmail or Outlook rendering.
 
 These checks preserve the static, inline-styled fallback. Browser screenshots
 and eventual authorized real-inbox tests are separate compatibility evidence.
@@ -6,18 +6,18 @@ and eventual authorized real-inbox tests are separate compatibility evidence.
 
 import base64
 import copy
+import email.parser as parser
+import email.policy as policy
+import html.parser as html_parser
 import re
-from email import policy
-from email.parser import BytesParser
-from html.parser import HTMLParser
 
 import pytest
-from test_rendering import SAMPLE_DRAFT, SAMPLE_PACKETS
 
-from newsletter.adapters import FakeMail
-from newsletter.contracts import content_hash
-from newsletter.rendering import CHART_CID, render_edition
-from newsletter.todofy import DisabledTodofy, FakeTodofy, unavailable_digest
+import newsletter.adapters as adapters
+import newsletter.contracts as contracts
+import newsletter.rendering as newsletter_rendering
+import newsletter.todofy as todofy
+import tests.support.rendering as rendering
 
 ISSUE_DATE = "2026-09-05"
 _VOID = {
@@ -35,7 +35,7 @@ _VOID = {
 }
 
 
-class EmailStructure(HTMLParser):
+class EmailStructure(html_parser.HTMLParser):
     """Retain visible text ancestors to test inline fallback, not CSS layout."""
 
     def __init__(self, html):
@@ -87,16 +87,19 @@ class EmailStructure(HTMLParser):
 
 
 def render(personal_digest=None, *, chart=True):
-    draft = copy.deepcopy(SAMPLE_DRAFT)
+    draft = copy.deepcopy(rendering.SAMPLE_DRAFT)
     if not chart:
         draft.pop("chart")
-    return render_edition(
-        draft, SAMPLE_PACKETS, ISSUE_DATE, personal_digest=personal_digest
+    return newsletter_rendering.render_edition(
+        draft,
+        rendering.SAMPLE_PACKETS,
+        ISSUE_DATE,
+        personal_digest=personal_digest,
     )
 
 
 async def test_visible_copy_keeps_essential_typography_inline():
-    result = render(await FakeTodofy().fetch(ISSUE_DATE))
+    result = render(await todofy.FakeTodofy().fetch(ISSUE_DATE))
     parsed = EmailStructure(result["html"])
     assert len(parsed.visible) > 30
     for text, ancestors in parsed.visible:
@@ -118,8 +121,8 @@ async def test_visible_copy_keeps_essential_typography_inline():
         } <= declarations, node
 
 
-async def test_email_is_static_table_layout_without_remote_visual_dependencies():
-    html = render(await FakeTodofy().fetch(ISSUE_DATE))["html"]
+async def test_email_static_table_layout_without_remote_visual_dependencies():
+    html = render(await todofy.FakeTodofy().fetch(ISSUE_DATE))["html"]
     parsed = EmailStructure(html)
     forbidden = {
         "script",
@@ -147,7 +150,10 @@ async def test_email_is_static_table_layout_without_remote_visual_dependencies()
         assert not any(name.lower().startswith("on") for name in attrs)
         assert not {"srcset", "poster", "background"}.intersection(attrs)
         if "src" in attrs:
-            assert node["tag"] == "img" and attrs["src"] == CHART_CID
+            assert (
+                node["tag"] == "img"
+                and attrs["src"] == newsletter_rendering.CHART_CID
+            )
     layout_tables = [
         node
         for node in parsed.elements
@@ -160,20 +166,21 @@ async def test_email_is_static_table_layout_without_remote_visual_dependencies()
 
 
 async def test_citations_do_not_depend_on_in_email_anchor_support():
-    html = render(await FakeTodofy().fetch(ISSUE_DATE))["html"]
+    html = render(await todofy.FakeTodofy().fetch(ISSUE_DATE))["html"]
     parsed = EmailStructure(html)
     assert "[1]" in parsed.text and "[2]" in parsed.text
     assert not any(link.startswith("#") for link in parsed.links)
     assert all(link.startswith("https://") for link in parsed.links)
     assert {
-        source["url"] for source in SAMPLE_PACKETS[0]["content"]["sources"]
+        source["url"]
+        for source in rendering.SAMPLE_PACKETS[0]["content"]["sources"]
     } <= set(parsed.links)
     assert parsed.text.count("研究介绍") == 1
 
 
 @pytest.mark.parametrize("chart", [True, False])
 async def test_personal_overview_is_last_content_in_html_and_plain_text(chart):
-    digest = await FakeTodofy().fetch(ISSUE_DATE)
+    digest = await todofy.FakeTodofy().fetch(ISSUE_DATE)
     result = render(digest, chart=chart)
     html_text = EmailStructure(result["html"]).text
     plain_text = result["text"]
@@ -183,11 +190,16 @@ async def test_personal_overview_is_last_content_in_html_and_plain_text(chart):
         personal_start = text.index(marker)
         assert text.index("研究介绍") < personal_start
         assert text.index("来源与核对") < personal_start
-        assert text.index(SAMPLE_DRAFT["limitations"]) < personal_start
-        for source in SAMPLE_PACKETS[0]["content"]["sources"]:
+        assert (
+            text.index(rendering.SAMPLE_DRAFT["limitations"]) < personal_start
+        )
+        for source in rendering.SAMPLE_PACKETS[0]["content"]["sources"]:
             assert text.rindex(source["title"]) < personal_start
         if chart:
-            assert text.index(SAMPLE_DRAFT["chart"]["caption"]) < personal_start
+            assert (
+                text.index(rendering.SAMPLE_DRAFT["chart"]["caption"])
+                < personal_start
+            )
         for item in digest["items"]:
             assert text.index(item["title"]) > personal_start
             assert text.index(item["detail"]) > personal_start
@@ -198,8 +210,8 @@ async def test_personal_overview_is_last_content_in_html_and_plain_text(chart):
     assert plain_text.rstrip().endswith(digest["limitations"])
 
 
-async def test_removing_head_and_styles_retains_all_readable_content_and_source_links():
-    result = render(await FakeTodofy().fetch(ISSUE_DATE))
+async def test_removing_head_styles_retains_all_readable_content_source_links():
+    result = render(await todofy.FakeTodofy().fetch(ISSUE_DATE))
     original = EmailStructure(result["html"])
     stripped = re.sub(
         r"<head\b[^>]*>.*?</head>", "", result["html"], flags=re.S | re.I
@@ -211,11 +223,11 @@ async def test_removing_head_and_styles_retains_all_readable_content_and_source_
     assert fallback.text == original.text
     assert fallback.links == original.links
     assert "TODOFY / 与你有关" in fallback.text
-    assert SAMPLE_DRAFT["chart"]["caption"] in fallback.text
+    assert rendering.SAMPLE_DRAFT["chart"]["caption"] in fallback.text
     assert "另一组" in fallback.text and "缺失（尚未公布）" in fallback.text
 
 
-def test_research_card_is_readable_without_clicking_and_link_follows_the_explanation():
+def test_research_card_explains_before_its_optional_link():
     result = render(chart=False)
     parsed = EmailStructure(result["html"])
     visible = [
@@ -227,14 +239,16 @@ def test_research_card_is_readable_without_clicking_and_link_follows_the_explana
         )
     ]
     card_text = "".join(text for text, _ in visible)
-    title = SAMPLE_PACKETS[0]["content"]["sources"][1]["title"]
+    title = rendering.SAMPLE_PACKETS[0]["content"]["sources"][1]["title"]
     assert "如果今天只读一篇" not in card_text
     title_ancestors = next(
         ancestors for text, ancestors in visible if text == title
     )
     assert title_ancestors[-1]["tag"] == "h2"
     assert not any(node["tag"] == "a" for node in title_ancestors)
-    paragraphs = SAMPLE_DRAFT["recommended_reading"]["reason"].split("\n\n")
+    paragraphs = rendering.SAMPLE_DRAFT["recommended_reading"]["reason"].split(
+        "\n\n"
+    )
     for paragraph in paragraphs:
         assert paragraph in card_text and paragraph in result["text"]
         assert card_text.index(paragraph) < card_text.index("原文与方法")
@@ -244,7 +258,7 @@ def test_research_card_is_readable_without_clicking_and_link_follows_the_explana
     assert len(card_links) == 1
     assert (
         card_links[0]["attrs"]["href"]
-        == SAMPLE_PACKETS[0]["content"]["sources"][1]["url"]
+        == rendering.SAMPLE_PACKETS[0]["content"]["sources"][1]["url"]
     )
     assert "overflow-wrap:anywhere" in card_links[0]["attrs"]["style"]
 
@@ -253,7 +267,7 @@ def test_research_card_is_readable_without_clicking_and_link_follows_the_explana
     "state", ["current", "empty", "unavailable", "disabled"]
 )
 async def test_all_personal_states_have_explicit_readable_content(state):
-    digest = await FakeTodofy().fetch(ISSUE_DATE)
+    digest = await todofy.FakeTodofy().fetch(ISSUE_DATE)
     if state == "empty":
         digest.update(
             state="empty",
@@ -262,9 +276,9 @@ async def test_all_personal_states_have_explicit_readable_content(state):
             summary="最近 24 小时没有新的入库事件；这不代表没有未完成任务。",
         )
     elif state == "unavailable":
-        digest = unavailable_digest("todofy_timeout")
+        digest = todofy.unavailable_digest("todofy_timeout")
     elif state == "disabled":
-        digest = await DisabledTodofy().fetch(ISSUE_DATE)
+        digest = await todofy.DisabledTodofy().fetch(ISSUE_DATE)
     result = render(digest)
     parsed = EmailStructure(result["html"])
     assert "TODOFY / 与你有关" in parsed.text
@@ -283,8 +297,8 @@ async def test_all_personal_states_have_explicit_readable_content(state):
         assert "没有新的入库事件" not in parsed.text
 
 
-async def test_unknown_personal_record_count_stays_distinct_from_explicit_zero():
-    unknown = await FakeTodofy().fetch(ISSUE_DATE)
+async def test_unknown_personal_record_count_differs_from_zero():
+    unknown = await todofy.FakeTodofy().fetch(ISSUE_DATE)
     unknown.pop("task_count")
     result = render(unknown)
     assert not re.search(r"\d+ 条来源记录", EmailStructure(result["html"]).text)
@@ -298,9 +312,12 @@ async def test_unknown_personal_record_count_stays_distinct_from_explicit_zero()
     assert "0 条来源记录" in known_zero["text"]
 
 
-async def test_long_malicious_personal_content_is_escaped_without_silent_truncation():
-    digest = await FakeTodofy().fetch(ISSUE_DATE)
-    attack = '<img src="https://evil.example/tracker" onerror="alert(1)"><script>x</script>&'
+async def test_private_text_is_escaped_without_truncation():
+    digest = await todofy.FakeTodofy().fetch(ISSUE_DATE)
+    attack = (
+        '<img src="https://evil.example/tracker" '
+        'onerror="alert(1)"><script>x</script>&'
+    )
     long_url = "https://example.org/" + "long-path-" * 80
     detail = (
         ("中文长段落用于检验完整保留。" * 120) + "\n" + attack + "\n" + long_url
@@ -324,16 +341,17 @@ async def test_long_malicious_personal_content_is_escaped_without_silent_truncat
 
 
 async def test_representative_issue_has_a_deliberate_html_size_budget():
-    # A project budget, not a claim that every client clips at the same threshold.
-    result = render(await FakeTodofy().fetch(ISSUE_DATE))
+    # A project budget, not a claim that every client clips at the same
+    # threshold.
+    result = render(await todofy.FakeTodofy().fetch(ISSUE_DATE))
     assert len(result["html"].encode("utf-8")) < 80 * 1024
     assert (
         "data:image" not in result["html"]
     )  # Base64 belongs to MIME, not email HTML.
 
 
-async def test_no_chart_and_no_personal_modules_do_not_leave_broken_placeholders():
-    digest = await FakeTodofy().fetch(ISSUE_DATE)
+async def test_no_chart_no_personal_modules_never_leave_broken_placeholders():
+    digest = await todofy.FakeTodofy().fetch(ISSUE_DATE)
     no_chart = render(digest, chart=False)
     parsed = EmailStructure(no_chart["html"])
     assert no_chart["chart_png"] == ""
@@ -349,18 +367,20 @@ async def test_no_chart_and_no_personal_modules_do_not_leave_broken_placeholders
 
 
 async def test_complete_personal_issue_round_trips_as_frozen_cid_mime(tmp_path):
-    digest = await FakeTodofy().fetch(ISSUE_DATE)
+    digest = await todofy.FakeTodofy().fetch(ISSUE_DATE)
     rendered = render(digest)
     edition = {
         "id": "email-design-fixture",
         "state": "ready",
         "is_fixture": True,
-        "draft": SAMPLE_DRAFT,
+        "draft": rendering.SAMPLE_DRAFT,
         "personal_digest": digest,
         "rendered": rendered,
     }
-    outcome = await FakeMail(tmp_path).send(edition, "email-design/frozen-cid")
-    message = BytesParser(policy=policy.default).parsebytes(
+    outcome = await adapters.FakeMail(tmp_path).send(
+        edition, "email-design/frozen-cid"
+    )
+    message = parser.BytesParser(policy=policy.default).parsebytes(
         next(tmp_path.glob("*.eml")).read_bytes()
     )
     assert outcome["delivery_state"] == "simulated"
@@ -380,14 +400,17 @@ async def test_complete_personal_issue_round_trips_as_frozen_cid_mime(tmp_path):
     assert image_parts[0].get_payload(decode=True) == base64.b64decode(
         rendered["chart_png"]
     )
-    assert CHART_CID in html and digest["items"][0]["detail"] in plain
-    assert rendered["render_hash"] == content_hash(
+    assert (
+        newsletter_rendering.CHART_CID in html
+        and digest["items"][0]["detail"] in plain
+    )
+    assert rendered["render_hash"] == contracts.content_hash(
         {key: rendered[key] for key in ("html", "text", "chart_png")}
     )
 
 
 async def test_personal_change_changes_approval_hash_without_mutating_inputs():
-    digest = await FakeTodofy().fetch(ISSUE_DATE)
+    digest = await todofy.FakeTodofy().fetch(ISSUE_DATE)
     original = copy.deepcopy(digest)
     before = render(digest)
     assert digest == original

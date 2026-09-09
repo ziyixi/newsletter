@@ -1,30 +1,34 @@
-"""Offline crash/idempotency edges; only temporary SQLite and synthetic packets."""
+"""Test crashes and idempotency using temporary SQLite and synthetic packets."""
 
 import copy
 
 import pytest
 
-from newsletter.collection.collector import MockCollector, ResearchResult
-from newsletter.collection.instructions import Instruction
-from newsletter.collection.pipeline import CollectionPipeline
-from newsletter.collection.repository import RunRepository
-from newsletter.contracts import content_hash
-from newsletter.store import Store
+import newsletter.collection.collector as collector
+import newsletter.collection.instructions as instructions
+import newsletter.collection.pipeline as newsletter_collection_pipeline
+import newsletter.collection.repository as repository
+import newsletter.contracts as contracts
+import newsletter.store as newsletter_store
 
 
 @pytest.fixture
 def environment(tmp_path):
-    store = Store(tmp_path / "data" / "newsletter.sqlite3", "mock")
-    runs = RunRepository(store)
-    instruction = Instruction(
-        "science", "Synthetic research direction.", content_hash("fixture")
+    store = newsletter_store.Store(
+        tmp_path / "data" / "newsletter.sqlite3", "mock"
+    )
+    runs = repository.RunRepository(store)
+    instruction = instructions.Instruction(
+        "science",
+        "Synthetic research direction.",
+        contracts.content_hash("fixture"),
     )
     run = runs.start(
         {"request_key": "synthetic-run", "issue_date": "2026-09-05"},
         [instruction],
     )
-    pipeline = CollectionPipeline(
-        runs, MockCollector(), tmp_path / "work", 1, 20
+    pipeline = newsletter_collection_pipeline.CollectionPipeline(
+        runs, collector.MockCollector(), tmp_path / "work", 1, 20
     )
     try:
         yield store, runs, pipeline, run
@@ -37,12 +41,12 @@ async def test_failed_second_packet_never_leaves_untracked_material(
 ):
     store, runs, pipeline, run = environment
 
-    class PartlyInvalidCollector(MockCollector):
+    class PartlyInvalidCollector(collector.MockCollector):
         async def collect(self, *args):
             result = await super().collect(*args)
             invalid = copy.deepcopy(result.packets[0])
             invalid["sources"] = []
-            return ResearchResult(
+            return collector.ResearchResult(
                 [*result.packets, invalid], "Synthetic invalid second packet."
             )
 
@@ -61,7 +65,7 @@ async def test_failed_second_packet_never_leaves_untracked_material(
     assert persisted <= recorded
 
 
-async def test_internal_edition_key_conflict_blocks_run_instead_of_killing_worker(
+async def test_internal_edition_key_conflict_blocks_run_not_killing_worker(
     environment,
 ):
     store, runs, pipeline, run = environment

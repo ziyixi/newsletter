@@ -1,13 +1,15 @@
 """Prove the internal annotations reject unsafe state/result edits offline."""
 
+import pathlib
 import subprocess
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-def check_types(source: str, cache: Path) -> subprocess.CompletedProcess[str]:
+def check_types(
+    source: str, cache: pathlib.Path
+) -> subprocess.CompletedProcess[str]:
     case = cache.with_suffix(".py")
     case.write_text(source, encoding="utf-8")
     return subprocess.run(
@@ -33,18 +35,23 @@ def check_types(source: str, cache: Path) -> subprocess.CompletedProcess[str]:
 
 def test_internal_state_and_result_types_accept_real_boundaries(tmp_path):
     result = check_types(
-        """
-from newsletter.adapters import MailAdapter
-from newsletter.store import Store
-from newsletter.types import DeliveryResult, EditionRecord, RenderResult, ReviewResult
-
-def update(store: Store, rendered: RenderResult, review: ReviewResult) -> EditionRecord:
-    store.projection_result("packet", "unknown")
-    return store.finish("edition", state="ready", rendered=rendered, review=review)
-
-async def dispatch(mail: MailAdapter, edition: EditionRecord) -> DeliveryResult:
-    return await mail.send(edition, "stable-key")
-""",
+        (
+            "\n"
+            "from newsletter.adapters import MailAdapter\n"
+            "from newsletter.store import Store\n"
+            "from newsletter.types import DeliveryResult, "
+            "EditionRecord, RenderResult, ReviewResult\n"
+            "\n"
+            "def update(store: Store, rendered: RenderResult, review: "
+            "ReviewResult) -> EditionRecord:\n"
+            '    store.projection_result("packet", "unknown")\n'
+            '    return store.finish("edition", state="ready", '
+            "rendered=rendered, review=review)\n"
+            "\n"
+            "async def dispatch(mail: MailAdapter, edition: "
+            "EditionRecord) -> DeliveryResult:\n"
+            '    return await mail.send(edition, "stable-key")\n'
+        ),
         tmp_path / "valid-cache",
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -52,18 +59,22 @@ async def dispatch(mail: MailAdapter, edition: EditionRecord) -> DeliveryResult:
 
 def test_internal_types_reject_misspelled_states_and_unfrozen_results(tmp_path):
     result = check_types(
-        """
-from newsletter.store import Store
-from newsletter.types import DeliveryResult, RenderResult
-
-def invalid(store: Store) -> None:
-    store.finish("edition", state="sent")
-    store.finish("edition", delivery_state="delivered")
-    store.projection_result("packet", "retry")
-
-delivery: DeliveryResult = {"delivery_state": "delivered", "provider_message_id": "id"}
-rendered: RenderResult = {"html": "body", "text": "body", "chart_png": ""}
-""",
+        (
+            "\n"
+            "from newsletter.store import Store\n"
+            "from newsletter.types import DeliveryResult, "
+            "RenderResult\n"
+            "\n"
+            "def invalid(store: Store) -> None:\n"
+            '    store.finish("edition", state="sent")\n'
+            '    store.finish("edition", delivery_state="delivered")\n'
+            '    store.projection_result("packet", "retry")\n'
+            "\n"
+            'delivery: DeliveryResult = {"delivery_state": '
+            '"delivered", "provider_message_id": "id"}\n'
+            'rendered: RenderResult = {"html": "body", "text": "body", '
+            '"chart_png": ""}\n'
+        ),
         tmp_path / "invalid-cache",
     )
     assert result.returncode == 1, result.stdout + result.stderr

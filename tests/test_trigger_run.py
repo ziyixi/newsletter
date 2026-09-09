@@ -1,14 +1,14 @@
-"""Offline external-scheduler client tests; synthetic config and no HTTP sockets."""
+"""Offline scheduler client tests using synthetic config and no HTTP sockets."""
 
 import io
 import json
 import sys
-import urllib.error
-import urllib.request
+import urllib.error as urllib_error
+import urllib.request as urllib_request
 
 import pytest
 
-from newsletter import trigger as module
+import newsletter.trigger as newsletter_trigger
 
 
 @pytest.fixture
@@ -16,7 +16,7 @@ def trigger(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["newsletter-trigger"])
     # Replacing the mapping prevents accidental reads of the real environment.
     monkeypatch.setattr(
-        module.os,
+        newsletter_trigger.os,
         "environ",
         {
             "NEWSLETTER_SERVICE_URL": "https://newsletter.example.org/",
@@ -24,7 +24,7 @@ def trigger(monkeypatch):
             "NEWSLETTER_ISSUE_DATE": "2026-09-05",
         },
     )
-    return module
+    return newsletter_trigger
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ def transport(trigger, monkeypatch):
         client.handlers = handlers
         return client
 
-    monkeypatch.setattr(trigger.urllib.request, "build_opener", build)
+    monkeypatch.setattr(trigger.urllib_request, "build_opener", build)
     return client
 
 
@@ -96,7 +96,7 @@ def test_redirect_and_ambient_proxy_handlers_are_explicitly_disabled(
     proxies = [
         handler
         for handler in transport.handlers
-        if isinstance(handler, urllib.request.ProxyHandler)
+        if isinstance(handler, urllib_request.ProxyHandler)
     ]
     assert len(redirects) == 1
     assert (
@@ -164,7 +164,7 @@ def test_repeated_invocations_preserve_idempotent_request_bytes(
 def test_http_failure_is_not_retried_and_never_echoes_vendor_response(
     trigger, transport, capsys, status
 ):
-    transport.failure = urllib.error.HTTPError(
+    transport.failure = urllib_error.HTTPError(
         "https://newsletter.example.org/v1/runs",
         status,
         "private-provider-error",
@@ -185,7 +185,8 @@ def test_http_failure_is_not_retried_and_never_echoes_vendor_response(
     "failure",
     [
         TimeoutError("private-timeout"),
-        urllib.error.URLError("private-network-error"),
+        urllib_error.URLError("private-network-error"),
+        RuntimeError("private-unexpected-transport-error"),
     ],
 )
 def test_ambiguous_transport_outcome_is_safe_and_requires_same_key(

@@ -1,10 +1,10 @@
-"""Private, opt-in Todofy digest; never an editorial packet or public research input.
+"""Fetch private, opt-in Todofy digests, never public research packets.
 
 Todofy's authenticated /api/recommendation and /api/summary GET endpoints run
 its own LLM against the last 24 hours of persisted event summaries. They are
 read-only with respect to tasks, but NOT free database reads. Neither exposes
 raw event records, individual timestamps, nor Todoist completion state. Fetch
-only one endpoint, retain complete selected reasons/narrative, and never auto-retry.
+one endpoint only; retain complete selected explanations and never auto-retry.
 Recommendation fetches up to ten candidates for conservative local selection;
 the configured top count limits displayed items, never forces the list to fill.
 """
@@ -12,25 +12,26 @@ the configured top count limits displayed items, never forces the list to fill.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+import datetime
 import json
 import math
 import re
-from collections.abc import Callable
-from datetime import UTC, date, datetime
-from typing import Protocol, cast
-from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo
+from typing import cast, Protocol
+import urllib.parse as parse
+import zoneinfo
 
 import httpx
 
-from newsletter.contracts import validate_personal_digest
-from newsletter.personal import CANDIDATE_LIMIT, select_personal_items
-from newsletter.types import DigestState, Payload, PersonalItem
+import newsletter.contracts as contracts
+import newsletter.personal as personal
+import newsletter.types as types
 
 _MAX_RESPONSE_BYTES = 128 * 1024
 _MAX_SUMMARY_CHARS = 12_000
 _LIMITATIONS = (
-    "来自 Todofy 最近 24 小时入库事件的上游模型概述；不是 Todoist 的当前任务清单，"
+    "来自 Todofy 最近 24 小时入库事件的上游模型概述；"
+    "不是 Todoist 的当前任务清单，"
     "也不代表事项已经完成。上游未提供逐条事件时间或原文核验链接。"
 )
 _MESSAGES = {
@@ -38,7 +39,9 @@ _MESSAGES = {
     "todofy_unavailable": "暂时无法读取 Todofy，本期不能据此判断是否有新事件。",
     "todofy_auth_failed": "Todofy 认证未通过，本期没有取得事件概述。",
     "todofy_timeout": "Todofy 响应超时，本期没有取得事件概述。",
-    "todofy_invalid_response": "Todofy 返回了无法安全使用的数据，本期没有取得事件概述。",
+    "todofy_invalid_response": (
+        "Todofy 返回了无法安全使用的数据，本期没有取得事件概述。"
+    ),
     "todofy_historical_unavailable": (
         "Todofy 当前接口只提供抓取时刻之前的 24 小时概述，不能用于历史日期。"
     ),
@@ -46,23 +49,27 @@ _MESSAGES = {
 
 
 class TodofyAdapter(Protocol):
-    async def fetch(self, issue_date: str) -> Payload: ...
+    """Read a private digest without supplying public editorial evidence."""
+
+    async def fetch(self, issue_date: str) -> types.Payload:
+        """Fetch a digest or return an explicit unavailable state."""
+        ...
 
 
-def _date(value: str) -> date:
+def _date(value: str) -> datetime.date:
     if not isinstance(value, str) or not re.fullmatch(
         r"\d{4}-\d{2}-\d{2}", value
     ):
         raise ValueError("Invalid Todofy issue date")
     try:
-        return date.fromisoformat(value)
+        return datetime.date.fromisoformat(value)
     except ValueError:
         raise ValueError("Invalid Todofy issue date") from None
 
 
 def _base(
-    state: DigestState, fetched_at: str = "", *, fixture: bool = False
-) -> Payload:
+    state: types.DigestState, fetched_at: str = "", *, fixture: bool = False
+) -> types.Payload:
     return {
         "state": state,
         "title": "你的事件概述",
@@ -79,8 +86,8 @@ def _base(
 
 def unavailable_digest(
     code: str = "todofy_unavailable", fetched_at: str = ""
-) -> Payload:
-    """Safe failure data: callers must not include raw exceptions or response bodies."""
+) -> types.Payload:
+    """Build safe failure data without raw exceptions or response bodies."""
     if code not in _MESSAGES:
         code = "todofy_unavailable"
     result = _base(
@@ -91,15 +98,19 @@ def unavailable_digest(
 
 
 class DisabledTodofy:
-    async def fetch(self, issue_date: str) -> Payload:
+    """Represent an explicitly disabled private-digest integration."""
+
+    async def fetch(self, issue_date: str) -> types.Payload:
+        """Return date-validated data without contacting Todofy."""
         _date(issue_date)
         return unavailable_digest("todofy_disabled")
 
 
 class FakeTodofy:
-    """Clearly fictional examples, deterministic for an issue date and offline."""
+    """Supply fictional, offline examples deterministic for an issue date."""
 
-    async def fetch(self, issue_date: str) -> Payload:
+    async def fetch(self, issue_date: str) -> types.Payload:
+        """Return date-validated data without contacting Todofy."""
         _date(issue_date)
         result = _base("current", f"{issue_date}T12:00:00+00:00", fixture=True)
         result.update(
@@ -134,7 +145,10 @@ class FakeTodofy:
                     ),
                 },
             ],
-            limitations="演示数据，用于检查个人栏目样式；未连接 Todofy、Todoist 或任何模型。",
+            limitations=(
+                "演示数据，用于检查个人栏目样式；"
+                "未连接 Todofy、Todoist 或任何模型。"
+            ),
         )
         return result
 
@@ -142,9 +156,9 @@ class FakeTodofy:
 def validate_todofy_configuration(
     base_url: str, username: str, password: str
 ) -> str:
-    """Accept a fixed HTTPS origin only, never a supplied packet URL or redirect."""
+    """Validate an operator-owned HTTPS origin and Basic Auth credentials."""
     try:
-        parsed = urlsplit(base_url)
+        parsed = parse.urlsplit(base_url)
         port = parsed.port
         if (
             not isinstance(base_url, str)
@@ -163,7 +177,7 @@ def validate_todofy_configuration(
         ):
             raise ValueError
         # This is operator configuration, not an SSRF-prone content URL. HTTPS
-        # private hosts are allowed for a private service; proxy env and redirects
+        # Private hosts are allowed; proxy environment settings and redirects
         # remain disabled so credentials cannot be forwarded to another origin.
         parsed.hostname.encode("idna")
         for secret in (username, password):
@@ -181,7 +195,7 @@ def validate_todofy_configuration(
     return base_url.rstrip("/")
 
 
-def _unique_object(pairs: list[tuple[str, object]]) -> Payload:
+def _unique_object(pairs: list[tuple[str, object]]) -> types.Payload:
     result = {}
     for key, value in pairs:
         if key in result:
@@ -194,7 +208,7 @@ def _invalid_constant(_: str) -> None:
     raise ValueError
 
 
-def _decode(data: bytes, fetched_at: str, mode: str, top: int) -> Payload:
+def _decode(data: bytes, fetched_at: str, mode: str, top: int) -> types.Payload:
     body = json.loads(
         data, object_pairs_hook=_unique_object, parse_constant=_invalid_constant
     )
@@ -234,9 +248,11 @@ def _decode(data: bytes, fetched_at: str, mode: str, top: int) -> Payload:
     return result
 
 
-def _decode_recommendation(body: Payload, fetched_at: str, top: int) -> Payload:
+def _decode_recommendation(
+    body: types.Payload, fetched_at: str, top: int
+) -> types.Payload:
     tasks, count = body.get("tasks"), body.get("task_count")
-    if not isinstance(tasks, list) or len(tasks) > CANDIDATE_LIMIT:
+    if not isinstance(tasks, list) or len(tasks) > personal.CANDIDATE_LIMIT:
         raise ValueError
     if "task_count" in body and (
         type(count) is not int or not 0 <= count <= 1_000_000
@@ -244,7 +260,7 @@ def _decode_recommendation(body: Payload, fetched_at: str, top: int) -> Payload:
         raise ValueError
     if count == 0 and tasks:
         raise ValueError
-    items: list[PersonalItem] = []
+    items: list[types.PersonalItem] = []
     ranks = set()
     for index, task in enumerate(tasks, 1):
         if not isinstance(task, dict):
@@ -276,10 +292,11 @@ def _decode_recommendation(body: Payload, fetched_at: str, top: int) -> Payload:
                 "detail": cast(str, detail).strip(),
             }
         )
-    selection = select_personal_items(items, top)
+    selection = personal.select_personal_items(items, top)
     result = _base("current" if items or count else "empty", fetched_at)
     summary = (
-        f"从 Todofy 的 {selection.candidates} 条候选中保留 {len(selection.items)} 条，"
+        f"从 Todofy 的 {selection.candidates} 条候选中保留 "
+        f"{len(selection.items)} 条，"
         "按风险与行动线索保守排序，保留具体说明；不为凑数补齐。"
         if items
         else "Todofy 本次没有返回重点事件；这不代表没有未完成任务。"
@@ -287,12 +304,16 @@ def _decode_recommendation(body: Payload, fetched_at: str, top: int) -> Payload:
     if selection.routine_omitted or selection.duplicates_omitted:
         summary += (
             f" 已略去 {selection.routine_omitted} 条明确例行通知、"
-            f"{selection.duplicates_omitted} 条完全重复候选；这不表示账单已支付。"
+            f"{selection.duplicates_omitted} 条完全重复候选；"
+            "这不表示账单已支付。"
         )
     if selection.limit_omitted:
         summary += f" 另有 {selection.limit_omitted} 条候选超过展示上限。"
     if selection.risk_limit_omitted:
-        summary += f" 其中 {selection.risk_limit_omitted} 条含风险提示，请到 Todofy 核对。"
+        summary += (
+            f" 其中 {selection.risk_limit_omitted} 条含风险提示，"
+            "请到 Todofy 核对。"
+        )
     result.update(
         items=selection.items,
         summary=summary,
@@ -312,7 +333,7 @@ def _decode_recommendation(body: Payload, fetched_at: str, top: int) -> Payload:
 
 
 class Todofy:
-    """Opt-in HTTPS Basic Auth adapter; one bounded request, no automatic retry."""
+    """Read a private HTTPS digest once, without automatic retries."""
 
     def __init__(
         self,
@@ -325,7 +346,7 @@ class Todofy:
         time_zone: str = "America/Los_Angeles",
         timeout: float = 45,
         transport: httpx.AsyncBaseTransport | None = None,
-        clock: Callable[[], datetime] | None = None,
+        clock: Callable[[], datetime.datetime] | None = None,
     ):
         origin = validate_todofy_configuration(base_url, username, password)
         if (
@@ -341,23 +362,24 @@ class Todofy:
         ):
             raise ValueError("Invalid Todofy timeout")
         self._url = origin + (
-            f"/api/recommendation?top={CANDIDATE_LIMIT}"
+            f"/api/recommendation?top={personal.CANDIDATE_LIMIT}"
             if mode == "recommendation"
             else "/api/summary"
         )
         self._mode, self._top = mode, top
         self._auth = httpx.BasicAuth(username, password)
-        self._zone = ZoneInfo(time_zone)
+        self._zone = zoneinfo.ZoneInfo(time_zone)
         self._timeout = timeout
         self._transport = transport
-        self._clock = clock or (lambda: datetime.now(UTC))
+        self._clock = clock or (lambda: datetime.datetime.now(datetime.UTC))
 
-    async def fetch(self, issue_date: str) -> Payload:
+    async def fetch(self, issue_date: str) -> types.Payload:
+        """Fetch today's bounded digest or return a finite unavailable state."""
         requested = _date(issue_date)
         instant = self._clock()
         if instant.tzinfo is None:
             raise ValueError("Todofy clock must have a timezone")
-        fetched_at = instant.astimezone(UTC).isoformat()
+        fetched_at = instant.astimezone(datetime.UTC).isoformat()
         if requested != instant.astimezone(self._zone).date():
             return unavailable_digest(
                 "todofy_historical_unavailable", fetched_at
@@ -398,7 +420,7 @@ class Todofy:
                                 )
                             content.extend(chunk)
             result = _decode(bytes(content), fetched_at, self._mode, self._top)
-            validate_personal_digest(result)
+            contracts.validate_personal_digest(result)
             return result
         except (httpx.TimeoutException, TimeoutError):
             return unavailable_digest("todofy_timeout", fetched_at)

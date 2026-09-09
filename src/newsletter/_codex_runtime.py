@@ -6,9 +6,9 @@ change runtime behavior. This final exec boundary actually removes those keys.
 No credentials are opened, copied, or passed as command-line arguments.
 """
 
+from collections.abc import Mapping
 import os
 import sys
-from collections.abc import Mapping
 
 RUNTIME_ENV_KEYS = frozenset(
     {
@@ -26,6 +26,7 @@ RUNTIME_ENV_KEYS = frozenset(
 
 
 def runtime_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    """Retain only the runtime allowlist and the dedicated login path."""
     return {
         key: value
         for key, value in environ.items()
@@ -34,12 +35,15 @@ def runtime_environment(environ: Mapping[str, str]) -> dict[str, str]:
 
 
 def main() -> None:
-    from codex_cli_bin import bundled_codex_path, bundled_path_dir  # type: ignore[import-untyped]
+    """Replace this helper with the pinned executable and sanitized env."""
+    # This optional dependency is needed only when executing the helper.
+    import codex_cli_bin  # type: ignore[import-untyped]  # noqa: PLC0415
 
-    executable = str(bundled_codex_path())
+    executable = str(codex_cli_bin.bundled_codex_path())
     environment = runtime_environment(os.environ)
-    # Preserve the SDK's bundled tool path, without resolving arbitrary binaries.
-    bundled = bundled_path_dir()
+    # Preserve the SDK's bundled tool path, without resolving arbitrary
+    # binaries.
+    bundled = codex_cli_bin.bundled_path_dir()
     if bundled is not None:
         environment["PATH"] = os.pathsep.join(
             [str(bundled), environment.get("PATH", "")]

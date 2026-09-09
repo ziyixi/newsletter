@@ -2,222 +2,20 @@
 
 import asyncio
 import copy
-import inspect
 import json
-from pathlib import Path
-from types import SimpleNamespace
+import pathlib
 
 import pytest
 
-from newsletter import codex_runtime as runtime
-from newsletter import editor
-from newsletter.collection.instructions import Instruction
-from newsletter.contracts import ContractError, content_hash, validate_draft
-from newsletter.model_schema import editor_schema
-from newsletter.workflow.content import ContentPreparation
-from newsletter.workflow.schema import discovery_schema
-
-
-@pytest.fixture
-def packet():
-    content = {
-        "title": "测试材料",
-        "body": "这是显眼的虚构 fixture，不是真实新闻。",
-        "sources": [
-            {
-                "id": "s1",
-                "title": "测试来源",
-                "url": "https://example.com/evidence",
-                "excerpt": "虚构测试数据",
-                "access_scope": "full_text",
-                "published_at": "",
-            }
-        ],
-        "tags": ["fixture"],
-    }
-    return {
-        "id": "p1",
-        "workflow_id": "fixture",
-        "producer_id": "fixture",
-        "content_hash": content_hash(content),
-        "created_at": "2026-09-05T00:00:00Z",
-        "is_fixture": True,
-        "content": content,
-    }
-
-
-@pytest.fixture
-def bundle():
-    return {
-        "draft": {
-            "subject": "测试主题",
-            "title": "测试标题",
-            "introduction": "测试说明",
-            "sections": [
-                {
-                    "kind": "feature",
-                    "heading": "测试主读",
-                    "paragraphs": [
-                        {"text": "测试论断", "citations": ["p1/s1"]}
-                    ],
-                    "limitations": "仅测试",
-                }
-            ],
-            "limitations": "仅测试",
-        },
-        "review": {"passed": True, "findings": ["测试复核"]},
-        "supplemental_packets": [],
-    }
-
-
-class FakeTurn:
-    def __init__(self, bundle, *, research=True, failure=None, hang=False):
-        self.bundle = bundle
-        self.research = research
-        self.failure = failure
-        self.hang = hang
-        self.interrupted = False
-        self.started = asyncio.Event()
-
-    async def stream(self):
-        self.started.set()
-        if self.hang:
-            await asyncio.Event().wait()
-        if self.research:
-            for action in (
-                {"type": "search", "query": "public topic"},
-                {"type": "openPage", "url": "https://example.com/evidence"},
-            ):
-                yield SimpleNamespace(
-                    method="item/completed",
-                    payload={"item": {"type": "webSearch", "action": action}},
-                )
-        yield SimpleNamespace(
-            method="item/completed",
-            payload={
-                "item": {
-                    "type": "agentMessage",
-                    "phase": "final_answer",
-                    "text": self.bundle
-                    if isinstance(self.bundle, str)
-                    else json.dumps(self.bundle),
-                }
-            },
-        )
-        yield SimpleNamespace(
-            method="turn/completed",
-            payload={
-                "turn": {
-                    "status": "failed" if self.failure else "completed",
-                    "error": self.failure,
-                }
-            },
-        )
-
-    async def interrupt(self):
-        self.interrupted = True
-
-
-@pytest.fixture
-def fake_sdk(monkeypatch, bundle):
-    # Importing the actual SDK is inert; its real constructors/method signatures
-    # constrain the fake. No actual AsyncCodex object is ever instantiated.
-    sdk = pytest.importorskip("openai_codex")
-    state = SimpleNamespace(
-        account_type="chatgpt",
-        turn=FakeTurn(bundle),
-        closed=False,
-        started=False,
-        prompt=None,
-        thread_options=None,
-        thread_starts=0,
-        config=None,
-        skills_response=None,
-        skills_checked=False,
-        turns=[],
-        prompts=[],
-    )
-
-    class FakeClient:
-        def __init__(self, config):
-            state.config = config
-            self._client = self
-
-        async def request(self, method, params, *, response_model):
-            assert method == "skills/list" and params["forceReload"] is True
-            state.skills_checked = True
-            value = state.skills_response or {
-                "data": [
-                    {
-                        "cwd": state.config.cwd,
-                        "errors": [],
-                        "skills": [
-                            {
-                                "path": path,
-                                "scope": "system",
-                                "enabled": False,
-                                "name": Path(path).parent.name,
-                                "description": "disabled fixture skill",
-                            }
-                            for path in sorted(
-                                runtime.skill_paths(
-                                    Path(state.config.env["CODEX_HOME"])
-                                )
-                            )
-                        ],
-                    }
-                ]
-            }
-            return response_model.model_validate(value)
-
-        async def __aenter__(self):
-            state.started = True
-            return self
-
-        async def account(self, *, refresh_token=False):
-            assert refresh_token is False
-            return SimpleNamespace(
-                account=SimpleNamespace(
-                    root=SimpleNamespace(type=state.account_type)
-                )
-            )
-
-        async def thread_start(self, **kwargs):
-            inspect.signature(sdk.AsyncCodex.thread_start).bind(self, **kwargs)
-            state.thread_starts += 1
-            state.thread_options = kwargs
-            return FakeThread()
-
-        async def close(self):
-            state.closed = True
-
-    class FakeThread:
-        async def turn(self, prompt, **kwargs):
-            from openai_codex.api import AsyncThread
-
-            inspect.signature(AsyncThread.turn).bind(self, prompt, **kwargs)
-            state.prompt = json.loads(prompt)
-            state.prompts.append(state.prompt)
-            state.schema = kwargs["output_schema"]
-            return state.turns.pop(0) if state.turns else state.turn
-
-    monkeypatch.setattr(
-        runtime,
-        "load_sdk",
-        lambda: SimpleNamespace(
-            AsyncCodex=FakeClient,
-            CodexConfig=sdk.CodexConfig,
-            Sandbox=sdk.Sandbox,
-            ApprovalMode=sdk.ApprovalMode,
-        ),
-    )
-    return state
-
-
-def live_editor(tmp_path, **kwargs):
-    dedicated = tmp_path / "dedicated-codex"
-    dedicated.mkdir(exist_ok=True)
-    return editor.CodexEditor(dedicated, **kwargs)
+import newsletter.codex_runtime as codex_runtime
+import newsletter.collection.instructions as instructions
+import newsletter.contracts as contracts
+import newsletter.editor as newsletter_editor
+import newsletter.errors as newsletter_errors
+import newsletter.model_schema as model_schema
+import newsletter.workflow.content as newsletter_workflow_content
+import newsletter.workflow.schema as newsletter_workflow_schema
+import tests.support.editor as editor
 
 
 async def test_provenance_correction_requires_real_open_and_preserves_search(
@@ -227,7 +25,7 @@ async def test_provenance_correction_requires_real_open_and_preserves_search(
     content["sources"][0]["url"] = "https://example.com/evidence"
     research = {"state": "collected", "note": "fixture", "packets": [content]}
     # First turn searches but does not open this source; second really opens it.
-    first = FakeTurn(research)
+    first = editor.FakeTurn(research)
     original = first.stream
 
     async def search_only():
@@ -239,10 +37,10 @@ async def test_provenance_correction_requires_real_open_and_preserves_search(
                 yield event
 
     first.stream = search_only
-    fake_sdk.turns = [first, FakeTurn(research)]
+    fake_sdk.turns = [first, editor.FakeTurn(research)]
     workspace = tmp_path / "job"
     workspace.mkdir()
-    text, opened, searched = await live_editor(tmp_path).execute(
+    text, opened, searched = await editor.live_editor(tmp_path).execute(
         "{}", {}, "fixture", workspace
     )
     assert json.loads(text) == research and searched
@@ -259,20 +57,22 @@ async def test_provenance_correction_stops_after_one_unverified_attempt(
 ):
     content = copy.deepcopy(packet["content"])
     content["sources"][0]["url"] = "https://example.com/unread-pdf"
-    fake_sdk.turn = FakeTurn(
+    fake_sdk.turn = editor.FakeTurn(
         {"state": "collected", "note": "fixture", "packets": [content]}
     )
     workspace = tmp_path / "job"
     workspace.mkdir()
-    with pytest.raises(editor.EditorError) as error:
-        await live_editor(tmp_path).execute("{}", {}, "fixture", workspace)
+    with pytest.raises(newsletter_errors.EditorError) as error:
+        await editor.live_editor(tmp_path).execute(
+            "{}", {}, "fixture", workspace
+        )
     assert error.value.code == "invalid_output"
     assert len(fake_sdk.prompts) == 2 and fake_sdk.closed
 
 
 def test_provenance_inspection_includes_only_new_sources():
     assert (
-        editor._unopened_sources(
+        newsletter_editor._unopened_sources(
             '{"draft":{},"supplemental_packets":[]}', set()
         )
         == []
@@ -281,12 +81,14 @@ def test_provenance_inspection_includes_only_new_sources():
         "packets": [{"sources": [{"url": "https://example.com/a#table"}]}]
     }
     assert (
-        editor._unopened_sources(json.dumps(payload), {"https://example.com/a"})
+        newsletter_editor._unopened_sources(
+            json.dumps(payload), {"https://example.com/a"}
+        )
         == []
     )
     for invalid in ("[]", '{"packets":null}', '{"packets":[{}]}'):
-        with pytest.raises(editor.EditorError):
-            editor._unopened_sources(invalid, set())
+        with pytest.raises(newsletter_errors.EditorError):
+            newsletter_editor._unopened_sources(invalid, set())
 
 
 def discovery_output(*, url="https://example.com/evidence", scope="abstract"):
@@ -300,26 +102,15 @@ def discovery_output(*, url="https://example.com/evidence", scope="abstract"):
                 "event_key": "",
                 "published_at": "",
                 "summary": "Only a synthetic test claim.",
-                "why_now": "An offline fixture tests evidence provenance, not actual news.",
+                "why_now": (
+                    "An offline fixture tests evidence provenance, not "
+                    "actual news."
+                ),
                 "access_scope": scope,
             }
         ],
         "note": "Synthetic discovery only",
     }
-
-
-def discovery_turn(value, *, omit_action):
-    turn = FakeTurn(value)
-    original = turn.stream
-
-    async def stream():
-        async for event in original():
-            action = event.payload.get("item", {}).get("action", {}).get("type")
-            if action != omit_action:
-                yield event
-
-    turn.stream = stream
-    return turn
 
 
 @pytest.mark.parametrize("scope", ["abstract", "full_text", "dataset"])
@@ -330,12 +121,16 @@ async def test_discovery_missing_open_gets_one_same_thread_correction(
     # Search and the actual source open occur in separate turns. Neither action
     # may be inferred from the candidate's own fields or dropped on correction.
     fake_sdk.turns = [
-        discovery_turn(output, omit_action="openPage"),
-        discovery_turn(output, omit_action="search"),
+        editor.discovery_turn(output, omit_action="openPage"),
+        editor.discovery_turn(output, omit_action="search"),
     ]
-    content = ContentPreparation(live_editor(tmp_path))
+    content = newsletter_workflow_content.ContentPreparation(
+        editor.live_editor(tmp_path)
+    )
     result = await content.discover(
-        Instruction("03-world", "Synthetic instruction", "fixture"),
+        instructions.Instruction(
+            "03-world", "Synthetic instruction", "fixture"
+        ),
         "2026-09-06",
         tmp_path / "discovery",
     )
@@ -346,20 +141,24 @@ async def test_discovery_missing_open_gets_one_same_thread_correction(
     assert fake_sdk.prompts[1]["unverified_urls"] == [
         "https://example.com/evidence"
     ]
-    assert fake_sdk.schema == discovery_schema()
+    assert fake_sdk.schema == newsletter_workflow_schema.discovery_schema()
     assert fake_sdk.closed
 
 
-async def test_discovery_still_unopened_after_one_correction_fails_without_third_turn(
+async def test_unopened_discovery_after_correction_has_no_third_turn(
     tmp_path, fake_sdk
 ):
     # Opening /evidence never authenticates a different canonical/PDF URL.
-    fake_sdk.turn = FakeTurn(
+    fake_sdk.turn = editor.FakeTurn(
         discovery_output(url="https://example.com/unread-pdf")
     )
-    with pytest.raises(editor.EditorError) as caught:
-        await ContentPreparation(live_editor(tmp_path)).discover(
-            Instruction("03-world", "Synthetic instruction", "fixture"),
+    with pytest.raises(newsletter_errors.EditorError) as caught:
+        await newsletter_workflow_content.ContentPreparation(
+            editor.live_editor(tmp_path)
+        ).discover(
+            instructions.Instruction(
+                "03-world", "Synthetic instruction", "fixture"
+            ),
             "2026-09-06",
             tmp_path / "discovery",
         )
@@ -372,13 +171,15 @@ async def test_discovery_correction_keeps_original_execute_timeout(
     tmp_path, fake_sdk
 ):
     output = discovery_output(url="https://example.com/unread-pdf")
-    hanging = FakeTurn(output, hang=True)
-    fake_sdk.turns = [FakeTurn(output), hanging]
-    with pytest.raises(editor.EditorError) as caught:
-        await ContentPreparation(
-            live_editor(tmp_path, timeout_seconds=0.05)
+    hanging = editor.FakeTurn(output, hang=True)
+    fake_sdk.turns = [editor.FakeTurn(output), hanging]
+    with pytest.raises(newsletter_errors.EditorError) as caught:
+        await newsletter_workflow_content.ContentPreparation(
+            editor.live_editor(tmp_path, timeout_seconds=0.05)
         ).discover(
-            Instruction("03-world", "Synthetic instruction", "fixture"),
+            instructions.Instruction(
+                "03-world", "Synthetic instruction", "fixture"
+            ),
             "2026-09-06",
             tmp_path / "discovery",
         )
@@ -388,7 +189,7 @@ async def test_discovery_correction_keeps_original_execute_timeout(
 
 
 @pytest.mark.parametrize("trusted_seed", [False, True])
-async def test_metadata_does_not_trigger_open_correction_but_still_requires_real_seed(
+async def test_metadata_requires_seed_but_no_open_correction(
     tmp_path, fake_sdk, trusted_seed
 ):
     output = discovery_output(
@@ -401,10 +202,14 @@ async def test_metadata_does_not_trigger_open_correction_but_still_requires_real
         "provenance": "crossref_metadata",
         "summary": "Original feed title record only.",
     }
-    fake_sdk.turn = FakeTurn(output)
-    content = ContentPreparation(live_editor(tmp_path))
+    fake_sdk.turn = editor.FakeTurn(output)
+    content = newsletter_workflow_content.ContentPreparation(
+        editor.live_editor(tmp_path)
+    )
     args = (
-        Instruction("03-world", "Synthetic instruction", "fixture"),
+        instructions.Instruction(
+            "03-world", "Synthetic instruction", "fixture"
+        ),
         "2026-09-06",
         tmp_path / "discovery",
     )
@@ -413,7 +218,7 @@ async def test_metadata_does_not_trigger_open_correction_but_still_requires_real
         assert result.candidates[0]["summary"] == seed["summary"]
         assert result.candidates[0]["provenance"] == "crossref_metadata"
     else:
-        with pytest.raises(editor.EditorError) as caught:
+        with pytest.raises(newsletter_errors.EditorError) as caught:
             await content.discover(*args)
         assert caught.value.code == "invalid_output"
     assert fake_sdk.thread_starts == 1 and len(fake_sdk.prompts) == 1
@@ -423,12 +228,12 @@ async def test_metadata_does_not_trigger_open_correction_but_still_requires_real
 def test_discovery_source_inspection_preserves_fragment_and_input_boundaries():
     value = discovery_output(url="https://example.com/evidence#section")
     assert (
-        editor._unopened_sources(
+        newsletter_editor._unopened_sources(
             json.dumps(value), {"https://example.com/evidence"}
         )
         == []
     )
-    assert editor._unopened_sources(json.dumps(value), set()) == [
+    assert newsletter_editor._unopened_sources(json.dumps(value), set()) == [
         "https://example.com/evidence#section"
     ]
     # Planning input references/history are not newly claimed evidence.
@@ -436,21 +241,23 @@ def test_discovery_source_inspection_preserves_fragment_and_input_boundaries():
         "research_tasks": [{"source_urls": ["https://example.com/persisted"]}],
         "history_untrusted": [{"url": "https://example.com/history"}],
     }
-    assert editor._unopened_sources(json.dumps(unrelated), set()) == []
+    assert (
+        newsletter_editor._unopened_sources(json.dumps(unrelated), set()) == []
+    )
     for invalid in (
         {"candidates": None},
         {"candidates": [None]},
         {"candidates": [{}]},
     ):
-        with pytest.raises(editor.EditorError):
-            editor._unopened_sources(json.dumps(invalid), set())
+        with pytest.raises(newsletter_errors.EditorError):
+            newsletter_editor._unopened_sources(json.dumps(invalid), set())
 
 
 async def test_mock_deterministic_and_conspicuous(tmp_path, packet):
-    first = await editor.MockEditor().prepare(
+    first = await newsletter_editor.MockEditor().prepare(
         [packet], "2026-09-05", tmp_path / "first"
     )
-    second = await editor.MockEditor().prepare(
+    second = await newsletter_editor.MockEditor().prepare(
         [packet], "2026-09-05", tmp_path / "second"
     )
     assert first == second
@@ -460,7 +267,7 @@ async def test_mock_deterministic_and_conspicuous(tmp_path, packet):
         in first.draft["sections"][0]["paragraphs"][0]["text"]
     )
     assert first.supplemental_packets == []
-    validate_draft(first.draft, [packet])
+    contracts.validate_draft(first.draft, [packet])
     assert (
         json.loads((tmp_path / "first" / "draft.json").read_text())
         == first.draft
@@ -469,8 +276,10 @@ async def test_mock_deterministic_and_conspicuous(tmp_path, packet):
 
 async def test_mock_rejects_live_material(tmp_path, packet):
     packet["is_fixture"] = False
-    with pytest.raises(editor.EditorError, match="invalid input") as error:
-        await editor.MockEditor().prepare(
+    with pytest.raises(
+        newsletter_errors.EditorError, match="invalid input"
+    ) as error:
+        await newsletter_editor.MockEditor().prepare(
             [packet], "2026-09-05", tmp_path / "job"
         )
     assert error.value.code == "invalid_input"
@@ -483,7 +292,7 @@ async def test_managed_auth_config_and_explicit_context(
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
     monkeypatch.setenv("RESEND_API_KEY", "mail-secret")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://unsafe.example.com")
-    result = await live_editor(tmp_path).prepare(
+    result = await editor.live_editor(tmp_path).prepare(
         [packet], "2026-09-05", tmp_path / "job"
     )
     assert result.review["passed"]
@@ -495,7 +304,7 @@ async def test_managed_auth_config_and_explicit_context(
     assert fake_sdk.config.env["OPENAI_API_KEY"] == ""
     assert fake_sdk.config.env["RESEND_API_KEY"] == ""
     assert fake_sdk.config.env["OPENAI_BASE_URL"] == ""
-    assert fake_sdk.config.launch_args_override == runtime.launch_args(
+    assert fake_sdk.config.launch_args_override == codex_runtime.launch_args(
         fake_sdk.config.config_overrides
     )
     assert 'forced_login_method="chatgpt"' in fake_sdk.config.config_overrides
@@ -530,7 +339,7 @@ async def test_managed_auth_config_and_explicit_context(
     assert "先单独 open 那个完整 URL" in fake_sdk.prompt["output_rules"]
 
 
-async def test_prepare_supplies_exact_available_citations_and_input_scoped_schema(
+async def test_prepare_supplies_exact_available_citations_input_scoped_schema(
     tmp_path, packet, fake_sdk
 ):
     packet["is_fixture"] = False
@@ -541,7 +350,9 @@ async def test_prepare_supplies_exact_available_citations_and_input_scoped_schem
     second["id"] = "p:2"
     second["content"]["sources"] = [dict(extra_source, id="s.third")]
     packets = [packet, second]
-    await live_editor(tmp_path).prepare(packets, "2026-09-05", tmp_path / "job")
+    await editor.live_editor(tmp_path).prepare(
+        packets, "2026-09-05", tmp_path / "job"
+    )
 
     assert fake_sdk.prompt["available_citations"] == [
         "p1/s1",
@@ -549,8 +360,8 @@ async def test_prepare_supplies_exact_available_citations_and_input_scoped_schem
         "p:2/s.third",
     ]
     assert fake_sdk.prompt["research_packets_untrusted"] == packets
-    assert fake_sdk.schema == editor_schema(packets)
-    assert fake_sdk.schema != editor_schema()
+    assert fake_sdk.schema == model_schema.editor_schema(packets)
+    assert fake_sdk.schema != model_schema.editor_schema()
     assert "逐字复制 available_citations" in fake_sdk.prompt["output_rules"]
     assert "服务不会修正引用" in fake_sdk.prompt["output_rules"]
     assert "HOLD" in fake_sdk.prompt["output_rules"]
@@ -570,7 +381,7 @@ async def test_self_approved_missing_reference_is_not_repaired_or_accepted(
         "passed": True,
         "findings": ["Fixture: reference unresolved"],
     }
-    result = await live_editor(tmp_path).prepare(
+    result = await editor.live_editor(tmp_path).prepare(
         [packet], "2026-09-05", tmp_path / "job"
     )
     assert result.review["passed"] is True
@@ -579,10 +390,10 @@ async def test_self_approved_missing_reference_is_not_repaired_or_accepted(
     ]
     assert result.supplemental_packets == []
     with pytest.raises(
-        ContractError,
+        contracts.ContractError,
         match="Citation does not identify an available packet/source",
     ):
-        validate_draft(result.draft, [packet])
+        contracts.validate_draft(result.draft, [packet])
 
 
 @pytest.mark.parametrize("account_type", ["apiKey", "amazonBedrock", None])
@@ -590,8 +401,10 @@ async def test_rejects_non_chatgpt_before_model(
     tmp_path, fake_sdk, account_type
 ):
     fake_sdk.account_type = account_type
-    with pytest.raises(editor.EditorError) as error:
-        await live_editor(tmp_path).prepare([], "2026-09-05", tmp_path / "job")
+    with pytest.raises(newsletter_errors.EditorError) as error:
+        await editor.live_editor(tmp_path).prepare(
+            [], "2026-09-05", tmp_path / "job"
+        )
     assert error.value.code == "authentication"
     assert fake_sdk.thread_options is None
     assert fake_sdk.closed
@@ -599,7 +412,7 @@ async def test_rejects_non_chatgpt_before_model(
 
 async def test_no_observed_research_holds(tmp_path, fake_sdk):
     fake_sdk.turn.research = False
-    result = await live_editor(tmp_path).prepare(
+    result = await editor.live_editor(tmp_path).prepare(
         [], "2026-09-05", tmp_path / "job"
     )
     assert result.review["passed"] is False
@@ -612,7 +425,7 @@ async def test_explicit_hold_does_not_require_search(tmp_path, fake_sdk):
         "passed": False,
         "findings": ["HOLD: 缺少证据"],
     }
-    result = await live_editor(tmp_path).prepare(
+    result = await editor.live_editor(tmp_path).prepare(
         [], "2026-09-05", tmp_path / "job"
     )
     assert not result.review["passed"]
@@ -628,18 +441,18 @@ async def test_supplements_get_host_identity_and_references(
     fake_sdk.turn.bundle["draft"]["sections"][0]["paragraphs"][0][
         "citations"
     ] = ["supplement-1/s1"]
-    result = await live_editor(tmp_path).prepare(
+    result = await editor.live_editor(tmp_path).prepare(
         [], "2026-09-05", tmp_path / "job"
     )
     added = result.supplemental_packets[0]
     assert added["id"] != "supplement-1"
     assert added["producer_id"] == "codex-editor"
-    assert added["content_hash"] == content_hash(content)
+    assert added["content_hash"] == contracts.content_hash(content)
     assert added["is_fixture"] is False
     assert result.draft["sections"][0]["paragraphs"][0]["citations"] == [
         added["id"] + "/s1"
     ]
-    validate_draft(result.draft, [added])
+    contracts.validate_draft(result.draft, [added])
 
 
 async def test_unopened_supplement_is_rejected(tmp_path, fake_sdk, packet):
@@ -648,8 +461,10 @@ async def test_unopened_supplement_is_rejected(tmp_path, fake_sdk, packet):
     fake_sdk.turn.bundle["supplemental_packets"] = [
         {"id": "supplement-1", "content": content}
     ]
-    with pytest.raises(editor.EditorError) as error:
-        await live_editor(tmp_path).prepare([], "2026-09-05", tmp_path / "job")
+    with pytest.raises(newsletter_errors.EditorError) as error:
+        await editor.live_editor(tmp_path).prepare(
+            [], "2026-09-05", tmp_path / "job"
+        )
     assert error.value.code == "invalid_output"
 
 
@@ -665,8 +480,10 @@ async def test_unopened_supplement_is_rejected(tmp_path, fake_sdk, packet):
 )
 async def test_strict_json_rejection(tmp_path, fake_sdk, raw):
     fake_sdk.turn.bundle = raw
-    with pytest.raises(editor.EditorError) as error:
-        await live_editor(tmp_path).prepare([], "2026-09-05", tmp_path / "job")
+    with pytest.raises(newsletter_errors.EditorError) as error:
+        await editor.live_editor(tmp_path).prepare(
+            [], "2026-09-05", tmp_path / "job"
+        )
     assert error.value.code == "invalid_output"
     assert fake_sdk.closed
 
@@ -695,8 +512,10 @@ async def test_vendor_error_categories_are_sanitized(
     tmp_path, fake_sdk, failure, code
 ):
     fake_sdk.turn.failure = failure
-    with pytest.raises(editor.EditorError) as error:
-        await live_editor(tmp_path).prepare([], "2026-09-05", tmp_path / "job")
+    with pytest.raises(newsletter_errors.EditorError) as error:
+        await editor.live_editor(tmp_path).prepare(
+            [], "2026-09-05", tmp_path / "job"
+        )
     assert error.value.code == code
     assert "secret" not in str(error.value)
     assert not (tmp_path / "job" / "draft.json").exists()
@@ -704,8 +523,8 @@ async def test_vendor_error_categories_are_sanitized(
 
 async def test_timeout_interrupts_and_closes(tmp_path, fake_sdk):
     fake_sdk.turn.hang = True
-    with pytest.raises(editor.EditorError) as error:
-        await live_editor(tmp_path, timeout_seconds=0.05).prepare(
+    with pytest.raises(newsletter_errors.EditorError) as error:
+        await editor.live_editor(tmp_path, timeout_seconds=0.05).prepare(
             [], "2026-09-05", tmp_path / "job"
         )
     assert error.value.code == "timeout"
@@ -715,7 +534,7 @@ async def test_timeout_interrupts_and_closes(tmp_path, fake_sdk):
 async def test_worker_cancellation_interrupts_and_closes(tmp_path, fake_sdk):
     fake_sdk.turn.hang = True
     task = asyncio.create_task(
-        live_editor(tmp_path).prepare([], "2026-09-05", tmp_path / "job")
+        editor.live_editor(tmp_path).prepare([], "2026-09-05", tmp_path / "job")
     )
     await fake_sdk.turn.started.wait()
     task.cancel()
@@ -726,11 +545,13 @@ async def test_worker_cancellation_interrupts_and_closes(tmp_path, fake_sdk):
 
 async def test_missing_sdk_is_not_mock_fallback(tmp_path, monkeypatch):
     def missing():
-        raise editor.EditorError("configuration")
+        raise newsletter_errors.EditorError("configuration")
 
-    monkeypatch.setattr(runtime, "load_sdk", missing)
-    with pytest.raises(editor.EditorError) as error:
-        await live_editor(tmp_path).prepare([], "2026-09-05", tmp_path / "job")
+    monkeypatch.setattr(codex_runtime, "load_sdk", missing)
+    with pytest.raises(newsletter_errors.EditorError) as error:
+        await editor.live_editor(tmp_path).prepare(
+            [], "2026-09-05", tmp_path / "job"
+        )
     assert error.value.code == "configuration"
     assert not (tmp_path / "job" / "draft.json").exists()
 
@@ -740,8 +561,10 @@ async def test_stale_artifact_not_overwritten(tmp_path, packet):
     workspace.mkdir()
     output = workspace / "draft.json"
     output.write_text("existing-user-data")
-    with pytest.raises(editor.EditorError):
-        await editor.MockEditor().prepare([packet], "2026-09-05", workspace)
+    with pytest.raises(newsletter_errors.EditorError):
+        await newsletter_editor.MockEditor().prepare(
+            [packet], "2026-09-05", workspace
+        )
     assert output.read_text() == "existing-user-data"
 
 
@@ -751,15 +574,17 @@ async def test_symlink_output_rejected(tmp_path, packet):
     target = tmp_path / "outside.json"
     target.write_text("untouched")
     (workspace / "draft.json").symlink_to(target)
-    with pytest.raises(editor.EditorError):
-        await editor.MockEditor().prepare([packet], "2026-09-05", workspace)
+    with pytest.raises(newsletter_errors.EditorError):
+        await newsletter_editor.MockEditor().prepare(
+            [packet], "2026-09-05", workspace
+        )
     assert target.read_text() == "untouched"
 
 
 async def test_home_config_rejected_without_reading_auth(tmp_path, fake_sdk):
-    adapter = live_editor(tmp_path)
+    adapter = editor.live_editor(tmp_path)
     (adapter.codex_home / "config.toml").write_text('model_provider = "custom"')
-    with pytest.raises(editor.EditorError) as error:
+    with pytest.raises(newsletter_errors.EditorError) as error:
         await adapter.prepare([], "2026-09-05", tmp_path / "job")
     assert error.value.code == "configuration"
     assert not fake_sdk.started
@@ -768,13 +593,13 @@ async def test_home_config_rejected_without_reading_auth(tmp_path, fake_sdk):
 async def test_runtime_created_system_skills_allow_repeated_start(
     tmp_path, fake_sdk
 ):
-    adapter = live_editor(tmp_path)
+    adapter = editor.live_editor(tmp_path)
     system = adapter.codex_home / "skills" / ".system"
     system.mkdir(parents=True)
     (system / ".codex-system-skills.marker").write_text(
         "fixture runtime marker"
     )
-    for name in runtime.SYSTEM_SKILLS:
+    for name in codex_runtime.SYSTEM_SKILLS:
         (system / name).mkdir()
         (system / name / "SKILL.md").write_text(
             "disabled fixture content, never a prompt"
@@ -791,9 +616,12 @@ async def test_runtime_created_system_skills_allow_repeated_start(
             for v in fake_sdk.config.config_overrides
             if v.startswith("skills.config=")
         )
-        assert entries.count("enabled=false") == len(runtime.SYSTEM_SKILLS)
+        assert entries.count("enabled=false") == len(
+            codex_runtime.SYSTEM_SKILLS
+        )
         assert all(
-            path in entries for path in runtime.skill_paths(adapter.codex_home)
+            path in entries
+            for path in codex_runtime.skill_paths(adapter.codex_home)
         )
 
 
@@ -801,7 +629,7 @@ async def test_runtime_created_system_skills_allow_repeated_start(
 async def test_skill_cache_rejects_custom_unknown_or_symlink(
     tmp_path, fake_sdk, kind
 ):
-    adapter = live_editor(tmp_path)
+    adapter = editor.live_editor(tmp_path)
     system = adapter.codex_home / "skills" / ".system"
     system.mkdir(parents=True)
     if kind == "custom":
@@ -810,7 +638,7 @@ async def test_skill_cache_rejects_custom_unknown_or_symlink(
         (system / "unknown").mkdir()
     else:
         (system / "imagegen").symlink_to(tmp_path, target_is_directory=True)
-    with pytest.raises(editor.EditorError) as exc:
+    with pytest.raises(newsletter_errors.EditorError) as exc:
         await adapter.prepare([], "2026-09-05", tmp_path / "job")
     assert exc.value.code == "configuration" and not fake_sdk.started
 
@@ -822,17 +650,17 @@ async def test_skill_cache_rejects_custom_unknown_or_symlink(
 async def test_effective_skills_fail_closed_before_model(
     tmp_path, fake_sdk, kind
 ):
-    adapter = live_editor(tmp_path)
+    adapter = editor.live_editor(tmp_path)
     workspace = tmp_path / "job"
     skills = [
         {
             "path": path,
             "scope": "system",
             "enabled": False,
-            "name": Path(path).parent.name,
+            "name": pathlib.Path(path).parent.name,
             "description": "fixture",
         }
-        for path in sorted(runtime.skill_paths(adapter.codex_home))
+        for path in sorted(codex_runtime.skill_paths(adapter.codex_home))
     ]
     entry = {"cwd": str(workspace), "skills": skills, "errors": []}
     if kind == "enabled":
@@ -850,14 +678,14 @@ async def test_effective_skills_fail_closed_before_model(
     else:
         entry["cwd"] = str(tmp_path)
     fake_sdk.skills_response = {"data": [entry]}
-    with pytest.raises(editor.EditorError) as exc:
+    with pytest.raises(newsletter_errors.EditorError) as exc:
         await adapter.prepare([], "2026-09-05", workspace)
     assert exc.value.code == "configuration"
     assert fake_sdk.thread_options is None and fake_sdk.closed
 
 
 def test_proto_drives_output_schema():
-    schema = editor_schema()
+    schema = model_schema.editor_schema()
     assert schema["properties"]["draft"]["properties"]["limitations"] == {
         "type": "string"
     }
@@ -873,20 +701,20 @@ async def test_mock_explicit_synthetic_chart(tmp_path, packet):
     packet["content"]["sources"][0].update(
         id="demo", access_scope="dataset", excerpt=packet["content"]["body"]
     )
-    result = await editor.MockEditor().prepare(
+    result = await newsletter_editor.MockEditor().prepare(
         [packet], "2026-09-05", tmp_path / "job"
     )
     assert "MOCK" in result.draft["chart"]["caption"]
     assert result.draft["chart"]["points"][0]["decimal_value"] == "12"
     assert "decimal_value" not in result.draft["chart"]["points"][2]
-    validate_draft(result.draft, [packet])
+    contracts.validate_draft(result.draft, [packet])
 
 
 async def test_mock_chart_tag_does_not_invent_numbers(tmp_path, packet):
     packet["content"]["tags"].append("demo-chart")
     packet["content"]["sources"][0].update(id="demo", access_scope="dataset")
-    with pytest.raises(editor.EditorError) as error:
-        await editor.MockEditor().prepare(
+    with pytest.raises(newsletter_errors.EditorError) as error:
+        await newsletter_editor.MockEditor().prepare(
             [packet], "2026-09-05", tmp_path / "job"
         )
     assert error.value.code == "invalid_input"
@@ -894,7 +722,7 @@ async def test_mock_chart_tag_does_not_invent_numbers(tmp_path, packet):
 
 async def test_structured_optional_nulls_are_omitted(tmp_path, fake_sdk):
     fake_sdk.turn.bundle["draft"].update(chart=None, recommended_reading=None)
-    result = await live_editor(tmp_path).prepare(
+    result = await editor.live_editor(tmp_path).prepare(
         [], "2026-09-05", tmp_path / "job"
     )
     assert (
@@ -914,12 +742,12 @@ async def test_recent_history_loaded_not_assumed(tmp_path, fake_sdk):
         }
     ]
     (workspace / "recent-history.json").write_text(json.dumps(history))
-    await live_editor(tmp_path).prepare([], "2026-09-05", workspace)
+    await editor.live_editor(tmp_path).prepare([], "2026-09-05", workspace)
     assert fake_sdk.prompt["recent_history_untrusted"] == history
 
 
 def test_schema_chart_oneof_and_strict_required():
-    draft = editor_schema()["properties"]["draft"]
+    draft = model_schema.editor_schema()["properties"]["draft"]
     assert set(draft["required"]) == set(draft["properties"])
     chart = draft["properties"]["chart"]["anyOf"][0]
     points = chart["properties"]["points"]["items"]["anyOf"]

@@ -1,7 +1,7 @@
-"""Small discovery/planning envelopes; published material still uses protobuf."""
+"""Define discovery/planning envelopes; published material uses protobuf."""
 
-from newsletter.contracts import IDENTIFIER_PATTERN, SOURCE_ACCESS_SCOPES
-from newsletter.types import Payload
+import newsletter.contracts as contracts
+import newsletter.types as types
 
 CANDIDATE_LEGACY_FIELDS = (
     "title",
@@ -40,7 +40,8 @@ TASK_FIELDS = (
 EDITORIAL_KINDS = ("news", "research", "unknown")
 
 
-def object_schema(properties: Payload) -> Payload:
+def object_schema(properties: types.Payload) -> types.Payload:
+    """Build a closed object schema requiring every declared property."""
     return {
         "type": "object",
         "additionalProperties": False,
@@ -51,7 +52,8 @@ def object_schema(properties: Payload) -> Payload:
 
 def discovery_schema(
     max_candidates: int = 5, *, classified: bool = False
-) -> Payload:
+) -> types.Payload:
+    """Build the bounded candidate envelope expected from discovery jobs."""
     optional_text = {
         "doi",
         "version",
@@ -59,7 +61,7 @@ def discovery_schema(
         "published_at",
         *CANDIDATE_RESEARCH_FIELDS,
     }
-    props: Payload = {
+    props: types.Payload = {
         key: {
             "type": "string",
             "minLength": 0 if key in optional_text else 1,
@@ -73,7 +75,7 @@ def discovery_schema(
         "maxItems": MAX_EVIDENCE_URLS,
         "items": {"type": "string", "minLength": 1, "maxLength": 1200},
     }
-    props["access_scope"]["enum"] = list(SOURCE_ACCESS_SCOPES)
+    props["access_scope"]["enum"] = list(contracts.SOURCE_ACCESS_SCOPES)
     props["title"]["maxLength"] = 500
     props["why_now"]["maxLength"] = 1000
     # Shape only: the parser still checks calendar validity and the issue date.
@@ -106,8 +108,10 @@ def planning_schema(
     *,
     gaps: bool = False,
     classified: bool = False,
-) -> Payload:
-    def choices(values: list[str], minimum: int, maximum: int) -> Payload:
+) -> types.Payload:
+    """Restrict task IDs and source choices to the supplied public inputs."""
+
+    def choices(values: list[str], minimum: int, maximum: int) -> types.Payload:
         return {
             "type": "array",
             "minItems": minimum,
@@ -117,7 +121,10 @@ def planning_schema(
 
     task = object_schema(
         {
-            "id": {"type": "string", "pattern": f"^{IDENTIFIER_PATTERN}$"},
+            "id": {
+                "type": "string",
+                "pattern": f"^{contracts.IDENTIFIER_PATTERN}$",
+            },
             "candidate_ids": choices(candidate_ids, 0 if gaps else 1, 4),
             "question": {"type": "string", "maxLength": 1600},
             "why": {"type": "string", "maxLength": 1000},

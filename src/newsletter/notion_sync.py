@@ -1,4 +1,4 @@
-"""Independent, low-rate Notion outbox consumer with read-after-unknown recovery.
+"""Independent Notion consumer that reads back unknown external outcomes.
 
 It never imports mail/model clients. Provider failure cannot alter an edition or
 its send state. The service owns one consumer; operator tools use the same lock.
@@ -13,14 +13,15 @@ import json
 import logging
 import re
 import time
-from urllib.parse import unquote, urlsplit
+import urllib.parse as parse
 
-from newsletter.adapters import AdapterError
-from newsletter.contracts import canonical_json, content_hash
-from newsletter.notion_api import NotionWorkspace
-from newsletter.notion_intake import NotionIntake
-from newsletter.notion_journal import NotionJournal
-from newsletter.types import Payload
+import newsletter.adapters as adapters
+import newsletter.contracts as contracts
+import newsletter.diagnostics as diagnostics
+import newsletter.notion_api as notion_api
+import newsletter.notion_intake as notion_intake
+import newsletter.notion_journal as notion_journal
+import newsletter.types as types
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,8 @@ def _link_signature(url: str | None) -> str | None:
     return path + query_mark + "&".join(params) + fragment_mark + fragment
 
 
-def _rich_text(parts: list[Payload]) -> list[Payload]:
-    result: list[Payload] = []
+def _rich_text(parts: list[types.Payload]) -> list[types.Payload]:
+    result: list[types.Payload] = []
     for part in parts:
         if part.get("type", "text") != "text":
             raise ValueError("notion_remote_body_conflict")
@@ -68,13 +69,15 @@ def _rich_text(parts: list[Payload]) -> list[Payload]:
     return result
 
 
-def block_signature(block: Payload, *, image_name: str = "") -> Payload:
-    """Discard transport IDs/defaults, not any meaningful generated body content."""
+def block_signature(
+    block: types.Payload, *, image_name: str = ""
+) -> types.Payload:
+    """Discard transport IDs and defaults, retaining meaningful body content."""
     kind = block["type"]
     body = block[kind]
     if block.get("has_children") or body.get("children"):
         raise ValueError("notion_remote_body_conflict")
-    result: Payload = {"type": kind}
+    result: types.Payload = {"type": kind}
     if kind == "divider":
         return result
     if kind == "image":
@@ -83,8 +86,8 @@ def block_signature(block: Payload, *, image_name: str = "") -> Payload:
                 raise ValueError("notion_remote_image_conflict")
             result["filename"] = image_name
         elif body.get("type") == "file":
-            result["filename"] = unquote(
-                urlsplit(body["file"]["url"]).path.rsplit("/", 1)[-1]
+            result["filename"] = parse.unquote(
+                parse.urlsplit(body["file"]["url"]).path.rsplit("/", 1)[-1]
             )
         else:
             raise ValueError("notion_remote_image_conflict")
@@ -108,7 +111,7 @@ def block_signature(block: Payload, *, image_name: str = "") -> Payload:
     return result
 
 
-def _image_name(version: Payload) -> str:
+def _image_name(version: types.Payload) -> str:
     return (
         "chart-"
         + hashlib.sha256(base64.b64decode(version["chart"])).hexdigest()
@@ -116,9 +119,14 @@ def _image_name(version: Payload) -> str:
     )
 
 
-def version_blocks(version: Payload) -> list[Payload]:
+def version_blocks(version: types.Payload) -> list[types.Payload]:
+    """Resolve chart placeholders from an immutable version's upload receipt."""
     blocks = json.loads(version["blocks"])
+    if not isinstance(blocks, list):
+        raise ValueError("notion_blocks_invalid")
     for i, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            raise ValueError("notion_blocks_invalid")
         if block["type"] == "_newsletter_chart":
             if not version["upload_id"]:
                 raise ValueError("notion_chart_not_uploaded")
@@ -134,11 +142,14 @@ def version_blocks(version: Payload) -> list[Payload]:
     return blocks
 
 
-def _chunk(blocks: list[Payload], offset: int) -> list[Payload]:
-    batch: list[Payload] = []
+def _chunk(blocks: list[types.Payload], offset: int) -> list[types.Payload]:
+    batch: list[types.Payload] = []
     for block in blocks[offset : offset + 80]:
         proposed = [*batch, block]
-        if len(canonical_json({"children": proposed}).encode()) > 400_000:
+        if (
+            len(contracts.canonical_json({"children": proposed}).encode())
+            > 400_000
+        ):
             break
         batch = proposed
     if offset < len(blocks) and not batch:
@@ -147,17 +158,21 @@ def _chunk(blocks: list[Payload], offset: int) -> list[Payload]:
 
 
 class NotionSync:
+    """Project durable versions and reconcile uncertain external outcomes."""
+
     def __init__(
         self,
-        journal: NotionJournal,
-        api: NotionWorkspace,
+        journal: notion_journal.NotionJournal,
+        api: notion_api.NotionWorkspace,
         *,
         include_personal: bool,
     ) -> None:
         self.journal, self.api = journal, api
-        self.intake = NotionIntake(journal, include_personal=include_personal)
+        self.intake = notion_intake.NotionIntake(
+            journal, include_personal=include_personal
+        )
 
-    async def _create(self, entity: Payload) -> None:
+    async def _create(self, entity: types.Payload) -> None:
         key, kind = entity["key"], entity["kind"]
         pages = await self.api.lookup(kind, key)
         if len(pages) > 1:
@@ -166,41 +181,32 @@ class NotionSync:
             page = pages[0]
             if page.get("in_trash", page.get("archived", False)):
                 raise ValueError("notion_remote_page_trashed")
-            self.journal.execute(
-                "UPDATE notion_entities SET page_id=?,create_state='ready' WHERE key=?",
-                (page["id"], key),
-            )
+            self.journal.confirm_page(key, page["id"])
             return
         if entity["create_state"] == "unknown":
             # An absent read does not prove a timed-out write cannot still land.
-            raise AdapterError("NOTION_CREATE_UNCONFIRMED", ambiguous=True)
+            raise adapters.AdapterError(
+                "NOTION_CREATE_UNCONFIRMED", ambiguous=True
+            )
         properties = self.journal.desired(entity)
-        self.journal.execute(
-            "UPDATE notion_entities SET create_state='creating' WHERE key=?",
-            (key,),
-        )
+        self.journal.begin_create(key)
         try:
             page_id = await self.api.create(kind, properties)
         except BaseException as exc:
-            state = (
-                "unknown"
-                if not isinstance(exc, AdapterError) or exc.ambiguous
-                else "new"
-            )
-            self.journal.execute(
-                "UPDATE notion_entities SET create_state=? WHERE key=?",
-                (state, key),
+            self.journal.fail_create(
+                key,
+                ambiguous=not isinstance(exc, adapters.AdapterError)
+                or exc.ambiguous,
             )
             raise
-        self.journal.execute(
-            "UPDATE notion_entities SET page_id=?,create_state='ready',applied_hash=? WHERE key=?",
-            (page_id, content_hash(properties), key),
+        self.journal.confirm_page(
+            key, page_id, contracts.content_hash(properties)
         )
 
     def _expected_prefix(
-        self, entity: Payload, current: Payload
-    ) -> list[Payload]:
-        expected: list[Payload] = []
+        self, entity: types.Payload, current: types.Payload
+    ) -> list[types.Payload]:
+        expected: list[types.Payload] = []
         for version in self.journal.versions(entity["key"]):
             if version["seq"] > current["seq"]:
                 break
@@ -217,7 +223,7 @@ class NotionSync:
         return expected
 
     async def _reconcile_unknown(
-        self, entity: Payload, version: Payload
+        self, entity: types.Payload, version: types.Payload
     ) -> None:
         """Acknowledge an uncertain append by reading, never by repeating it."""
         blocks = version_blocks(version)
@@ -240,20 +246,17 @@ class NotionSync:
             for block in await self.api.children(entity["page_id"])
         ]
         if observed == prefix + pending:
-            self.journal.execute(
-                "UPDATE notion_versions SET offset=?,state=?,pending_chunk='',error='' WHERE seq=?",
-                (
-                    offset,
-                    "done" if offset == len(blocks) else "pending",
-                    version["seq"],
-                ),
+            self.journal.acknowledge_append(
+                version["seq"], offset, complete=offset == len(blocks)
             )
             return
         if observed == prefix:
-            raise AdapterError("NOTION_APPEND_UNCONFIRMED", ambiguous=True)
+            raise adapters.AdapterError(
+                "NOTION_APPEND_UNCONFIRMED", ambiguous=True
+            )
         raise ValueError("notion_remote_body_conflict")
 
-    async def _recover_conflict(self, entity: Payload) -> None:
+    async def _recover_conflict(self, entity: types.Payload) -> None:
         """Only read to see whether a previously conflicting body now matches.
 
         This covers a provider's harmless storage normalization after an
@@ -280,12 +283,11 @@ class NotionSync:
                 raise ValueError("notion_remote_body_conflict")
         else:
             raise ValueError("notion_unresolved_projection_conflict")
-        self.journal.execute(
-            "UPDATE notion_entities SET create_state='ready' WHERE key=?",
-            (entity["key"],),
-        )
+        self.journal.resolve_conflict(entity["key"])
 
-    async def _append(self, entity: Payload, version: Payload) -> None:
+    async def _append(
+        self, entity: types.Payload, version: types.Payload
+    ) -> None:
         j = self.journal
         if version["state"] == "unknown":
             await self._reconcile_unknown(entity, version)
@@ -308,10 +310,7 @@ class NotionSync:
             upload_id = await self.api.upload_png(
                 base64.b64decode(version["chart"], validate=True)
             )
-            j.execute(
-                "UPDATE notion_versions SET upload_id=?,upload_at=? WHERE seq=?",
-                (upload_id, time.time(), version["seq"]),
-            )
+            j.record_upload(version["seq"], upload_id, time.time())
             return
         blocks = version_blocks(version)
         prefix = self._expected_prefix(entity, version)
@@ -321,10 +320,7 @@ class NotionSync:
             for block in chunk
         ]
         if not chunk:
-            j.execute(
-                "UPDATE notion_versions SET state='done' WHERE seq=?",
-                (version["seq"],),
-            )
+            j.finish_version(version["seq"])
             return
         # Check the existing managed page before each mutation, including after
         # journal restoration. Human edits are never silently deleted/replaced.
@@ -335,21 +331,13 @@ class NotionSync:
         if observed == prefix + expected_chunk:
             # Recover acknowledgement loss across a restored local checkpoint.
             offset = version["offset"] + len(chunk)
-            j.execute(
-                "UPDATE notion_versions SET offset=?,state=? WHERE seq=?",
-                (
-                    offset,
-                    "done" if offset == len(blocks) else "pending",
-                    version["seq"],
-                ),
+            j.acknowledge_append(
+                version["seq"], offset, complete=offset == len(blocks)
             )
             return
         if observed != prefix:
             raise ValueError("notion_remote_body_conflict")
-        j.execute(
-            "UPDATE notion_versions SET state='appending',pending_chunk=? WHERE seq=?",
-            (canonical_json(expected_chunk), version["seq"]),
-        )
+        j.begin_append(version["seq"], expected_chunk)
         try:
             response = await self.api.append(entity["page_id"], chunk)
             acknowledged = [
@@ -357,34 +345,25 @@ class NotionSync:
                 for block in response
             ]
             if acknowledged != expected_chunk:
-                raise AdapterError("NOTION_APPEND_UNCONFIRMED", ambiguous=True)
+                raise adapters.AdapterError(
+                    "NOTION_APPEND_UNCONFIRMED", ambiguous=True
+                )
         except BaseException as exc:
-            state = (
-                "unknown"
-                if not isinstance(exc, AdapterError) or exc.ambiguous
-                else "pending"
-            )
-            j.execute(
-                "UPDATE notion_versions SET state=? WHERE seq=?",
-                (state, version["seq"]),
+            j.fail_append(
+                version["seq"],
+                ambiguous=not isinstance(exc, adapters.AdapterError)
+                or exc.ambiguous,
             )
             raise
         offset = version["offset"] + len(chunk)
-        j.execute(
-            "UPDATE notion_versions SET offset=?,state=?,pending_chunk='' WHERE seq=?",
-            (
-                offset,
-                "done" if offset == len(blocks) else "pending",
-                version["seq"],
-            ),
+        j.acknowledge_append(
+            version["seq"], offset, complete=offset == len(blocks)
         )
 
     async def step(self) -> bool:
+        """Advance at most one due entity without repeating uncertain writes."""
         j = self.journal
-        for entity in j.rows(
-            "SELECT * FROM notion_entities WHERE retry_at<=? ORDER BY rowid",
-            (time.time(),),
-        ):
+        for entity in j.due_entities(time.time()):
             key = entity["key"]
             try:
                 if entity["create_state"] == "conflict":
@@ -399,49 +378,50 @@ class NotionSync:
                         await self._append(entity, versions[0])
                     else:
                         desired = j.desired(entity)
-                        if content_hash(desired) == entity["applied_hash"]:
+                        if (
+                            contracts.content_hash(desired)
+                            == entity["applied_hash"]
+                        ):
                             continue
-                        # Assignment PATCH is idempotent; an unknown response can
-                        # safely reapply exactly the same managed property values.
+                        # Assignment PATCH can safely reapply the same managed
+                        # property values after an unknown response.
                         await self.api.patch(
                             entity["kind"], entity["page_id"], desired
                         )
-                        j.execute(
-                            "UPDATE notion_entities SET applied_hash=? WHERE key=?",
-                            (content_hash(desired), key),
+                        j.acknowledge_properties(
+                            key, contracts.content_hash(desired)
                         )
                 j.clear_error(key)
             except asyncio.CancelledError:
                 raise
-            except AdapterError as exc:
+            except adapters.AdapterError as exc:
                 j.retry(key, exc.code)
                 logger.warning("Notion projection deferred: %s", exc.code)
-            except (ValueError, KeyError, TypeError):
-                j.execute(
-                    "UPDATE notion_entities SET create_state='conflict' WHERE key=?",
-                    (key,),
-                )
+            except (ValueError, KeyError, TypeError) as exc:
+                j.quarantine(key)
                 j.retry(key, "NOTION_PROJECTION_CONFLICT")
-                logger.warning(
-                    "Notion projection needs inspection: NOTION_PROJECTION_CONFLICT"
+                diagnostics.record_failure(
+                    logger, phase="notion_projection", error=exc, reference=key
                 )
             return True
         return False
 
     async def run(self) -> None:
+        """Scan frozen artifacts and project them until cancelled."""
         next_scan = 0.0
         while True:
+            phase = "notion_intake"
             try:
                 if time.monotonic() >= next_scan:
                     imported = self.intake.scan()
                     next_scan = time.monotonic() + (1 if imported else 60)
+                phase = "notion_projection"
                 worked = await self.step()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            # Isolate the optional mirror; keep source data out of diagnostics.
+            except Exception as exc:  # noqa: BLE001
                 # Do not expose source bodies, private events, paths or tokens.
-                logger.exception(
-                    "Notion background sync failed", exc_info=False
-                )
+                diagnostics.record_failure(logger, phase=phase, error=exc)
                 worked = False
             await asyncio.sleep(0.6 if worked else 5)

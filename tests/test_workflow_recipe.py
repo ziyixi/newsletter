@@ -1,24 +1,19 @@
 """Frozen legacy YAML retains its original trusted editorial safety tail."""
 
-from importlib.resources import files
+import importlib.resources as resources
 
 import pytest
 
-from newsletter.workflow.definition import (
-    DefinitionError,
-    load_definition,
-    parse_definition,
-)
-from newsletter.workflow.nodes import (
-    validate_recipe,
-    validate_revision_subgraph,
-)
-from newsletter.workflow.pipeline import adopted_packets
+import newsletter.workflow.definition as newsletter_workflow_definition
+import newsletter.workflow.nodes as nodes
+import newsletter.workflow.pipeline as pipeline
 
 
 def recipe():
-    return load_definition(
-        files("newsletter").joinpath("workflows/legacy-daily.yaml").read_bytes()
+    return newsletter_workflow_definition.load_definition(
+        resources.files("newsletter")
+        .joinpath("workflows/legacy-daily.yaml")
+        .read_bytes()
     ).snapshot()
 
 
@@ -27,8 +22,8 @@ def by_type(value, kind):
 
 
 def test_packaged_legacy_recipe_passes_both_syntax_and_semantic_safety_checks():
-    definition = parse_definition(recipe())
-    validate_recipe(definition)
+    definition = newsletter_workflow_definition.parse_definition(recipe())
+    nodes.validate_recipe(definition)
     assert [node.type for node in definition.nodes][-4:] == [
         "finalization",
         "review",
@@ -62,8 +57,10 @@ def test_critical_role_cannot_be_deleted_even_if_dag_stays_valid(kind):
         node["needs"] = [dep for dep in node["needs"] if dep != removed]
         if node.get("map", {}).get("from", "").startswith(removed + "."):
             node["map"]["from"] = "run.instructions"
-    with pytest.raises(DefinitionError):
-        validate_recipe(parse_definition(value))
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_recipe(
+            newsletter_workflow_definition.parse_definition(value)
+        )
 
 
 @pytest.mark.parametrize(
@@ -88,8 +85,10 @@ def test_critical_role_cannot_run_as_zero_item_map_or_continue_after_failure(
             target["map"] = {"from": "run.history", "max_items": 1}
         else:
             target["on_error"] = "continue"
-        with pytest.raises(DefinitionError):
-            validate_recipe(parse_definition(value))
+        with pytest.raises(newsletter_workflow_definition.DefinitionError):
+            nodes.validate_recipe(
+                newsletter_workflow_definition.parse_definition(value)
+            )
 
 
 @pytest.mark.parametrize(
@@ -117,8 +116,10 @@ def test_required_dependency_cannot_be_bypassed(kind, dependency):
     }
     target = by_type(value, kind)
     target["needs"] = [dep for dep in target["needs"] if dep not in removed]
-    with pytest.raises(DefinitionError):
-        validate_recipe(parse_definition(value))
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_recipe(
+            newsletter_workflow_definition.parse_definition(value)
+        )
 
 
 @pytest.mark.parametrize("late", [False, True])
@@ -128,8 +129,10 @@ def test_research_map_must_consume_its_actual_selected_or_gap_tasks(late):
     # The DAG remains syntactically valid. An empty historic-editions list must
     # not stand in for actual selected tasks and silently skip planned research.
     targets[int(late)]["map"]["from"] = "run.editions"
-    with pytest.raises(DefinitionError):
-        validate_recipe(parse_definition(value))
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_recipe(
+            newsletter_workflow_definition.parse_definition(value)
+        )
 
 
 @pytest.mark.parametrize("index,maximum", [(0, 7), (1, 2), (1, 4)])
@@ -137,8 +140,10 @@ def test_map_capacity_matches_planned_research_and_gap_budget(index, maximum):
     value = recipe()
     targets = [node for node in value["nodes"] if node["type"] == "research"]
     targets[index]["map"]["max_items"] = maximum
-    with pytest.raises(DefinitionError):
-        validate_recipe(parse_definition(value))
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_recipe(
+            newsletter_workflow_definition.parse_definition(value)
+        )
 
 
 def test_role_checks_follow_node_types_when_operator_renames_ids():
@@ -151,7 +156,9 @@ def test_role_checks_follow_node_types_when_operator_renames_ids():
             head, tail = node["map"]["from"].split(".", 1)
             if head != "run":
                 node["map"]["from"] = renamed[head] + "." + tail
-    validate_recipe(parse_definition(value))
+    nodes.validate_recipe(
+        newsletter_workflow_definition.parse_definition(value)
+    )
 
 
 @pytest.mark.parametrize(
@@ -169,8 +176,10 @@ def test_recipe_parameter_values_stay_literal_bounded_and_registered(
 ):
     definition = recipe()
     by_type(definition, "review")["params"] = {parameter: value}
-    with pytest.raises(DefinitionError):
-        validate_recipe(parse_definition(definition))
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_recipe(
+            newsletter_workflow_definition.parse_definition(definition)
+        )
 
 
 @pytest.mark.parametrize(
@@ -182,8 +191,10 @@ def test_candidate_and_research_budgets_cannot_exceed_recipe_limits(
     value = recipe()
     key = "max_candidates" if kind == "deduplicate" else "max_tasks"
     by_type(value, kind)["params"][key] = maximum + 1
-    with pytest.raises(DefinitionError):
-        validate_recipe(parse_definition(value))
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_recipe(
+            newsletter_workflow_definition.parse_definition(value)
+        )
 
 
 @pytest.mark.parametrize("kind", ["selection", "gap_plan"])
@@ -191,11 +202,13 @@ def test_candidate_and_research_budgets_cannot_exceed_recipe_limits(
 def test_research_budget_types_rejected_before_comparing_map_bounds(kind, bad):
     value = recipe()
     by_type(value, kind)["params"]["max_tasks"] = bad
-    with pytest.raises(DefinitionError):
-        validate_recipe(parse_definition(value))
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_recipe(
+            newsletter_workflow_definition.parse_definition(value)
+        )
 
 
-def test_adopted_packets_cover_body_chart_and_recommended_reading_without_duplicates():
+def test_adopted_packets_cover_body_chart_reading_once():
     draft = {
         "sections": [
             {"paragraphs": [{"citations": ["body/source", "shared/source"]}]}
@@ -208,7 +221,12 @@ def test_adopted_packets_cover_body_chart_and_recommended_reading_without_duplic
         },
         "recommended_reading": {"citation": "reading/source"},
     }
-    assert adopted_packets(draft) == ["body", "chart", "reading", "shared"]
+    assert pipeline.adopted_packets(draft) == [
+        "body",
+        "chart",
+        "reading",
+        "shared",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -222,12 +240,14 @@ def test_material_only_used_outside_body_is_still_required_for_publication(
     optional,
 ):
     draft = {"sections": [{"paragraphs": [{"citations": []}]}], **optional}
-    assert len(adopted_packets(draft)) == 1
+    assert len(pipeline.adopted_packets(draft)) == 1
 
 
 def test_uncited_packets_are_not_added_to_adopted_material():
     assert (
-        adopted_packets({"sections": [{"paragraphs": [{"citations": []}]}]})
+        pipeline.adopted_packets(
+            {"sections": [{"paragraphs": [{"citations": []}]}]}
+        )
         == []
     )
 
@@ -239,7 +259,9 @@ def test_pre_revision_immutable_recipe_remains_valid():
         for node in value["nodes"]
         if node["type"] not in {"revision", "final_review"}
     ]
-    validate_recipe(parse_definition(value))
+    nodes.validate_recipe(
+        newsletter_workflow_definition.parse_definition(value)
+    )
     assert value["nodes"][-1]["type"] == "review"
 
 
@@ -249,12 +271,16 @@ def test_revision_stages_cannot_be_duplicated_or_have_extra_dependency(kind):
     target = by_type(value, kind)
     duplicate = {**target, "id": "duplicate-" + kind}
     value["nodes"].append(duplicate)
-    with pytest.raises(DefinitionError):
-        validate_recipe(parse_definition(value))
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_recipe(
+            newsletter_workflow_definition.parse_definition(value)
+        )
     value = recipe()
     by_type(value, kind)["needs"].append(by_type(value, "history")["id"])
-    with pytest.raises(DefinitionError):
-        validate_recipe(parse_definition(value))
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_recipe(
+            newsletter_workflow_definition.parse_definition(value)
+        )
 
 
 def test_recovery_subgraph_requires_separate_code_owned_validator():
@@ -266,13 +292,15 @@ def test_recovery_subgraph_requires_separate_code_owned_validator():
             {"id": "audit", "type": "final_review", "needs": ["repair"]},
         ],
     }
-    definition = parse_definition(value)
-    validate_revision_subgraph(definition)
-    with pytest.raises(DefinitionError):
-        validate_recipe(definition)
+    definition = newsletter_workflow_definition.parse_definition(value)
+    nodes.validate_revision_subgraph(definition)
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_recipe(definition)
     value["nodes"][1]["needs"] = []
-    with pytest.raises(DefinitionError):
-        validate_revision_subgraph(parse_definition(value))
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_revision_subgraph(
+            newsletter_workflow_definition.parse_definition(value)
+        )
 
 
 @pytest.mark.parametrize("bad", [None, "bad", 0, 901, True])
@@ -289,5 +317,7 @@ def test_recovery_subgraph_cannot_relax_timeout_or_add_work(bad):
             {"id": "audit", "type": "final_review", "needs": ["repair"]},
         ],
     }
-    with pytest.raises(DefinitionError):
-        validate_revision_subgraph(parse_definition(value))
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        nodes.validate_revision_subgraph(
+            newsletter_workflow_definition.parse_definition(value)
+        )

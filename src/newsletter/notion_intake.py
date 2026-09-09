@@ -1,4 +1,4 @@
-"""Project frozen DAG artifacts and editions; never use mutable candidate history.
+"""Project frozen DAG artifacts and editions, not mutable candidate history.
 
 The importer is repeatable and bounded per pass. An invalid historical artifact
 gets its own diagnostic receipt, without preventing other materials or editions
@@ -7,17 +7,44 @@ from being archived. These receipts are not editorial admission decisions.
 
 from __future__ import annotations
 
+import datetime
 import json
-from datetime import datetime
+import logging
 
-from newsletter.contracts import canonical_json
-from newsletter.notion_content import edition_projection, material_projection
-from newsletter.notion_journal import NotionJournal, material_aliases
-from newsletter.store import now
-from newsletter.types import Payload
+import newsletter.contracts as contracts
+import newsletter.diagnostics as diagnostics
+import newsletter.notion_content as notion_content
+import newsletter.notion_journal as notion_journal
+import newsletter.types as types
+
+logger = logging.getLogger(__name__)
+
+
+def _object(value: object) -> types.Payload:
+    if not isinstance(value, dict):
+        raise ValueError("notion_import_object_required")
+    return value
+
+
+def _objects(raw: str) -> list[types.Payload]:
+    value = json.loads(raw)
+    if not isinstance(value, list):
+        raise ValueError("notion_import_list_required")
+    return [_object(item) for item in value]
+
+
+def _failure(kind: str, reference: str, error: Exception) -> str:
+    diagnostics.record_failure(
+        logger,
+        phase="notion_" + kind + "_import",
+        error=error,
+        reference=reference,
+    )
+    return "notion_" + kind + "_import_failed"
 
 
 def citations(value: object) -> set[str]:
+    """Collect explicit citation references from a frozen editorial value."""
     found: set[str] = set()
     if isinstance(value, dict):
         for key, item in value.items():
@@ -36,116 +63,91 @@ def citations(value: object) -> set[str]:
 
 
 class NotionIntake:
+    """Import bounded batches using the journal's frozen read models."""
+
     def __init__(
-        self, journal: NotionJournal, *, include_personal: bool
+        self, journal: notion_journal.NotionJournal, *, include_personal: bool
     ) -> None:
         self.journal = journal
         self.include_personal = include_personal
-        journal.execute(
-            "INSERT OR IGNORE INTO metadata VALUES('notion_v2_bootstrap_at',?)",
-            (now(),),
-        )
-        self.bootstrap_at = journal.rows(
-            "SELECT value FROM metadata WHERE key='notion_v2_bootstrap_at'"
-        )[0]["value"]
+        self.bootstrap_at = journal.bootstrap_time()
 
     def historical(self, created_at: str) -> bool:
-        return datetime.fromisoformat(created_at) < datetime.fromisoformat(
-            self.bootstrap_at
-        )
+        """Report whether a receipt predates this installation's archive."""
+        return datetime.datetime.fromisoformat(
+            created_at
+        ) < datetime.datetime.fromisoformat(self.bootstrap_at)
 
     def scan(self) -> int:
+        """Import available frozen artifacts and repair cited relations."""
         imported = self._candidates() + self._research() + self._editions()
         self._repair_links()
         return imported
 
     def _candidates(self) -> int:
         j = self.journal
-        if not j.exists("workflow_artifacts"):
-            return 0
-        rows = j.rows(
-            "SELECT a.*,r.definition FROM workflow_artifacts a JOIN workflow_runs r "
-            "ON r.id=a.run_id WHERE a.item_id='' AND NOT EXISTS(SELECT 1 FROM notion_imports i "
-            "WHERE i.kind='candidates' AND i.source_id=a.id) ORDER BY a.rowid LIMIT 40"
-        )
+        rows = j.pending_candidates()
         for row in rows:
             error = ""
             try:
-                definition = json.loads(row["definition"])
+                definition = _object(json.loads(row["definition"]))
                 node = next(
                     n for n in definition["nodes"] if n["id"] == row["node_id"]
                 )
                 if node["type"] == "deduplicate":
-                    for candidate in json.loads(row["body"])["candidates"]:
+                    for candidate in _object(json.loads(row["body"]))[
+                        "candidates"
+                    ]:
                         try:
-                            self._candidate(row, candidate)
-                        except (ValueError, KeyError, TypeError):
+                            self._candidate(row, _object(candidate))
+                        except (ValueError, KeyError, TypeError) as exc:
                             # One malformed lead must not discard its siblings.
-                            error = "notion_candidate_import_failed"
-            except (ValueError, KeyError, TypeError, StopIteration):
-                error = "notion_candidate_import_failed"
+                            error = _failure("candidate", row["id"], exc)
+            except (ValueError, KeyError, TypeError, StopIteration) as exc:
+                error = _failure("candidate", row["id"], exc)
             j.mark_import("candidates", row["id"], row["content_hash"], error)
         return len(rows)
 
-    def _candidate(self, row: Payload, candidate: Payload) -> None:
+    def _candidate(self, row: types.Payload, candidate: types.Payload) -> None:
         j = self.journal
-        body = canonical_json(candidate)
-        previous = j.rows(
-            "SELECT body FROM notion_candidates WHERE run_id=? AND candidate_id=?",
-            (row["run_id"], candidate["id"]),
-        )
-        if previous and previous[0]["body"] != body:
+        body = contracts.canonical_json(candidate)
+        previous = j.candidate(row["run_id"], candidate["id"])
+        if previous and previous["body"] != body:
             raise ValueError("notion_candidate_snapshot_changed")
         key, aliases = j.identity(candidate)
-        first = (
-            j.rows(
-                "SELECT MIN(first_seen) AS first_seen FROM notion_candidates WHERE entity_key=?",
-                (key,),
-            )[0]["first_seen"]
-            or row["created_at"]
-        )
-        projection = material_projection(
+        first = j.first_seen(key, row["created_at"])
+        projection = notion_content.material_projection(
             candidate,
             key=key,
-            first_seen=datetime.fromisoformat(first).date().isoformat(),
+            first_seen=datetime.datetime.fromisoformat(first)
+            .date()
+            .isoformat(),
             run_id=row["run_id"],
             fixture=self.historical(row["created_at"]),
         )
         j.enqueue("material", projection, aliases)
         # A crash here is recoverable: enqueue is idempotent and import has not
         # been acknowledged. Every validation preceded either local write.
-        j.execute(
-            "INSERT OR IGNORE INTO notion_candidates VALUES(?,?,?,?,?)",
-            (row["run_id"], candidate["id"], key, body, first),
-        )
+        j.remember_candidate(row["run_id"], candidate["id"], key, body, first)
 
     def _research(self) -> int:
         j = self.journal
-        if not j.exists("publication_units"):
-            return 0
-        rows = j.rows(
-            "SELECT u.* FROM publication_units u WHERE NOT EXISTS(SELECT 1 FROM notion_imports i "
-            "WHERE i.kind='research' AND i.source_id=u.digest) "
-            "AND EXISTS(SELECT 1 FROM notion_candidates c WHERE c.run_id=u.run_id) "
-            "ORDER BY u.rowid LIMIT 20"
-        )
+        rows = j.pending_research()
         for row in rows:
             error = ""
             try:
-                task, result = json.loads(row["task"]), json.loads(row["body"])
+                task = _object(json.loads(row["task"]))
+                result = _object(json.loads(row["body"]))
                 for candidate_id in task["candidate_ids"]:
                     try:
-                        matches = j.rows(
-                            "SELECT * FROM notion_candidates WHERE run_id=? AND candidate_id=?",
-                            (row["run_id"], candidate_id),
-                        )
-                        if not matches:
-                            continue  # Supplemental tasks may not name a discovered lead.
-                        candidate = matches[0]
-                        projection = material_projection(
-                            json.loads(candidate["body"]),
+                        candidate = j.candidate(row["run_id"], candidate_id)
+                        if candidate is None:
+                            # Supplemental tasks may not name a discovered lead.
+                            continue
+                        projection = notion_content.material_projection(
+                            _object(json.loads(candidate["body"])),
                             key=candidate["entity_key"],
-                            first_seen=datetime.fromisoformat(
+                            first_seen=datetime.datetime.fromisoformat(
                                 candidate["first_seen"]
                             )
                             .date()
@@ -156,10 +158,10 @@ class NotionIntake:
                             fixture=self.historical(row["created_at"]),
                         )
                         j.enqueue("material", projection)
-                    except (ValueError, KeyError, TypeError):
-                        error = "notion_research_import_failed"
-            except (ValueError, KeyError, TypeError):
-                error = "notion_research_import_failed"
+                    except (ValueError, KeyError, TypeError) as exc:
+                        error = _failure("research", row["digest"], exc)
+            except (ValueError, KeyError, TypeError) as exc:
+                error = _failure("research", row["digest"], exc)
             j.mark_import("research", row["digest"], row["digest"], error)
         return len(rows)
 
@@ -167,67 +169,48 @@ class NotionIntake:
         # Discovery imports and a ready edition can arrive in different passes.
         # Relations therefore converge independently of edition updated_at and
         # without regenerating/reappending its frozen body.
-        for row in self.journal.rows(
-            "SELECT e.body,e.snapshot,w.run_id,n.key FROM editions e "
-            "JOIN workflow_editions w ON w.edition_id=e.id "
-            "JOIN notion_entities n ON n.key='edition:'||e.id WHERE e.state='ready'"
-        ):
+        for row in self.journal.editions_for_links():
             try:
                 self._link(
                     row["key"],
                     row["run_id"],
-                    json.loads(row["body"]),
-                    json.loads(row["snapshot"]),
+                    _object(json.loads(row["body"])),
+                    _objects(row["snapshot"]),
                 )
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError) as exc:
                 self.journal.mark_import(
                     "relations",
                     row["key"],
                     "invalid",
-                    "notion_relation_import_failed",
+                    _failure("relation", row["key"], exc),
                 )
 
     def _editions(self) -> int:
         j = self.journal
-        rows = j.rows(
-            "SELECT e.*,w.run_id FROM editions e LEFT JOIN workflow_editions w ON w.edition_id=e.id "
-            "WHERE e.state='ready' AND NOT EXISTS(SELECT 1 FROM notion_imports i "
-            "WHERE i.kind='edition' AND i.source_id=e.id "
-            "AND i.digest=CASE WHEN json_valid(e.body) THEN "
-            "COALESCE(json_extract(e.body,'$.updated_at'),'invalid') ELSE 'invalid' END) "
-            "ORDER BY e.rowid LIMIT 20"
-        )
+        rows = j.pending_editions()
         for row in rows:
-            edition: Payload = {}
+            digest = "invalid"
             error = ""
             try:
-                edition = json.loads(row["body"])
+                edition = _object(json.loads(row["body"]))
+                updated_at = edition.get("updated_at", "invalid")
+                if not isinstance(updated_at, str):
+                    raise ValueError("notion_edition_update_invalid")
+                digest = updated_at
                 if not edition.get("rendered"):
                     continue
-                packets = json.loads(row["snapshot"])
+                packets = _objects(row["snapshot"])
                 edition_type = "日常"
                 run_id = row["run_id"] or ""
                 if edition["is_fixture"] or self.historical(
                     edition["created_at"]
                 ):
                     edition_type = "测试"
-                elif j.rows(
-                    "SELECT 1 FROM verification_sends WHERE edition_id=?",
-                    (edition["id"],),
-                ):
+                elif j.is_verification(edition["id"]):
                     edition_type = "修订"
-                elif j.exists("collection_runs"):
-                    request = j.rows(
-                        "SELECT request_key FROM collection_runs WHERE id=?",
-                        (run_id,),
-                    )
-                    if (
-                        not request
-                        or request[0]["request_key"]
-                        != "daily-" + edition["issue_date"]
-                    ):
-                        edition_type = "测试"
-                projection = edition_projection(
+                elif not j.is_daily_run(run_id, edition["issue_date"]):
+                    edition_type = "测试"
+                projection = notion_content.edition_projection(
                     edition,
                     run_id=run_id,
                     packets=packets,
@@ -236,12 +219,12 @@ class NotionIntake:
                 )
                 j.enqueue("edition", projection)
                 self._link(projection.key, run_id, edition, packets)
-            except (ValueError, KeyError, TypeError):
-                error = "notion_edition_import_failed"
+            except (ValueError, KeyError, TypeError) as exc:
+                error = _failure("edition", row["id"], exc)
             j.mark_import(
                 "edition",
                 row["id"],
-                edition.get("updated_at", "invalid"),
+                digest,
                 error,
             )
         return len(rows)
@@ -250,25 +233,22 @@ class NotionIntake:
         self,
         edition_key: str,
         run_id: str,
-        edition: Payload,
-        packets: list[Payload],
+        edition: types.Payload,
+        packets: list[types.Payload],
     ) -> None:
-        """Only actually cited source identities create adopted-material relations."""
+        """Link only source identities actually cited in the edition."""
         used = citations(edition["draft"])
         keys: set[str] = set()
         for packet in packets:
             for source in packet["content"]["sources"]:
                 if packet["id"] + "/" + source["id"] in used:
                     try:
-                        keys.update(material_aliases(source))
+                        keys.update(notion_journal.material_aliases(source))
                     except ValueError:
                         pass
-        for candidate in self.journal.rows(
-            "SELECT body,entity_key FROM notion_candidates WHERE run_id=?",
-            (run_id,),
-        ):
-            if set(material_aliases(json.loads(candidate["body"]))) & keys:
-                self.journal.execute(
-                    "INSERT OR IGNORE INTO notion_links VALUES(?,?)",
-                    (edition_key, candidate["entity_key"]),
-                )
+        for candidate in self.journal.candidates(run_id):
+            aliases = notion_journal.material_aliases(
+                _object(json.loads(candidate["body"]))
+            )
+            if set(aliases) & keys:
+                self.journal.link(edition_key, candidate["entity_key"])

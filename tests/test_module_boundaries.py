@@ -5,6 +5,9 @@ import sys
 
 import pytest
 
+import newsletter.app as app
+import newsletter.rendering as rendering
+
 
 @pytest.mark.parametrize(
     ("module", "unneeded"),
@@ -32,24 +35,19 @@ def test_import_does_not_load_higher_layer(module, unneeded, tmp_path):
     )
 
 
-def test_app_keeps_existing_preview_import_without_owning_it():
-    from newsletter.app import preview_html as old_import
-    from newsletter.rendering import preview_html
-
-    assert old_import is preview_html
+def test_app_does_not_reexport_renderer_helpers():
+    assert not hasattr(app, "preview_html")
 
 
 @pytest.mark.parametrize("chart_png", ["abc", ""])
 def test_preview_does_not_mutate_frozen_email(chart_png):
-    from newsletter.rendering import preview_html
-
     frozen = {
         "html": '<p>cid:newsletter-chart</p><img src="cid:newsletter-chart">',
         "chart_png": chart_png,
         "render_hash": "unchanged",
     }
     original = frozen.copy()
-    assert preview_html(frozen) == (
+    assert rendering.preview_html(frozen) == (
         '<p>cid:newsletter-chart</p><img src="data:image/png;base64,'
         + chart_png
         + '">'
@@ -58,6 +56,6 @@ def test_preview_does_not_mutate_frozen_email(chart_png):
 
 
 def test_preview_without_chart_is_unchanged():
-    from newsletter.rendering import preview_html
-
-    assert preview_html({"html": "<p>No chart</p>"}) == "<p>No chart</p>"
+    assert (
+        rendering.preview_html({"html": "<p>No chart</p>"}) == "<p>No chart</p>"
+    )

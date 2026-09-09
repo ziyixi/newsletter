@@ -17,27 +17,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+from collections.abc import Callable
+import dataclasses
+import datetime
 import hashlib
-from dataclasses import dataclass
-from datetime import datetime
-from urllib.parse import urlsplit
+import urllib.parse as parse
 
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from .charts import chart_metadata
-from .contracts import (
-    content_hash,
-    parse_message,
-    to_dict,
-    validate_draft,
-    validate_issue_date,
-    validate_packet_body,
-    validate_personal_digest,
-    validate_public_url,
-)
-from .types import Payload
-from .usage import normalize_usage_summary, usage_footer
-from .workflow.sources import identity_keys
+import newsletter.charts as charts
+import newsletter.contracts as contracts
+import newsletter.types as types
+import newsletter.usage as newsletter_usage
+import newsletter.workflow.sources as newsletter_workflow_sources
 
 CHART_PLACEHOLDER = "_newsletter_chart"
 _CONTENT_VERSION = "notion-content/1"
@@ -95,17 +87,23 @@ _DELIVERY = {
 }
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class Projection:
+    """Reader content and frozen chart bytes with an independent body digest.
+
+    Properties use logical schema keys. Mutable delivery/progress properties
+    are excluded from the digest so their updates do not duplicate the body.
+    """
+
     key: str
-    properties: Payload
-    blocks: list[Payload]
+    properties: types.Payload
+    blocks: list[types.Payload]
     digest: str
     chart_png: bytes | None = None
 
 
 def _chunks(value: str) -> list[str]:
-    """Keep Unicode scalars intact and preserve every character, including space."""
+    """Keep Unicode scalars intact without dropping characters or spaces."""
     if not isinstance(value, str):
         raise ValueError("Notion content must be text")
     chunks: list[str] = []
@@ -126,17 +124,17 @@ def _chunks(value: str) -> list[str]:
     return chunks
 
 
-def _rich(value: str, *, url: str | None = None) -> list[Payload]:
+def _rich(value: str, *, url: str | None = None) -> list[types.Payload]:
     result = []
     for part in _chunks(value):
-        text: Payload = {"content": part}
+        text: types.Payload = {"content": part}
         if url is not None:
             text["link"] = {"url": url}
         result.append({"type": "text", "text": text})
     return result
 
 
-def _text_property(value: str, kind: str = "rich_text") -> Payload:
+def _text_property(value: str, kind: str = "rich_text") -> types.Payload:
     rich = _rich(value)
     if len(rich) > _RICH_TEXT_ITEMS:
         # Upstream fields are bounded well below this; do not silently trim if
@@ -145,11 +143,11 @@ def _text_property(value: str, kind: str = "rich_text") -> Payload:
     return {kind: rich}
 
 
-def _select(value: str) -> Payload:
+def _select(value: str) -> types.Payload:
     return {"select": {"name": value} if value else None}
 
 
-def _multi(values: list[str]) -> Payload:
+def _multi(values: list[str]) -> types.Payload:
     return {
         "multi_select": [
             {"name": value} for value in dict.fromkeys(values) if value
@@ -157,13 +155,13 @@ def _multi(values: list[str]) -> Payload:
     }
 
 
-def _date(value: str) -> Payload:
+def _date(value: str) -> types.Payload:
     if value:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
     return {"date": {"start": value} if value else None}
 
 
-def _blocks(value: str, kind: str = "paragraph") -> list[Payload]:
+def _blocks(value: str, kind: str = "paragraph") -> list[types.Payload]:
     rich = _rich(value)
     return [
         {
@@ -175,8 +173,10 @@ def _blocks(value: str, kind: str = "paragraph") -> list[Payload]:
     ]
 
 
-def _linked_blocks(label: str, url: str, suffix: str = "") -> list[Payload]:
-    validate_public_url(url)
+def _linked_blocks(
+    label: str, url: str, suffix: str = ""
+) -> list[types.Payload]:
+    contracts.validate_public_url(url)
     if len(url.encode("utf-16-le")) // 2 > 2000:
         # Preserve a contract-valid long URL as text if Notion cannot link it.
         return _blocks(f"{label}\n{url}{suffix}")
@@ -193,13 +193,13 @@ def _linked_blocks(label: str, url: str, suffix: str = "") -> list[Payload]:
 
 def _projection(
     key: str,
-    properties: Payload,
-    blocks: list[Payload],
+    properties: types.Payload,
+    blocks: list[types.Payload],
     chart_png: bytes | None = None,
 ) -> Projection:
     if not key or not isinstance(key, str):
         raise ValueError("Notion projection requires a stable key")
-    digest = content_hash(
+    digest = contracts.content_hash(
         {
             "format": _CONTENT_VERSION,
             "blocks": blocks,
@@ -216,8 +216,8 @@ def _projection(
     return Projection(key, properties, blocks, digest, chart_png)
 
 
-def _material_type(candidate: Payload) -> str:
-    """Classify only explicit publication status, never reputation or DOI alone."""
+def _material_type(candidate: types.Payload) -> str:
+    """Use explicit publication status, never reputation or a DOI alone."""
     status = candidate.get("publication_status", "").strip().lower()
     if status.startswith(("已发表", "正式发表", "published")):
         return "论文"
@@ -225,7 +225,7 @@ def _material_type(candidate: Payload) -> str:
         return "预印本"
     if "技术报告" in status or "technical report" in status:
         return "技术报告"
-    if urlsplit(candidate["url"]).hostname in {
+    if parse.urlsplit(candidate["url"]).hostname in {
         "arxiv.org",
         "www.arxiv.org",
         "export.arxiv.org",
@@ -234,27 +234,31 @@ def _material_type(candidate: Payload) -> str:
     return "未分类"
 
 
-def _source_identities(value: Payload) -> set[str]:
-    """Reading one source cannot establish access to a similarly titled event."""
+def _source_identities(value: types.Payload) -> set[str]:
+    """Identify exact sources, not similarly titled events or landing pages."""
     return {
         key
-        for key in identity_keys(value)
+        for key in newsletter_workflow_sources.identity_keys(value)
         if key.startswith(("doi:", "arxiv:"))
-        or key.startswith("url:")
-        and urlsplit(key[4:]).path.rstrip("/")
-        not in {
-            "",
-            "/news",
-            "/research",
-            "/publications",
-            "/papers",
-            "/blog",
-            "/index.html",
-        }
+        or (
+            key.startswith("url:")
+            and parse.urlsplit(key[4:]).path.rstrip("/")
+            not in {
+                "",
+                "/news",
+                "/research",
+                "/publications",
+                "/papers",
+                "/blog",
+                "/index.html",
+            }
+        )
     }
 
 
-def _research_access(candidate: Payload, packets: list[Payload]) -> str:
+def _research_access(
+    candidate: types.Payload, packets: list[types.Payload]
+) -> str:
     # Access is reported by the frozen source, not inferred from the strength of
     # its claims or from having a packet. Datasets are not full-text articles.
     ranks = {"metadata": 0, "dataset": 0, "abstract": 1, "full_text": 2}
@@ -268,24 +272,26 @@ def _research_access(candidate: Payload, packets: list[Payload]) -> str:
 
 
 def material_projection(
-    candidate: Payload,
+    candidate: types.Payload,
     *,
     key: str,
     first_seen: str,
     run_id: str,
-    evidence: list[Payload] | None = None,
+    evidence: list[types.Payload] | None = None,
     progress: str = "候选",
     fixture: bool = False,
 ) -> Projection:
-    """One candidate/work page; public Packet evidence never supplies its authors.
+    """Project one candidate without inferring authors from public packets.
 
-    ``run_id`` is accepted for the caller's ledger binding, not copied into reader
+    ``run_id`` is accepted for ledger binding, not copied into reader
     prose. ``evidence`` consists of complete public Packets associated by that
     caller with the candidate's task, not arbitrary private edition data.
     """
-    candidate = to_dict(parse_message(candidate, pb.Candidate))
-    validate_issue_date(first_seen)
-    validate_public_url(candidate["url"])
+    candidate = contracts.to_dict(
+        contracts.parse_message(candidate, editorial_pb2.Candidate)
+    )
+    contracts.validate_issue_date(first_seen)
+    contracts.validate_public_url(candidate["url"])
     if (
         progress not in _PROGRESS
         or type(fixture) is not bool
@@ -339,10 +345,12 @@ def material_projection(
     for url in dict.fromkeys(candidate["evidence_urls"]):
         if url != candidate["url"]:
             blocks += _linked_blocks(url, url)
-    packets: dict[str, Payload] = {}
+    packets: dict[str, types.Payload] = {}
     for original in evidence or []:
-        packet = to_dict(parse_message(original, pb.Packet))
-        validate_packet_body(packet["content"])
+        packet = contracts.to_dict(
+            contracts.parse_message(original, editorial_pb2.Packet)
+        )
+        contracts.validate_packet_body(packet["content"])
         if packet["id"] in packets and packet != packets[packet["id"]]:
             raise ValueError("Conflicting public evidence identity")
         packets[packet["id"]] = packet
@@ -368,14 +376,18 @@ def material_projection(
     return _projection(key, properties, blocks)
 
 
-def _source_blocks(source: Payload, prefix: str = "") -> list[Payload]:
+def _source_blocks(
+    source: types.Payload, prefix: str = ""
+) -> list[types.Payload]:
     context = " · " + _ACCESS.get(source.get("access_scope", ""), "未知")
     if source.get("published_at"):
         context += " · " + source["published_at"]
     return _linked_blocks(prefix + source["title"], source["url"], context)
 
 
-def _chart_bytes(edition: Payload, chart: Payload | None) -> bytes | None:
+def _chart_bytes(
+    edition: types.Payload, chart: types.Payload | None
+) -> bytes | None:
     encoded = edition.get("rendered", {}).get("chart_png", "")
     if not encoded:
         return None
@@ -394,33 +406,123 @@ def _chart_bytes(edition: Payload, chart: Payload | None) -> bytes | None:
     return data
 
 
+def _edition_sections(
+    sections: list[types.Payload], cite: Callable[[list[str]], str]
+) -> list[types.Payload]:
+    blocks: list[types.Payload] = []
+    for section in sections:
+        blocks += _blocks(
+            _KINDS[section["kind"]] + "｜" + section["heading"], "heading_2"
+        )
+        for paragraph in section["paragraphs"]:
+            blocks += _blocks(paragraph["text"] + cite(paragraph["citations"]))
+        if section["limitations"]:
+            blocks += _blocks("阅读边界：" + section["limitations"])
+    return blocks
+
+
+def _edition_chart(
+    chart: types.Payload,
+    chart_png: bytes | None,
+    cite: Callable[[list[str]], str],
+) -> list[types.Payload]:
+    blocks: list[types.Payload] = []
+    blocks += _blocks("一图看懂 / 数据视角｜" + chart["question"], "heading_2")
+    blocks += _blocks(chart["caption"])
+    if chart_png:
+        blocks.append(
+            {
+                "object": "block",
+                "type": CHART_PLACEHOLDER,
+                CHART_PLACEHOLDER: {"caption": _rich(chart["alt_text"])},
+            }
+        )
+    blocks += _blocks(charts.chart_metadata(chart)) + _blocks(
+        "图表说明：" + chart["alt_text"]
+    )
+    blocks += _blocks(
+        "缺失值断线，不作零值处理。"
+        if chart["kind"] == "line"
+        else "条形以零为基线；缺失不代表零。"
+    )
+    for point in chart["points"]:
+        value = point.get(
+            "decimal_value",
+            "缺失（" + point.get("missing_reason", "") + "）",
+        )
+        blocks += _blocks(
+            f"{point['label']}：{value}" + cite(point["citations"])
+        )
+    if chart["limitations"]:
+        blocks += _blocks("阅读边界：" + chart["limitations"])
+    return blocks
+
+
+def _edition_personal(personal: types.Payload) -> list[types.Payload]:
+    blocks: list[types.Payload] = []
+    blocks += _blocks("TODOFY / 与你有关｜" + personal["title"], "heading_2")
+    blocks += _blocks(personal["summary"])
+    meta = []
+    if personal["time_window_hours"]:
+        meta.append(f"最近 {personal['time_window_hours']} 小时")
+    if "task_count" in personal:
+        meta.append(f"{personal['task_count']} 条来源记录")
+    blocks += _blocks(" · ".join(meta))
+    for item in personal["items"]:
+        blocks += _blocks(f"{item['rank']}. {item['title']}", "heading_3")
+        blocks += _blocks(item["detail"])
+    blocks += _blocks(personal["limitations"])
+    blocks += _blocks(
+        " · ".join(
+            filter(None, [personal["source_label"], personal["fetched_at"]])
+        )
+    )
+    return blocks
+
+
+def _edition_references(
+    sources: dict[str, types.Payload], references: dict[str, int]
+) -> list[types.Payload]:
+    blocks: list[types.Payload] = []
+    if references:
+        blocks += _blocks("来源与核对", "heading_2")
+        for citation, number in references.items():
+            blocks += _source_blocks(sources[citation], f"[{number}] ")
+    return blocks
+
+
 def edition_projection(
-    edition: Payload,
+    edition: types.Payload,
     *,
     run_id: str = "",
     include_personal: bool = False,
     edition_type: str | None = None,
-    packets: list[Payload] | None = None,
+    packets: list[types.Payload] | None = None,
 ) -> Projection:
-    """Archive structured frozen copy, not a reparsed email or newly rendered chart.
+    """Archive frozen structured copy without parsing email or rerendering.
 
-    The caller supplies the edition's frozen ``packets`` snapshot to resolve exact
+    The caller supplies the frozen ``packets`` snapshot to resolve exact
     citations. Private data is excluded by default; render HTML/text is never
     copied as it can contain Todofy even when ``include_personal`` is false.
     """
     if type(include_personal) is not bool:
         raise ValueError("Private archive consent must be explicit")
-    validate_issue_date(edition["issue_date"])
-    draft = to_dict(parse_message(edition["draft"], pb.Draft))
+    contracts.validate_issue_date(edition["issue_date"])
+    draft = contracts.to_dict(
+        contracts.parse_message(edition["draft"], editorial_pb2.Draft)
+    )
     frozen_packets = [
-        to_dict(parse_message(packet, pb.Packet)) for packet in packets or []
+        contracts.to_dict(contracts.parse_message(packet, editorial_pb2.Packet))
+        for packet in packets or []
     ]
-    validate_draft(draft, frozen_packets)
+    contracts.validate_draft(draft, frozen_packets)
     fixture = bool(
         edition.get("is_fixture", False)
         or any(packet["is_fixture"] for packet in frozen_packets)
-        or include_personal
-        and edition.get("personal_digest", {}).get("is_fixture", False)
+        or (
+            include_personal
+            and edition.get("personal_digest", {}).get("is_fixture", False)
+        )
     )
     edition_type = edition_type or ("测试" if fixture else "日常")
     if edition_type not in _EDITION_TYPES:
@@ -448,47 +550,11 @@ def edition_projection(
         blocks[1:1] = _blocks("邮件主题：" + draft["subject"])
     if fixture:
         blocks = _blocks("试刊样张 · 模拟材料，非真实新闻。") + blocks
-    for section in draft["sections"]:
-        blocks += _blocks(
-            _KINDS[section["kind"]] + "｜" + section["heading"], "heading_2"
-        )
-        for paragraph in section["paragraphs"]:
-            blocks += _blocks(paragraph["text"] + cite(paragraph["citations"]))
-        if section["limitations"]:
-            blocks += _blocks("阅读边界：" + section["limitations"])
+    blocks += _edition_sections(draft["sections"], cite)
     chart = draft.get("chart")
     chart_png = _chart_bytes(edition, chart)
     if chart:
-        blocks += _blocks(
-            "一图看懂 / 数据视角｜" + chart["question"], "heading_2"
-        )
-        blocks += _blocks(chart["caption"])
-        if chart_png:
-            blocks.append(
-                {
-                    "object": "block",
-                    "type": CHART_PLACEHOLDER,
-                    CHART_PLACEHOLDER: {"caption": _rich(chart["alt_text"])},
-                }
-            )
-        blocks += _blocks(chart_metadata(chart)) + _blocks(
-            "图表说明：" + chart["alt_text"]
-        )
-        blocks += _blocks(
-            "缺失值断线，不作零值处理。"
-            if chart["kind"] == "line"
-            else "条形以零为基线；缺失不代表零。"
-        )
-        for point in chart["points"]:
-            value = point.get(
-                "decimal_value",
-                "缺失（" + point.get("missing_reason", "") + "）",
-            )
-            blocks += _blocks(
-                f"{point['label']}：{value}" + cite(point["citations"])
-            )
-        if chart["limitations"]:
-            blocks += _blocks("阅读边界：" + chart["limitations"])
+        blocks += _edition_chart(chart, chart_png, cite)
     if reading := draft.get("recommended_reading"):
         source = sources[reading["citation"]]
         blocks += _blocks("研究介绍｜" + source["title"], "heading_2")
@@ -502,10 +568,7 @@ def edition_projection(
             )
     if draft["limitations"]:
         blocks += _blocks("本期说明：" + draft["limitations"])
-    if references:
-        blocks += _blocks("来源与核对", "heading_2")
-        for citation, number in references.items():
-            blocks += _source_blocks(sources[citation], f"[{number}] ")
+    blocks += _edition_references(sources, references)
     publication = edition.get("publication", {})
     if publication.get("stories"):
         blocks += _blocks("本期选题记录", "heading_2")
@@ -517,29 +580,13 @@ def edition_projection(
             blocks += _blocks(story["reason"])
     personal = edition.get("personal_digest") if include_personal else None
     if personal is not None:
-        validate_personal_digest(personal)
-        personal = to_dict(parse_message(personal, pb.PersonalDigest))
-        blocks += _blocks(
-            "TODOFY / 与你有关｜" + personal["title"], "heading_2"
+        contracts.validate_personal_digest(personal)
+        personal = contracts.to_dict(
+            contracts.parse_message(personal, editorial_pb2.PersonalDigest)
         )
-        blocks += _blocks(personal["summary"])
-        meta = []
-        if personal["time_window_hours"]:
-            meta.append(f"最近 {personal['time_window_hours']} 小时")
-        if "task_count" in personal:
-            meta.append(f"{personal['task_count']} 条来源记录")
-        blocks += _blocks(" · ".join(meta))
-        for item in personal["items"]:
-            blocks += _blocks(f"{item['rank']}. {item['title']}", "heading_3")
-            blocks += _blocks(item["detail"])
-        blocks += _blocks(personal["limitations"])
-        blocks += _blocks(
-            " · ".join(
-                filter(None, [personal["source_label"], personal["fetched_at"]])
-            )
-        )
-    usage = normalize_usage_summary(edition.get("usage") or {})
-    blocks += _blocks(usage_footer(usage, is_fixture=fixture))
+        blocks += _edition_personal(personal)
+    usage = newsletter_usage.normalize_usage_summary(edition.get("usage") or {})
+    blocks += _blocks(newsletter_usage.usage_footer(usage, is_fixture=fixture))
     counts = usage["usage"]
     properties = {
         "title": _text_property(

@@ -1,271 +1,106 @@
 """Local component failures never erase an independently approved story unit."""
 
 import asyncio
+import copy
 import json
+import pathlib
 import re
-from copy import deepcopy
-from pathlib import Path
-from types import SimpleNamespace
-from uuid import UUID
+import uuid
 
 import pytest
 
-from newsletter.contracts import SECTION_KINDS, ContractError, content_hash
-from newsletter.editor import CodexEditor
-from newsletter.errors import EditorError
-from newsletter.workflow.publication import validate_result
-from newsletter.workflow.story_editor import (
-    _CHART_GUIDANCE,
-    _WRITING_GUIDANCE,
-    COMPONENTS,
-    StoryEditor,
-    body_content,
-    story_review_schema,
-    story_writer_schema,
-)
-
-URL = "https://example.com/research"
-SECOND_URL = "https://example.com/publication"
-
-
-def story(
-    text="离线虚构事件发生；不是真实报道。", *, reading=False, chart=False
-):
-    value = {
-        "story_id": "story-a",
-        "title": "虚构事件的已知事实",
-        "kind": "feature",
-        "paragraphs": [{"text": text, "citations": ["packet/source"]}],
-        "limitations": "仅离线fixture，不能真实发送。",
-    }
-    if reading:
-        value["recommended_reading"] = {
-            "citation": "packet/source",
-            "reason": "离线方法、结果及边界。",
-            "supporting_citations": ["packet/publication"],
-        }
-    if chart:
-        value["chart"] = {
-            "kind": "bar",
-            "question": "虚构两组如何不同？",
-            "metric": "虚构观测",
-            "unit": "fixture",
-            "period": "无真实时间范围",
-            "caption": "不是研究结果",
-            "alt_text": "虚构对比",
-            "limitations": "仅测试",
-            "points": [
-                {
-                    "label": "A",
-                    "decimal_value": "1",
-                    "citations": ["packet/source"],
-                },
-                {
-                    "label": "B",
-                    "decimal_value": "2",
-                    "citations": ["packet/source"],
-                },
-            ],
-        }
-    return value
-
-
-def writer(content=None, signal=None, supplements=None):
-    return {
-        "content": content,
-        "signal": signal,
-        "supplemental_packets": supplements or [],
-    }
-
-
-def review(
-    *,
-    body="approved",
-    signal="not_present",
-    reading="not_present",
-    chart="not_present",
-    issues=None,
-    prior_withdrawal=None,
-):
-    statuses = {
-        "body": body,
-        "signal": signal,
-        "reading": reading,
-        "chart": chart,
-    }
-    return {
-        "assessments": [
-            {
-                "component": name,
-                "status": statuses[name],
-                "findings": ["fixture finding"]
-                if statuses[name] == "blocked"
-                else [],
-            }
-            for name in COMPONENTS
-        ],
-        "issues": issues or [],
-        "prior_withdrawal": prior_withdrawal,
-    }
-
-
-@pytest.fixture
-def rig(tmp_path, monkeypatch):
-    packet_body = {
-        "title": "离线材料",
-        "body": "虚构事件和观测，不得发送。",
-        "tags": ["fixture"],
-        "sources": [
-            {
-                "id": name,
-                "title": "虚构来源",
-                "url": url,
-                "excerpt": "fixture excerpt",
-                "access_scope": "full_text",
-                "published_at": "",
-            }
-            for name, url in (("source", URL), ("publication", SECOND_URL))
-        ],
-    }
-    packet = {
-        "id": "packet",
-        "content": packet_body,
-        "workflow_id": "fixture",
-        "producer_id": "fixture",
-        "content_hash": content_hash(packet_body),
-        "created_at": "2026-09-06T00:00:00Z",
-        "is_fixture": True,
-    }
-    state = SimpleNamespace(replies=[], calls=[], checkpoints=[], packet=packet)
-
-    async def execute(
-        editor,
-        prompt,
-        schema,
-        instructions,
-        workspace,
-        *,
-        approval_sources=None,
-    ):
-        state.calls.append(
-            {
-                "prompt": json.loads(prompt),
-                "schema": schema,
-                "instructions": instructions,
-                "path": workspace,
-                "approval_sources": approval_sources,
-            }
-        )
-        assert state.replies, "No unbounded retry or unexpected model call"
-        response = state.replies.pop(0)
-        if isinstance(response, BaseException):
-            raise response
-        value, opened, searched = response
-        return (
-            value if isinstance(value, str) else json.dumps(value),
-            opened,
-            searched,
-        )
-
-    monkeypatch.setattr(CodexEditor, "execute", execute)
-    state.editor = StoryEditor(CodexEditor(tmp_path / "unused-auth"))
-
-    async def run(**overrides):
-        kwargs = {
-            "task": {"id": "story-a", "question": "虚构事件"},
-            "candidates": [],
-            "packets": [deepcopy(packet)],
-            "issue_date": "2026-09-06",
-            "policy": {
-                "editorial.md": "Fixture policy",
-                "reader-profile.md": "Fixture reader",
-            },
-            "workspace": tmp_path / "job",
-            "mode": "brief",
-            "is_fixture": True,
-            "on_checkpoint": state.checkpoints.append,
-            **overrides,
-        }
-        return await state.editor.prepare(**kwargs)
-
-    state.run = run
-    return state
-
-
-def reply(value, *, opened=None, searched=True):
-    return value, {URL, SECOND_URL} if opened is None else opened, searched
+import newsletter.contracts as contracts
+import newsletter.errors as errors
+import newsletter.workflow.components as components
+import newsletter.workflow.publication as publication
+import newsletter.workflow.story_editor as newsletter_workflow_story_editor
+import tests.support.story_editor as story_editor
 
 
 async def test_approved_body_and_signal_freeze_without_repair(rig):
-    content, signal = story(), story("仅确认虚构事件；更多细节仍在核验。")
+    content, signal = (
+        story_editor.story(),
+        story_editor.story("仅确认虚构事件；更多细节仍在核验。"),
+    )
     rig.replies = [
-        reply(writer(content, signal)),
-        reply(review(signal="approved")),
+        story_editor.reply(story_editor.writer(content, signal)),
+        story_editor.reply(story_editor.review(signal="approved")),
     ]
     result = await rig.run()
     assert result["content"] == content and result["signal"] == signal
     assert result["reason"] == "approved" and len(rig.calls) == 2
     assert rig.checkpoints == [result]
-    assert result["provenance"]["packets_hash"] == content_hash(
+    assert result["provenance"]["packets_hash"] == contracts.content_hash(
         result["packets"]
     )
     for assessment in result["assessments"]:
-        assert UUID(assessment["writer_job_id"]) != UUID(
+        assert uuid.UUID(assessment["writer_job_id"]) != uuid.UUID(
             assessment["reviewer_job_id"]
         )
         assert assessment["opened"] is True and assessment["searched"] is True
     assert len({call["path"] for call in rig.calls}) == 2
     assert all(call["path"].is_dir() for call in rig.calls)
-    validate_result(result)
+    publication.validate_result(result)
 
 
 async def test_card_and_chart_can_be_discarded_without_body_repair(rig):
-    content = story(reading=True, chart=True)
+    content = story_editor.story(reading=True, chart=True)
     rig.replies = [
-        reply(writer(content)),
-        reply(review(reading="blocked", chart="blocked")),
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(
+            story_editor.review(reading="blocked", chart="blocked")
+        ),
     ]
     result = await rig.run(mode="deep")
-    assert result["content"] == body_content(content)
+    assert result["content"] == components.body_content(content)
     assert len(rig.calls) == 2 and result["reason"] == "approved"
     receipt = next(a for a in result["assessments"] if a["component"] == "body")
-    assert receipt["content_hash"] == content_hash(body_content(content))
-    validate_result(result)
+    assert receipt["content_hash"] == contracts.content_hash(
+        components.body_content(content)
+    )
+    publication.validate_result(result)
 
 
 async def test_every_optional_component_has_its_own_hash_and_source_observation(
     rig,
 ):
-    content = story(reading=True, chart=True)
+    content = story_editor.story(reading=True, chart=True)
     rig.replies = [
-        reply(writer(content)),
-        reply(review(reading="approved", chart="approved")),
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(
+            story_editor.review(reading="approved", chart="approved")
+        ),
     ]
     result = await rig.run(mode="deep")
     assert result["content"] == content
     expected = {
-        "body": body_content(content),
+        "body": components.body_content(content),
         "reading": content["recommended_reading"],
         "chart": content["chart"],
     }
     for item in result["assessments"]:
         if item["component"] in expected:
-            assert item["content_hash"] == content_hash(
+            assert item["content_hash"] == contracts.content_hash(
                 expected[item["component"]]
             )
-    validate_result(result)
+    publication.validate_result(result)
 
 
-async def test_reading_supporting_source_must_be_reopened_even_when_primary_was_opened(
+async def test_reading_support_requires_its_own_source_open(
     rig,
 ):
-    content = story(reading=True)
+    content = story_editor.story(reading=True)
     rig.replies = [
-        reply(writer(content)),
-        reply(review(reading="approved"), opened={URL}),
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(
+            story_editor.review(reading="approved"), opened={story_editor.URL}
+        ),
     ]
     result = await rig.run(mode="deep")
-    assert result["content"] == body_content(content) and len(rig.calls) == 2
+    assert (
+        result["content"] == components.body_content(content)
+        and len(rig.calls) == 2
+    )
     assert (
         next(a for a in result["assessments"] if a["component"] == "reading")[
             "status"
@@ -298,10 +133,13 @@ async def test_reading_supporting_source_must_be_reopened_even_when_primary_was_
 async def test_malformed_optional_component_never_invalidates_independent_body(
     rig, optional
 ):
-    content = {**story(), **optional}
-    rig.replies = [reply(writer(content)), reply(review())]
+    content = {**story_editor.story(), **optional}
+    rig.replies = [
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(story_editor.review()),
+    ]
     result = await rig.run()
-    assert result["content"] == story() and len(rig.calls) == 2
+    assert result["content"] == story_editor.story() and len(rig.calls) == 2
     assert result["issues"][0]["reason"].startswith(
         "component_contract_invalid:"
     )
@@ -309,15 +147,17 @@ async def test_malformed_optional_component_never_invalidates_independent_body(
 
 async def test_bad_body_repairs_once_and_never_changes_approved_signal(rig):
     original, fixed, signal = (
-        story(),
-        story("修正后的虚构完整表述。"),
-        story("虚构事件已确认。"),
+        story_editor.story(),
+        story_editor.story("修正后的虚构完整表述。"),
+        story_editor.story("虚构事件已确认。"),
     )
     rig.replies = [
-        reply(writer(original, signal)),
-        reply(review(body="blocked", signal="approved")),
-        reply(writer(fixed)),
-        reply(review()),
+        story_editor.reply(story_editor.writer(original, signal)),
+        story_editor.reply(
+            story_editor.review(body="blocked", signal="approved")
+        ),
+        story_editor.reply(story_editor.writer(fixed)),
+        story_editor.reply(story_editor.review()),
     ]
     result = await rig.run()
     assert result["content"] == fixed and result["signal"] == signal
@@ -330,50 +170,63 @@ async def test_bad_body_repairs_once_and_never_changes_approved_signal(rig):
     assert {a["round"] for a in result["assessments"]} == {"initial", "repair"}
     assert len({call["path"] for call in rig.calls}) == 4
     for checkpoint in rig.checkpoints:
-        validate_result(checkpoint)
+        publication.validate_result(checkpoint)
 
 
 async def test_second_body_hold_keeps_signal_without_third_attempt(rig):
-    signal = story("只确认事件存在。")
+    signal = story_editor.story("只确认事件存在。")
     rig.replies = [
-        reply(writer(story(), signal)),
-        reply(review(body="blocked", signal="approved")),
-        reply(writer(story("修订仍不成立。"))),
-        reply(review(body="blocked")),
+        story_editor.reply(story_editor.writer(story_editor.story(), signal)),
+        story_editor.reply(
+            story_editor.review(body="blocked", signal="approved")
+        ),
+        story_editor.reply(
+            story_editor.writer(story_editor.story("修订仍不成立。"))
+        ),
+        story_editor.reply(story_editor.review(body="blocked")),
     ]
     result = await rig.run()
     assert result["content"] is None and result["signal"] == signal
     assert result["reason"] == "confirmed_signal" and len(rig.calls) == 4
 
 
-async def test_cancellation_after_signal_checkpoint_cannot_erase_approved_evidence(
+async def test_cancellation_preserves_checkpointed_signal(
     rig,
 ):
     rig.replies = [
-        reply(writer(story(), story("最小事件。"))),
-        reply(review(body="blocked", signal="approved")),
+        story_editor.reply(
+            story_editor.writer(
+                story_editor.story(), story_editor.story("最小事件。")
+            )
+        ),
+        story_editor.reply(
+            story_editor.review(body="blocked", signal="approved")
+        ),
         asyncio.CancelledError(),
     ]
     with pytest.raises(asyncio.CancelledError):
         await rig.run()
-    assert len(rig.checkpoints) == 1 and rig.checkpoints[0]["signal"] == story(
-        "最小事件。"
-    )
+    assert len(rig.checkpoints) == 1 and rig.checkpoints[0][
+        "signal"
+    ] == story_editor.story("最小事件。")
     assert rig.checkpoints[0]["content"] is None
 
 
 @pytest.mark.parametrize(
     "error",
     [
-        EditorError("authentication"),
-        ContractError("BAD", "fixture"),
+        errors.EditorError("authentication"),
+        contracts.ContractError("BAD", "fixture"),
         RuntimeError("fixture storage failure"),
     ],
 )
 async def test_checkpoint_failure_propagates_without_another_model_call(
     rig, error
 ):
-    rig.replies = [reply(writer(story())), reply(review())]
+    rig.replies = [
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
+    ]
 
     def broken(_):
         raise error
@@ -385,10 +238,18 @@ async def test_checkpoint_failure_propagates_without_another_model_call(
 
 async def test_checkpoint_is_deep_copy_not_mutable_later_repair_state(rig):
     rig.replies = [
-        reply(writer(story(), story("事件已知。"))),
-        reply(review(body="blocked", signal="approved")),
-        reply(writer(story("修订内容。"))),
-        reply(review()),
+        story_editor.reply(
+            story_editor.writer(
+                story_editor.story(), story_editor.story("事件已知。")
+            )
+        ),
+        story_editor.reply(
+            story_editor.review(body="blocked", signal="approved")
+        ),
+        story_editor.reply(
+            story_editor.writer(story_editor.story("修订内容。"))
+        ),
+        story_editor.reply(story_editor.review()),
     ]
     result = await rig.run()
     assert len(rig.checkpoints[0]["assessments"]) == 4
@@ -397,17 +258,26 @@ async def test_checkpoint_is_deep_copy_not_mutable_later_repair_state(rig):
 
 
 @pytest.mark.parametrize("stage", ["writer", "review", "repair"])
-async def test_provider_failures_are_finite_and_never_promote_unverified_content(
+async def test_provider_failures_finite_never_promote_unverified_content(
     rig, stage
 ):
-    signal = story("已核实最小事件。")
+    signal = story_editor.story("已核实最小事件。")
     rig.replies = {
-        "writer": [EditorError("unavailable")],
-        "review": [reply(writer(story(), signal)), EditorError("timeout")],
+        "writer": [errors.EditorError("unavailable")],
+        "review": [
+            story_editor.reply(
+                story_editor.writer(story_editor.story(), signal)
+            ),
+            errors.EditorError("timeout"),
+        ],
         "repair": [
-            reply(writer(story(), signal)),
-            reply(review(body="blocked", signal="approved")),
-            EditorError("unavailable"),
+            story_editor.reply(
+                story_editor.writer(story_editor.story(), signal)
+            ),
+            story_editor.reply(
+                story_editor.review(body="blocked", signal="approved")
+            ),
+            errors.EditorError("unavailable"),
         ],
     }[stage]
     result = await rig.run()
@@ -419,27 +289,39 @@ async def test_provider_failures_are_finite_and_never_promote_unverified_content
 async def test_deep_provider_failure_does_not_mislabel_or_mutate_prior_brief(
     rig,
 ):
-    prior = {"content": story(), "signal": story("最小事件。")}
-    frozen = deepcopy(prior)
-    rig.replies = [EditorError("unavailable")]
+    prior = {
+        "content": story_editor.story(),
+        "signal": story_editor.story("最小事件。"),
+    }
+    frozen = copy.deepcopy(prior)
+    rig.replies = [errors.EditorError("unavailable")]
     result = await rig.run(mode="deep", prior=prior)
     assert result["content"] is None and result["signal"] is None
     assert prior == frozen
     assert rig.calls[0]["prompt"]["prior_verified_brief_untrusted"] == prior
-    validate_result(result)
+    publication.validate_result(result)
 
 
 @pytest.mark.parametrize(
-    "opened,searched", [(set(), True), ({URL}, False), ({SECOND_URL}, True)]
+    "opened,searched",
+    [
+        (set(), True),
+        ({story_editor.URL}, False),
+        ({story_editor.SECOND_URL}, True),
+    ],
 )
 async def test_missing_fresh_review_actions_block_even_model_self_approval(
     rig, opened, searched
 ):
     rig.replies = [
-        reply(writer(story())),
-        reply(review(), opened=opened, searched=searched),
-        reply(writer(story())),
-        reply(review(), opened=opened, searched=searched),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(
+            story_editor.review(), opened=opened, searched=searched
+        ),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(
+            story_editor.review(), opened=opened, searched=searched
+        ),
     ]
     result = await rig.run()
     assert result["content"] is None and len(rig.calls) == 4
@@ -449,10 +331,10 @@ async def test_missing_fresh_review_actions_block_even_model_self_approval(
 async def test_metadata_is_not_a_substitute_for_reading_evidence(rig):
     rig.packet["content"]["sources"][0]["access_scope"] = "metadata"
     rig.replies = [
-        reply(writer(story())),
-        reply(review()),
-        reply(writer(story())),
-        reply(review()),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
     ]
     result = await rig.run()
     assert result["content"] is None
@@ -469,19 +351,19 @@ async def test_contradictory_approved_with_unresolved_issue_is_not_accepted(
         "action": "correct",
     }
     rig.replies = [
-        reply(writer(story())),
-        reply(review(issues=[issue])),
-        reply(writer(story())),
-        reply(review(body="blocked")),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review(issues=[issue])),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review(body="blocked")),
     ]
     result = await rig.run()
     assert result["content"] is None and len(rig.calls) == 4
 
 
-async def test_new_sources_are_opened_normalized_and_all_reference_locations_remapped(
+async def test_new_sources_opened_normalized_all_reference_locations_remapped(
     rig,
 ):
-    content = story(reading=True, chart=True)
+    content = story_editor.story(reading=True, chart=True)
     content["paragraphs"][0]["citations"] = ["supplement-1/source"]
     content["recommended_reading"]["citation"] = "supplement-1/source"
     content["recommended_reading"]["supporting_citations"] = [
@@ -490,53 +372,62 @@ async def test_new_sources_are_opened_normalized_and_all_reference_locations_rem
     content["chart"]["points"][0]["citations"] = ["supplement-1/source"]
     supplement = {
         "id": "supplement-1",
-        "content": deepcopy(rig.packet["content"]),
+        "content": copy.deepcopy(rig.packet["content"]),
     }
     rig.replies = [
-        reply(writer(content, supplements=[supplement])),
-        reply(review(reading="approved", chart="approved")),
+        story_editor.reply(
+            story_editor.writer(content, supplements=[supplement])
+        ),
+        story_editor.reply(
+            story_editor.review(reading="approved", chart="approved")
+        ),
     ]
     result = await rig.run(mode="deep")
     generated = result["packets"][-1]
-    UUID(generated["id"])
+    uuid.UUID(generated["id"])
     assert generated["is_fixture"] is True and generated[
         "content_hash"
-    ] == content_hash(generated["content"])
+    ] == contracts.content_hash(generated["content"])
     serialized = json.dumps(result["content"])
     assert "supplement-1/" not in serialized and generated["id"] in serialized
     assert (
         generated["id"] + "/publication"
         in result["content"]["recommended_reading"]["supporting_citations"]
     )
-    validate_result(result)
+    publication.validate_result(result)
 
 
 async def test_real_story_can_start_with_candidates_and_no_preexisting_packets(
     rig,
 ):
-    content = story()
+    content = story_editor.story()
     content["paragraphs"][0]["citations"] = ["supplement-1/source"]
     supplement = {
         "id": "supplement-1",
-        "content": deepcopy(rig.packet["content"]),
+        "content": copy.deepcopy(rig.packet["content"]),
     }
     rig.replies = [
-        reply(writer(content, supplements=[supplement])),
-        reply(review()),
+        story_editor.reply(
+            story_editor.writer(content, supplements=[supplement])
+        ),
+        story_editor.reply(story_editor.review()),
     ]
     result = await rig.run(packets=[], is_fixture=False)
     assert result["content"] is not None and len(result["packets"]) == 1
     assert result["packets"][0]["is_fixture"] is False
-    validate_result(result)
+    publication.validate_result(result)
 
 
 async def test_new_sources_without_actual_open_cannot_be_used(rig):
     supplement = {
         "id": "supplement-1",
-        "content": deepcopy(rig.packet["content"]),
+        "content": copy.deepcopy(rig.packet["content"]),
     }
     rig.replies = [
-        reply(writer(story(), supplements=[supplement]), opened={URL})
+        story_editor.reply(
+            story_editor.writer(story_editor.story(), supplements=[supplement]),
+            opened={story_editor.URL},
+        )
     ]
     result = await rig.run()
     assert result["content"] is None and len(rig.calls) == 1
@@ -547,7 +438,10 @@ async def test_new_sources_without_actual_open_cannot_be_used(rig):
     "bad",
     [
         "not JSON",
-        '{"content":null,"content":null,"signal":null,"supplemental_packets":[]}',
+        (
+            '{"content":null,"content":null,"signal":null,"supplemental'
+            '_packets":[]}'
+        ),
         {
             "content": None,
             "signal": None,
@@ -557,7 +451,7 @@ async def test_new_sources_without_actual_open_cannot_be_used(rig):
     ],
 )
 async def test_malformed_model_envelope_is_never_published(rig, bad):
-    rig.replies = [reply(bad)]
+    rig.replies = [story_editor.reply(bad)]
     result = await rig.run()
     assert (
         result["content"] is None
@@ -567,21 +461,30 @@ async def test_malformed_model_envelope_is_never_published(rig, bad):
 
 
 async def test_malformed_body_can_still_leave_independently_checked_signal(rig):
-    bad = story()
+    bad = story_editor.story()
     bad["paragraphs"][0]["citations"] = ["packet/missing"]
     rig.replies = [
-        reply(writer(bad, story("事件存在。"))),
-        reply(review(body="not_present", signal="approved")),
-        reply(writer(bad)),
+        story_editor.reply(
+            story_editor.writer(bad, story_editor.story("事件存在。"))
+        ),
+        story_editor.reply(
+            story_editor.review(body="not_present", signal="approved")
+        ),
+        story_editor.reply(story_editor.writer(bad)),
     ]
     result = await rig.run()
-    assert result["content"] is None and result["signal"] == story("事件存在。")
+    assert result["content"] is None and result["signal"] == story_editor.story(
+        "事件存在。"
+    )
     assert len(rig.calls) == 3
-    assert rig.checkpoints[0]["signal"] == story("事件存在。")
+    assert rig.checkpoints[0]["signal"] == story_editor.story("事件存在。")
 
 
 async def test_unconfirmed_event_produces_no_signal_and_no_fabricated_body(rig):
-    rig.replies = [reply(writer()), reply(review(body="not_present"))]
+    rig.replies = [
+        story_editor.reply(story_editor.writer()),
+        story_editor.reply(story_editor.review(body="not_present")),
+    ]
     result = await rig.run()
     assert result["content"] is None and result["signal"] is None
     assert result["reason"] == "withheld" and not rig.checkpoints
@@ -591,9 +494,12 @@ async def test_unconfirmed_event_produces_no_signal_and_no_fabricated_body(rig):
 async def test_text_bounds_do_not_cut_paragraphs_into_unreviewed_fragments(
     rig, mode, count
 ):
-    content = story()
+    content = story_editor.story()
     content["paragraphs"] *= count
-    rig.replies = [reply(writer(content)), reply(review(body="not_present"))]
+    rig.replies = [
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(story_editor.review(body="not_present")),
+    ]
     result = await rig.run(mode=mode)
     assert result["content"] is None
 
@@ -601,14 +507,25 @@ async def test_text_bounds_do_not_cut_paragraphs_into_unreviewed_fragments(
 async def test_signal_cannot_carry_optional_cards_or_unchecked_two_paragraphs(
     rig,
 ):
-    signal = story(reading=True)
-    rig.replies = [reply(writer(story(), signal)), reply(review())]
+    signal = story_editor.story(reading=True)
+    rig.replies = [
+        story_editor.reply(story_editor.writer(story_editor.story(), signal)),
+        story_editor.reply(story_editor.review()),
+    ]
     result = await rig.run()
-    assert result["content"] == story() and result["signal"] is None
+    assert (
+        result["content"] == story_editor.story() and result["signal"] is None
+    )
 
 
 async def test_deep_cannot_rewrite_verified_fallback_signal(rig):
-    rig.replies = [reply(writer(story(), story("new signal")))]
+    rig.replies = [
+        story_editor.reply(
+            story_editor.writer(
+                story_editor.story(), story_editor.story("new signal")
+            )
+        )
+    ]
     result = await rig.run(mode="deep")
     assert result["content"] is None and result["signal"] is None
 
@@ -617,25 +534,31 @@ async def test_present_component_marked_absent_is_blocked_not_silently_approved(
     rig,
 ):
     rig.replies = [
-        reply(writer(story())),
-        reply(review(body="not_present")),
-        reply(writer(story())),
-        reply(review(body="blocked")),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review(body="not_present")),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review(body="blocked")),
     ]
     result = await rig.run()
     assert result["content"] is None and len(rig.calls) == 4
 
 
 async def test_duplicate_component_review_cannot_omit_another_component(rig):
-    bad = review()
-    bad["assessments"][1] = deepcopy(bad["assessments"][0])
-    rig.replies = [reply(writer(story())), reply(bad)]
+    bad = story_editor.review()
+    bad["assessments"][1] = copy.deepcopy(bad["assessments"][0])
+    rig.replies = [
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(bad),
+    ]
     result = await rig.run()
     assert result["content"] is None and len(rig.calls) == 2
 
 
 async def test_title_and_limitations_are_bound_into_body_receipt(rig):
-    rig.replies = [reply(writer(story())), reply(review())]
+    rig.replies = [
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
+    ]
     result = await rig.run()
     original_hash = next(
         a["content_hash"]
@@ -643,13 +566,16 @@ async def test_title_and_limitations_are_bound_into_body_receipt(rig):
         if a["component"] == "body"
     )
     for key in ("title", "limitations"):
-        modified = deepcopy(result["content"])
+        modified = copy.deepcopy(result["content"])
         modified[key] += " altered"
-        assert content_hash(body_content(modified)) != original_hash
+        assert (
+            contracts.content_hash(components.body_content(modified))
+            != original_hash
+        )
 
 
-def test_model_schema_derives_public_story_fields_and_multiple_reading_sources():
-    schema = story_writer_schema()
+def test_story_schema_derives_fields_and_reading_sources():
+    schema = newsletter_workflow_story_editor.story_writer_schema()
     fields = schema["properties"]["content"]["anyOf"][0]["properties"]
     assert (
         "supporting_citations"
@@ -664,8 +590,10 @@ def test_model_schema_derives_public_story_fields_and_multiple_reading_sources()
         "recommended_reading",
         "chart",
     }
-    assert fields["kind"]["enum"] == list(SECTION_KINDS)
-    assert set(story_review_schema()["properties"]) == {
+    assert fields["kind"]["enum"] == list(contracts.SECTION_KINDS)
+    assert set(
+        newsletter_workflow_story_editor.story_review_schema()["properties"]
+    ) == {
         "assessments",
         "issues",
         "prior_withdrawal",
@@ -684,7 +612,9 @@ def test_model_schema_derives_public_story_fields_and_multiple_reading_sources()
 def test_writer_schema_matches_runtime_mode_and_signal_bounds(
     mode, repair, paragraph_limit
 ):
-    properties = story_writer_schema(mode, repair=repair)["properties"]
+    properties = newsletter_workflow_story_editor.story_writer_schema(
+        mode, repair=repair
+    )["properties"]
     content = properties["content"]["anyOf"][0]["properties"]
     assert content["paragraphs"]["maxItems"] == paragraph_limit
     if mode == "brief" and not repair:
@@ -699,10 +629,10 @@ def test_writer_schema_matches_runtime_mode_and_signal_bounds(
 
 async def test_mode_specific_schema_is_used_in_initial_and_repair_jobs(rig):
     rig.replies = [
-        reply(writer(story())),
-        reply(review(body="blocked")),
-        reply(writer(story())),
-        reply(review()),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review(body="blocked")),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
     ]
     await rig.run(mode="brief")
     first, repair = (
@@ -721,7 +651,7 @@ async def test_mode_specific_schema_is_used_in_initial_and_repair_jobs(rig):
     [{"task": {"id": "bad/id"}}, {"mode": "unknown"}, {"is_fixture": "false"}],
 )
 async def test_unsafe_input_is_rejected_before_model(rig, override):
-    with pytest.raises(EditorError, match="invalid input"):
+    with pytest.raises(errors.EditorError, match="invalid input"):
         await rig.run(**override)
     assert not rig.calls
 
@@ -735,14 +665,23 @@ async def test_account_level_failure_propagates_to_stop_following_model_jobs(
 ):
     prefix = {
         "writer": [],
-        "review": [reply(writer(story()))],
+        "review": [
+            story_editor.reply(story_editor.writer(story_editor.story()))
+        ],
         "repair": [
-            reply(writer(story(), story("事件本身已有证据。"))),
-            reply(review(body="blocked", signal="approved")),
+            story_editor.reply(
+                story_editor.writer(
+                    story_editor.story(),
+                    story_editor.story("事件本身已有证据。"),
+                )
+            ),
+            story_editor.reply(
+                story_editor.review(body="blocked", signal="approved")
+            ),
         ],
     }[stage]
-    rig.replies = [*prefix, EditorError(code)]
-    with pytest.raises(EditorError) as error:
+    rig.replies = [*prefix, errors.EditorError(code)]
+    with pytest.raises(errors.EditorError) as error:
         await rig.run()
     assert error.value.code == code
     assert len(rig.calls) == len(prefix) + 1
@@ -751,8 +690,13 @@ async def test_account_level_failure_propagates_to_stop_following_model_jobs(
 
 async def verified_prior(rig):
     rig.replies = [
-        reply(writer(story(), story("独立确认的最小事件描述。"))),
-        reply(review(signal="approved")),
+        story_editor.reply(
+            story_editor.writer(
+                story_editor.story(),
+                story_editor.story("独立确认的最小事件描述。"),
+            )
+        ),
+        story_editor.reply(story_editor.review(signal="approved")),
     ]
     prior = await rig.run()
     rig.calls.clear()
@@ -762,7 +706,9 @@ async def verified_prior(rig):
 
 def withdrawal(prior, **changes):
     return {
-        "target_body_hash": content_hash(body_content(prior["content"])),
+        "target_body_hash": contracts.content_hash(
+            components.body_content(prior["content"])
+        ),
         "affected_signal_hash": "",
         "claim": prior["content"]["paragraphs"][0]["text"],
         "reason": "离线fixture新来源明确否定旧数字，测试精确撤回而非缺少研究。",
@@ -771,54 +717,74 @@ def withdrawal(prior, **changes):
     }
 
 
-async def test_deep_review_can_withdraw_exact_disproved_brief_without_extra_invocation(
+async def test_deep_review_withdraws_disproved_brief_without_extra_call(
     rig,
 ):
     prior = await verified_prior(rig)
     rig.replies = [
-        reply(writer(story("新证据支持的独立完整报道。"))),
-        reply(review(prior_withdrawal=withdrawal(prior))),
+        story_editor.reply(
+            story_editor.writer(
+                story_editor.story("新证据支持的独立完整报道。")
+            )
+        ),
+        story_editor.reply(
+            story_editor.review(prior_withdrawal=withdrawal(prior))
+        ),
     ]
     result = await rig.run(mode="deep", prior=prior, packets=prior["packets"])
     assert len(rig.calls) == 2 and result["content"] is not None
     item = result["withdrawals"][0]
-    assert item["content_hash"] == content_hash(body_content(prior["content"]))
+    assert item["content_hash"] == contracts.content_hash(
+        components.body_content(prior["content"])
+    )
     assert item["affected_signal_hash"] == "" and item["mode"] == "brief"
     assert item["reviewer_job_id"] in {
         r["reviewer_job_id"] for r in result["assessments"]
     }
     assert rig.calls[1]["prompt"]["prior_verified_brief_untrusted"] == prior
     assert rig.checkpoints == [result]
-    validate_result(result)
+    publication.validate_result(result)
 
 
-async def test_withdrawal_only_is_checkpointed_even_when_new_deep_body_is_unavailable(
+async def test_withdrawal_checkpoint_survives_missing_deep_body(
     rig,
 ):
     prior = await verified_prior(rig)
     rig.replies = [
-        reply(writer()),
-        reply(review(body="not_present", prior_withdrawal=withdrawal(prior))),
+        story_editor.reply(story_editor.writer()),
+        story_editor.reply(
+            story_editor.review(
+                body="not_present", prior_withdrawal=withdrawal(prior)
+            )
+        ),
     ]
     result = await rig.run(mode="deep", prior=prior)
     assert result["content"] is None and result["signal"] is None
     assert len(result["withdrawals"]) == 1 and rig.checkpoints == [result]
     assert len(rig.calls) == 2
-    validate_result(result)
+    publication.validate_result(result)
 
 
 async def test_withdrawal_survives_later_deep_repair_cancellation(rig):
     prior = await verified_prior(rig)
     rig.replies = [
-        reply(writer(story("新深读尚未正确，不可替代旧文。"))),
-        reply(review(body="blocked", prior_withdrawal=withdrawal(prior))),
+        story_editor.reply(
+            story_editor.writer(
+                story_editor.story("新深读尚未正确，不可替代旧文。")
+            )
+        ),
+        story_editor.reply(
+            story_editor.review(
+                body="blocked", prior_withdrawal=withdrawal(prior)
+            )
+        ),
         asyncio.CancelledError(),
     ]
     with pytest.raises(asyncio.CancelledError):
         await rig.run(mode="deep", prior=prior)
     assert len(rig.checkpoints) == 1 and rig.checkpoints[0]["withdrawals"]
     assert rig.checkpoints[0]["content"] is None
-    validate_result(rig.checkpoints[0])
+    publication.validate_result(rig.checkpoints[0])
 
 
 async def test_review_can_explicitly_bind_the_same_error_in_paraphrased_signal(
@@ -826,17 +792,19 @@ async def test_review_can_explicitly_bind_the_same_error_in_paraphrased_signal(
 ):
     prior = await verified_prior(rig)
     proposal = withdrawal(
-        prior, affected_signal_hash=content_hash(prior["signal"])
+        prior, affected_signal_hash=contracts.content_hash(prior["signal"])
     )
     rig.replies = [
-        reply(writer()),
-        reply(review(body="not_present", prior_withdrawal=proposal)),
+        story_editor.reply(story_editor.writer()),
+        story_editor.reply(
+            story_editor.review(body="not_present", prior_withdrawal=proposal)
+        ),
     ]
     result = await rig.run(mode="deep", prior=prior)
-    assert result["withdrawals"][0]["affected_signal_hash"] == content_hash(
-        prior["signal"]
-    )
-    validate_result(result)
+    assert result["withdrawals"][0][
+        "affected_signal_hash"
+    ] == contracts.content_hash(prior["signal"])
+    publication.validate_result(result)
 
 
 @pytest.mark.parametrize(
@@ -854,13 +822,15 @@ async def test_review_can_explicitly_bind_the_same_error_in_paraphrased_signal(
         {"affected_signal_hash": None},
     ],
 )
-async def test_unbound_or_unsubstantiated_withdrawal_does_not_remove_prior_or_new_body(
+async def test_unsupported_withdrawal_preserves_old_and_new_bodies(
     rig, changes
 ):
     prior = await verified_prior(rig)
     rig.replies = [
-        reply(writer(story())),
-        reply(review(prior_withdrawal=withdrawal(prior, **changes))),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(
+            story_editor.review(prior_withdrawal=withdrawal(prior, **changes))
+        ),
     ]
     result = await rig.run(mode="deep", prior=prior)
     assert "withdrawals" not in result and result["content"] is not None
@@ -868,21 +838,27 @@ async def test_unbound_or_unsubstantiated_withdrawal_does_not_remove_prior_or_ne
         issue["reason"] == "invalid_prior_withdrawal"
         for issue in result["issues"]
     )
-    validate_result(result)
+    publication.validate_result(result)
 
 
 @pytest.mark.parametrize(
     "opened,searched",
-    [({URL}, True), ({URL, SECOND_URL}, False), (set(), True)],
+    [
+        ({story_editor.URL}, True),
+        ({story_editor.URL, story_editor.SECOND_URL}, False),
+        (set(), True),
+    ],
 )
 async def test_prior_withdrawal_requires_fresh_open_of_its_specific_evidence(
     rig, opened, searched
 ):
     prior = await verified_prior(rig)
     rig.replies = [
-        reply(writer()),
-        reply(
-            review(body="not_present", prior_withdrawal=withdrawal(prior)),
+        story_editor.reply(story_editor.writer()),
+        story_editor.reply(
+            story_editor.review(
+                body="not_present", prior_withdrawal=withdrawal(prior)
+            ),
             opened=opened,
             searched=searched,
         ),
@@ -891,15 +867,19 @@ async def test_prior_withdrawal_requires_fresh_open_of_its_specific_evidence(
     assert "withdrawals" not in result and not rig.checkpoints
 
 
-async def test_metadata_evidence_cannot_withdraw_an_independently_approved_brief(
+async def test_metadata_evidence_cannot_withdraw_independently_approved_brief(
     rig,
 ):
     prior = await verified_prior(rig)
     rig.packet["content"]["sources"][1]["access_scope"] = "metadata"
-    rig.packet["content_hash"] = content_hash(rig.packet["content"])
+    rig.packet["content_hash"] = contracts.content_hash(rig.packet["content"])
     rig.replies = [
-        reply(writer()),
-        reply(review(body="not_present", prior_withdrawal=withdrawal(prior))),
+        story_editor.reply(story_editor.writer()),
+        story_editor.reply(
+            story_editor.review(
+                body="not_present", prior_withdrawal=withdrawal(prior)
+            )
+        ),
     ]
     result = await rig.run(mode="deep", prior=prior)
     assert "withdrawals" not in result
@@ -917,8 +897,12 @@ async def test_withdrawal_requires_a_genuinely_bound_prior_brief(rig, mutation):
     else:
         prior["mode"] = "deep"
     rig.replies = [
-        reply(writer()),
-        reply(review(body="not_present", prior_withdrawal=withdrawal(prior))),
+        story_editor.reply(story_editor.writer()),
+        story_editor.reply(
+            story_editor.review(
+                body="not_present", prior_withdrawal=withdrawal(prior)
+            )
+        ),
     ]
     result = await rig.run(mode="deep", prior=prior)
     assert "withdrawals" not in result
@@ -930,10 +914,10 @@ async def test_ordinary_deep_hold_never_implicitly_withdraws_verified_brief(
 ):
     prior = await verified_prior(rig)
     rig.replies = [
-        reply(writer(story())),
-        reply(review(body="blocked")),
-        reply(writer(story())),
-        reply(review(body="blocked")),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review(body="blocked")),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review(body="blocked")),
     ]
     result = await rig.run(mode="deep", prior=prior)
     assert result["content"] is None and "withdrawals" not in result
@@ -943,40 +927,53 @@ async def test_ordinary_deep_hold_never_implicitly_withdraws_verified_brief(
 async def test_brief_stage_cannot_issue_a_prior_withdrawal(rig):
     prior = await verified_prior(rig)
     rig.replies = [
-        reply(writer(story())),
-        reply(review(prior_withdrawal=withdrawal(prior))),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(
+            story_editor.review(prior_withdrawal=withdrawal(prior))
+        ),
     ]
     result = await rig.run(mode="brief", prior=prior)
     assert "withdrawals" not in result and result["content"] is not None
 
 
-async def test_review_receives_code_owned_component_urls_including_reading_support(
+async def test_review_gets_code_owned_body_and_reading_urls(
     rig,
 ):
     rig.replies = [
-        reply(writer(story(reading=True, chart=True))),
-        reply(review(reading="approved", chart="approved")),
+        story_editor.reply(
+            story_editor.writer(story_editor.story(reading=True, chart=True))
+        ),
+        story_editor.reply(
+            story_editor.review(reading="approved", chart="approved")
+        ),
     ]
     result = await rig.run(mode="deep")
-    validate_result(result)
+    publication.validate_result(result)
     expected = rig.calls[1]["approval_sources"]
-    assert expected.components["body"] == [URL]
-    assert expected.components["reading"] == [URL, SECOND_URL]
-    assert expected.components["chart"] == [URL]
+    assert expected.components["body"] == [story_editor.URL]
+    assert expected.components["reading"] == [
+        story_editor.URL,
+        story_editor.SECOND_URL,
+    ]
+    assert expected.components["chart"] == [story_editor.URL]
     assert expected.evidence == {} and rig.calls[0]["approval_sources"] is None
 
 
-async def test_missing_url_diagnostic_identifies_exact_component_reference_and_url(
+async def test_missing_url_diagnostic_identifies_exact_component_reference_url(
     rig,
 ):
     rig.replies = [
-        reply(writer(story(reading=True))),
-        reply(review(reading="approved"), opened={URL}),
+        story_editor.reply(
+            story_editor.writer(story_editor.story(reading=True))
+        ),
+        story_editor.reply(
+            story_editor.review(reading="approved"), opened={story_editor.URL}
+        ),
     ]
     result = await rig.run(mode="deep")
-    assert result["content"] == story() and len(rig.calls) == 2
+    assert result["content"] == story_editor.story() and len(rig.calls) == 2
     assert any(
-        SECOND_URL in finding
+        story_editor.SECOND_URL in finding
         for assessment in result["assessments"]
         if assessment["component"] == "reading"
         for finding in assessment["findings"]
@@ -987,18 +984,18 @@ async def test_missing_url_diagnostic_identifies_exact_component_reference_and_u
         and issue["evidence"] == ["packet/publication"]
         for issue in result["issues"]
     )
-    validate_result(result)
+    publication.validate_result(result)
 
 
-async def test_metadata_diagnostic_explains_actual_problem_to_repair_without_raising_scope(
+async def test_metadata_diagnostic_guides_repair_without_scope_upgrade(
     rig,
 ):
     rig.packet["content"]["sources"][0]["access_scope"] = "metadata"
     rig.replies = [
-        reply(writer(story())),
-        reply(review()),
-        reply(writer(story())),
-        reply(review()),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
     ]
     result = await rig.run()
     assert result["content"] is None
@@ -1026,10 +1023,10 @@ async def test_missing_search_diagnostic_is_distinct_from_url_or_scope_problem(
     rig,
 ):
     rig.replies = [
-        reply(writer(story())),
-        reply(review(), searched=False),
-        reply(writer(story())),
-        reply(review(), searched=False),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review(), searched=False),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review(), searched=False),
     ]
     result = await rig.run()
     first = next(a for a in result["assessments"] if a["component"] == "body")
@@ -1052,15 +1049,15 @@ async def test_only_deep_initial_review_receives_withdrawal_evidence_lookup(
 ):
     prior = await verified_prior(rig)
     rig.replies = [
-        reply(writer(story())),
-        reply(review(body="blocked")),
-        reply(writer(story())),
-        reply(review()),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review(body="blocked")),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
     ]
     await rig.run(mode="deep", prior=prior)
     assert rig.calls[1]["approval_sources"].evidence == {
-        "packet/source": URL,
-        "packet/publication": SECOND_URL,
+        "packet/source": story_editor.URL,
+        "packet/publication": story_editor.SECOND_URL,
     }
     assert rig.calls[3]["approval_sources"].evidence == {}
 
@@ -1069,7 +1066,7 @@ def test_schema_binds_current_story_id_exact_citations_and_excludes_metadata(
     rig,
 ):
     rig.packet["content"]["sources"][1]["access_scope"] = "metadata"
-    schema = story_writer_schema(
+    schema = newsletter_workflow_story_editor.story_writer_schema(
         "brief", story_id="story-a", packets=[rig.packet]
     )
     props = schema["properties"]["content"]["anyOf"][0]["properties"]
@@ -1088,7 +1085,7 @@ def test_schema_binds_current_story_id_exact_citations_and_excludes_metadata(
         "packet/missing",
         "wrong/source",
         "supplement-7/source",
-        URL,
+        story_editor.URL,
     ):
         assert not re.fullmatch(pattern, ref)
     signal = schema["properties"]["signal"]["anyOf"][0]["properties"]
@@ -1102,9 +1099,9 @@ def test_schema_binds_current_story_id_exact_citations_and_excludes_metadata(
 
 
 def test_schema_text_and_chart_bounds_match_runtime_contract(rig):
-    props = story_writer_schema("brief", packets=[rig.packet])["properties"][
-        "content"
-    ]["anyOf"][0]["properties"]
+    props = newsletter_workflow_story_editor.story_writer_schema(
+        "brief", packets=[rig.packet]
+    )["properties"]["content"]["anyOf"][0]["properties"]
     assert (
         props["title"]["maxLength"] == 300
         and props["limitations"]["maxLength"] == 4000
@@ -1143,9 +1140,9 @@ def test_schema_text_and_chart_bounds_match_runtime_contract(rig):
 
 
 def test_supplement_source_and_body_schema_are_bounded_like_contract():
-    props = story_writer_schema()["properties"]["supplemental_packets"][
-        "items"
-    ]["properties"]["content"]["properties"]
+    props = newsletter_workflow_story_editor.story_writer_schema()[
+        "properties"
+    ]["supplemental_packets"]["items"]["properties"]["content"]["properties"]
     assert props["body"]["maxLength"] == 65536
     assert (
         props["sources"]["minItems"] == 1 and props["sources"]["maxItems"] == 32
@@ -1157,11 +1154,11 @@ def test_supplement_source_and_body_schema_are_bounded_like_contract():
     )
 
 
-async def test_exact_duplicate_references_are_removed_without_changing_any_prose(
+async def test_exact_duplicate_references_removed_preserves_any_prose(
     rig,
 ):
-    content = story(reading=True, chart=True)
-    original = deepcopy(content)
+    content = story_editor.story(reading=True, chart=True)
+    original = copy.deepcopy(content)
     content["paragraphs"][0]["citations"] = ["packet/source", "packet/source"]
     content["recommended_reading"]["supporting_citations"] = [
         "packet/source",
@@ -1170,12 +1167,14 @@ async def test_exact_duplicate_references_are_removed_without_changing_any_prose
     ]
     content["chart"]["points"][0]["citations"] *= 2
     rig.replies = [
-        reply(writer(content)),
-        reply(review(reading="approved", chart="approved")),
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(
+            story_editor.review(reading="approved", chart="approved")
+        ),
     ]
     result = await rig.run()
     assert result["content"] == original and len(rig.calls) == 2
-    validate_result(result)
+    publication.validate_result(result)
 
 
 @pytest.mark.parametrize(
@@ -1194,19 +1193,25 @@ async def test_exact_duplicate_references_are_removed_without_changing_any_prose
 async def test_semantic_story_kind_survives_writer_validation_and_review(
     rig, kind
 ):
-    content = story()
+    content = story_editor.story()
     content["kind"] = kind
-    rig.replies = [reply(writer(content)), reply(review())]
+    rig.replies = [
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(story_editor.review()),
+    ]
     result = await rig.run()
     assert result["content"]["kind"] == kind
-    validate_result(result)
+    publication.validate_result(result)
 
 
-async def test_writer_receives_current_task_schema_and_metadata_is_not_an_available_citation(
+async def test_writer_schema_excludes_metadata_citations(
     rig,
 ):
     rig.packet["content"]["sources"][1]["access_scope"] = "metadata"
-    rig.replies = [reply(writer(story())), reply(review())]
+    rig.replies = [
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
+    ]
     result = await rig.run()
     assert result["content"] is not None
     assert rig.calls[0]["schema"]["properties"]["content"]["anyOf"][0][
@@ -1225,10 +1230,10 @@ async def test_writer_receives_current_task_schema_and_metadata_is_not_an_availa
         ("unknown_citation", "INVALID_CITATION"),
     ],
 )
-async def test_invalid_body_gets_precise_safe_diagnostics_and_one_repair_before_independent_review(
+async def test_invalid_body_gets_safe_diagnostic_repair_and_review(
     rig, mutation, expected
 ):
-    content = story()
+    content = story_editor.story()
     if mutation == "id":
         content["story_id"] = "wrong-id"
     elif mutation == "long_title":
@@ -1240,9 +1245,13 @@ async def test_invalid_body_gets_precise_safe_diagnostics_and_one_repair_before_
     else:
         content["paragraphs"][0]["citations"] = ["packet/missing"]
     rig.replies = [
-        reply(writer(content)),
-        reply(writer(story("经过修复并等待独审的正文。"))),
-        reply(review()),
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(
+            story_editor.writer(
+                story_editor.story("经过修复并等待独审的正文。")
+            )
+        ),
+        story_editor.reply(story_editor.review()),
     ]
     result = await rig.run()
     assert result["reason"] == "repaired" and result["content"] is not None
@@ -1256,18 +1265,20 @@ async def test_invalid_body_gets_precise_safe_diagnostics_and_one_repair_before_
     assert all(
         receipt["round"] == "repair" for receipt in result["assessments"]
     )
-    validate_result(result)
+    publication.validate_result(result)
 
 
-async def test_malformed_signal_without_body_can_be_rewritten_as_a_new_independently_reviewed_brief(
+async def test_malformed_signal_can_be_repaired_into_a_reviewed_brief(
     rig,
 ):
-    malformed = story("仅用于测试的最小事件。")
+    malformed = story_editor.story("仅用于测试的最小事件。")
     malformed["story_id"] = "wrong-id"
     rig.replies = [
-        reply(writer(None, malformed)),
-        reply(writer(story("格式修正后的简版事实。"))),
-        reply(review()),
+        story_editor.reply(story_editor.writer(None, malformed)),
+        story_editor.reply(
+            story_editor.writer(story_editor.story("格式修正后的简版事实。"))
+        ),
+        story_editor.reply(story_editor.review()),
     ]
     result = await rig.run()
     assert result["reason"] == "repaired" and result["signal"] is None
@@ -1278,15 +1289,18 @@ async def test_malformed_signal_without_body_can_be_rewritten_as_a_new_independe
     assert len(rig.calls) == 3 and all(
         r["round"] == "repair" for r in result["assessments"]
     )
-    validate_result(result)
+    publication.validate_result(result)
 
 
-async def test_second_malformed_signal_repair_never_gets_a_fake_approval_or_third_writer(
+async def test_second_bad_signal_cannot_get_approval_or_third_writer(
     rig,
 ):
-    malformed = story()
+    malformed = story_editor.story()
     malformed["paragraphs"][0]["citations"] = ["unknown/source"]
-    rig.replies = [reply(writer(None, malformed)), reply(writer(malformed))]
+    rig.replies = [
+        story_editor.reply(story_editor.writer(None, malformed)),
+        story_editor.reply(story_editor.writer(malformed)),
+    ]
     result = await rig.run()
     assert result["content"] is None and result["signal"] is None
     assert (
@@ -1303,17 +1317,19 @@ async def test_second_malformed_signal_repair_never_gets_a_fake_approval_or_thir
     )
 
 
-async def test_valid_signal_is_checkpointed_before_malformed_body_repair_and_independent_review(
+async def test_signal_checkpoint_precedes_body_repair_and_review(
     rig,
 ):
-    malformed = story()
+    malformed = story_editor.story()
     malformed["story_id"] = "wrong-id"
-    signal = story("可独立核实的最小事件。")
+    signal = story_editor.story("可独立核实的最小事件。")
     rig.replies = [
-        reply(writer(malformed, signal)),
-        reply(review(body="not_present", signal="approved")),
-        reply(writer(story())),
-        reply(review()),
+        story_editor.reply(story_editor.writer(malformed, signal)),
+        story_editor.reply(
+            story_editor.review(body="not_present", signal="approved")
+        ),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
     ]
     result = await rig.run()
     assert len(rig.calls) == 4 and result["content"] is not None
@@ -1321,14 +1337,14 @@ async def test_valid_signal_is_checkpointed_before_malformed_body_repair_and_ind
         rig.checkpoints[0]["content"] is None
         and rig.checkpoints[0]["signal"] == signal
     )
-    assert rig.checkpoints[-1]["content"] == story()
+    assert rig.checkpoints[-1]["content"] == story_editor.story()
 
 
 @pytest.mark.parametrize("mode", ["brief", "deep"])
-async def test_empty_writer_without_verifiable_prior_does_not_spend_a_review_call(
+async def test_empty_writer_without_verifiable_prior_never_spend_review_call(
     rig, mode
 ):
-    rig.replies = [reply(writer())]
+    rig.replies = [story_editor.reply(story_editor.writer())]
     result = await rig.run(mode=mode)
     assert len(rig.calls) == 1 and result["reason"] == "withheld"
     assert (
@@ -1339,30 +1355,33 @@ async def test_empty_writer_without_verifiable_prior_does_not_spend_a_review_cal
 
 
 async def test_invalid_writer_output_is_not_mislabeled_as_provider_outage(rig):
-    rig.replies = [reply({"content": None})]
+    rig.replies = [story_editor.reply({"content": None})]
     result = await rig.run(mode="deep")
     assert result["reason"] == "invalid_output"
     assert result["issues"][0]["reason"] == "writer:writer_envelope_invalid"
 
 
-async def test_invalid_review_output_records_review_phase_without_publishing_prose(
+async def test_bad_review_records_phase_without_publication(
     rig,
 ):
     rig.replies = [
-        reply(writer(story())),
-        reply({"prose": "I approve everything"}),
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply({"prose": "I approve everything"}),
     ]
     result = await rig.run()
     assert result["reason"] == "invalid_output" and result["content"] is None
     assert result["issues"][0]["reason"].startswith("review:")
 
 
-async def test_meaningful_same_source_chart_can_be_prepared_and_approved_in_brief(
+async def test_meaningful_same_source_chart_can_be_prepared_approved_in_brief(
     rig,
 ):
-    content = story(chart=True)
+    content = story_editor.story(chart=True)
     content["chart"]["points"][1]["decimal_value"] = "-2"
-    rig.replies = [reply(writer(content)), reply(review(chart="approved"))]
+    rig.replies = [
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(story_editor.review(chart="approved")),
+    ]
     result = await rig.run(mode="brief")
     assert (
         result["content"]["chart"] == content["chart"] and len(rig.calls) == 2
@@ -1375,32 +1394,62 @@ async def test_meaningful_same_source_chart_can_be_prepared_and_approved_in_brie
     assert "缺少解释价值就chart=null" in rules
     assert "若有就在本轮给chart" not in rules
     assert "不能把同比与环比" in rules and "没有合适数据就null" in rules
-    validate_result(result)
+    publication.validate_result(result)
 
 
 @pytest.mark.parametrize("mode", ["brief", "deep"])
-async def test_standalone_chart_guidance_reaches_author_and_independent_chart_review(
-    rig, mode
-):
-    """Prompt plumbing only; a simulated approval does not prove chart clarity."""
-    content = story(chart=True)
+async def test_chart_guidance_reaches_writer_and_independent_review(rig, mode):
+    """Check prompt plumbing, not chart clarity from a simulated approval."""
+    content = story_editor.story(chart=True)
     content["chart"]["unit"] = "Cohen's d（离线虚构比较）"
-    rig.replies = [reply(writer(content)), reply(review(chart="approved"))]
+    rig.replies = [
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(story_editor.review(chart="approved")),
+    ]
     result = await rig.run(mode=mode, policy=reader_policy())
     author, reviewer = rig.calls
-    assert author["prompt"]["chart_guidance"] == _CHART_GUIDANCE
-    assert "独立图题" in _CHART_GUIDANCE
-    assert "模型名、组名不能替代背景" in _CHART_GUIDANCE
-    assert "比较基线是谁必须在图内说清" in _CHART_GUIDANCE
-    assert "数据或实验时期" in _CHART_GUIDANCE
-    assert "caption先说一个主要洞见" in _CHART_GUIDANCE
-    assert "零点及方向，不把它当百分比" in _CHART_GUIDANCE
-    assert "不自行加入“大/中/小效果”等统计阈值" in _CHART_GUIDANCE
-    assert "图片看不到时仍有意义" in _CHART_GUIDANCE
-    assert "limitations只留影响这张图结论的关键边界" in _CHART_GUIDANCE
-    assert "已有材料不足以支持自足比较就chart=null" in _CHART_GUIDANCE
+    assert (
+        author["prompt"]["chart_guidance"]
+        == newsletter_workflow_story_editor._CHART_GUIDANCE
+    )
+    assert "独立图题" in newsletter_workflow_story_editor._CHART_GUIDANCE
+    assert (
+        "模型名、组名不能替代背景"
+        in newsletter_workflow_story_editor._CHART_GUIDANCE
+    )
+    assert (
+        "比较基线是谁必须在图内说清"
+        in newsletter_workflow_story_editor._CHART_GUIDANCE
+    )
+    assert "数据或实验时期" in newsletter_workflow_story_editor._CHART_GUIDANCE
+    assert (
+        "caption先说一个主要洞见"
+        in newsletter_workflow_story_editor._CHART_GUIDANCE
+    )
+    assert (
+        "零点及方向，不把它当百分比"
+        in newsletter_workflow_story_editor._CHART_GUIDANCE
+    )
+    assert (
+        "不自行加入“大/中/小效果”等统计阈值"
+        in newsletter_workflow_story_editor._CHART_GUIDANCE
+    )
+    assert (
+        "图片看不到时仍有意义"
+        in newsletter_workflow_story_editor._CHART_GUIDANCE
+    )
+    assert (
+        "limitations只留影响这张图结论的关键边界"
+        in newsletter_workflow_story_editor._CHART_GUIDANCE
+    )
+    assert (
+        "已有材料不足以支持自足比较就chart=null"
+        in newsletter_workflow_story_editor._CHART_GUIDANCE
+    )
     review_rules = reviewer["prompt"]["chart_review_rules"]
-    assert review_rules.startswith(_CHART_GUIDANCE)
+    assert review_rules.startswith(
+        newsletter_workflow_story_editor._CHART_GUIDANCE
+    )
     assert (
         "先遮住正文" in review_rules
         and "不能只核对数字与来源相等" in review_rules
@@ -1410,14 +1459,14 @@ async def test_standalone_chart_guidance_reaches_author_and_independent_chart_re
     assert "图卡应脱离正文自足" in author["instructions"]
     # Statistical labels are not lexical vetoes: source-backed review decides.
     assert result["content"] == content and len(rig.calls) == 2
-    validate_result(result)
+    publication.validate_result(result)
 
 
-async def test_ambiguous_chart_review_discards_only_chart_without_another_model_round(
+async def test_ambiguous_chart_review_drops_chart_without_extra_call(
     rig,
 ):
-    """Reproduce the opaque-title shape, with an explicitly simulated review finding."""
-    content = story(chart=True)
+    """Reproduce opaque titles with an explicitly simulated review finding."""
+    content = story_editor.story(chart=True)
     content["chart"].update(
         question="哪一层情境意识改善最大",
         metric="Cohen's d",
@@ -1427,37 +1476,49 @@ async def test_ambiguous_chart_review_discards_only_chart_without_another_model_
     issue = {
         "component": "chart",
         "claim": content["chart"]["question"],
-        "reason": "离线模拟：图中缺少对象、比较基线及尺度方向，正文不能替图补全。",
+        "reason": (
+            "离线模拟：图中缺少对象、比较基线及尺度方向，正文不能替图补全。"
+        ),
         "evidence": ["packet/source"],
         "action": "remove",
     }
     rig.replies = [
-        reply(writer(content)),
-        reply(review(chart="blocked", issues=[issue])),
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(
+            story_editor.review(chart="blocked", issues=[issue])
+        ),
     ]
     result = await rig.run()
-    assert result["content"] == body_content(content) and len(rig.calls) == 2
+    assert (
+        result["content"] == components.body_content(content)
+        and len(rig.calls) == 2
+    )
     assert result["reason"] == "approved"
     assert result["issues"][0]["component"] == "chart"
     assert result["issues"][0]["reason"] == issue["reason"]
-    validate_result(result)
+    publication.validate_result(result)
 
 
-async def test_absent_chart_adds_no_chart_review_instruction_or_extra_model_round(
+async def test_absent_chart_adds_no_review_instruction_or_call(
     rig,
 ):
-    rig.replies = [reply(writer(story())), reply(review())]
+    rig.replies = [
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
+    ]
     result = await rig.run()
-    assert result["content"] == story() and len(rig.calls) == 2
+    assert result["content"] == story_editor.story() and len(rig.calls) == 2
     assert "chart_review_rules" not in rig.calls[1]["prompt"]
     assert next(a for a in result["assessments"] if a["component"] == "chart")[
         "status"
     ] == ("not_present")
-    validate_result(result)
+    publication.validate_result(result)
 
 
 def reader_policy():
-    directory = Path(__file__).resolve().parents[1] / "src/newsletter/policy"
+    directory = (
+        pathlib.Path(__file__).resolve().parents[1] / "src/newsletter/policy"
+    )
     return {
         "editorial.md": (directory / "story-editorial.md").read_text(
             encoding="utf-8"
@@ -1481,24 +1542,51 @@ async def test_reader_first_guidance_reaches_writer_without_new_review_gate(
     rig, mode, kind
 ):
     """Offline prompt plumbing, not evidence that an LLM writes better prose."""
-    content = {**story(), "kind": kind}
+    content = {**story_editor.story(), "kind": kind}
     policy = reader_policy()
-    rig.replies = [reply(writer(content)), reply(review())]
+    rig.replies = [
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(story_editor.review()),
+    ]
     result = await rig.run(mode=mode, policy=policy)
     assert result["content"] == content and len(rig.calls) == 2
     author, reviewer = rig.calls
-    assert author["prompt"]["writing_guidance"] == _WRITING_GUIDANCE
+    assert (
+        author["prompt"]["writing_guidance"]
+        == newsletter_workflow_story_editor._WRITING_GUIDANCE
+    )
     assert author["prompt"]["reader_profile"] == policy["reader-profile.md"]
     assert all(
         call["instructions"] == policy["editorial.md"] for call in rig.calls
     )
-    assert "先交代背景、要解决的问题和原来怎么做" in _WRITING_GUIDANCE
-    assert "世界新闻和经济报道" in _WRITING_GUIDANCE
-    assert "术语或缩写首次出现" in _WRITING_GUIDANCE
-    assert "只保留能帮助理解变化的少量数字" in _WRITING_GUIDANCE
-    assert "而不是扩写摘要、增加数字、术语或段数" in _WRITING_GUIDANCE
-    assert "不要把搜索/open、JSON、审校/修订经过倒进报道" in _WRITING_GUIDANCE
-    assert "不是新增字数、术语或背景的审校阻断条件" in _WRITING_GUIDANCE
+    assert (
+        "先交代背景、要解决的问题和原来怎么做"
+        in newsletter_workflow_story_editor._WRITING_GUIDANCE
+    )
+    assert (
+        "世界新闻和经济报道"
+        in newsletter_workflow_story_editor._WRITING_GUIDANCE
+    )
+    assert (
+        "术语或缩写首次出现"
+        in newsletter_workflow_story_editor._WRITING_GUIDANCE
+    )
+    assert (
+        "只保留能帮助理解变化的少量数字"
+        in newsletter_workflow_story_editor._WRITING_GUIDANCE
+    )
+    assert (
+        "而不是扩写摘要、增加数字、术语或段数"
+        in newsletter_workflow_story_editor._WRITING_GUIDANCE
+    )
+    assert (
+        "不要把搜索/open、JSON、审校/修订经过倒进报道"
+        in newsletter_workflow_story_editor._WRITING_GUIDANCE
+    )
+    assert (
+        "不是新增字数、术语或背景的审校阻断条件"
+        in newsletter_workflow_story_editor._WRITING_GUIDANCE
+    )
     assert "writing_guidance" not in reviewer["prompt"]
     assert "不因为文风或可有可无扩展研究阻断" in reviewer["prompt"]["rules"]
     paragraphs = author["schema"]["properties"]["content"]["anyOf"][0][
@@ -1506,7 +1594,7 @@ async def test_reader_first_guidance_reaches_writer_without_new_review_gate(
     ]["paragraphs"]
     assert paragraphs["minItems"] == 1
     assert paragraphs["maxItems"] == (2 if mode == "brief" else 16)
-    validate_result(result)
+    publication.validate_result(result)
 
 
 @pytest.mark.parametrize("known", [True, False])
@@ -1525,10 +1613,13 @@ async def test_source_identity_and_contribution_remain_untrusted_writer_context(
     candidate = {
         "id": "candidate-a",
         **{name: value if known else "" for name, value in details.items()},
-        "evidence_urls": [URL] if known else [],
+        "evidence_urls": [story_editor.URL] if known else [],
     }
-    original = deepcopy(candidate)
-    rig.replies = [reply(writer(story())), reply(review())]
+    original = copy.deepcopy(candidate)
+    rig.replies = [
+        story_editor.reply(story_editor.writer(story_editor.story())),
+        story_editor.reply(story_editor.review()),
+    ]
     result = await rig.run(candidates=[candidate])
     prompt = rig.calls[0]["prompt"]
     assert (
@@ -1541,21 +1632,26 @@ async def test_source_identity_and_contribution_remain_untrusted_writer_context(
     assert "只是待核线索，不是发表引用或质量背书" in prompt["writing_guidance"]
     assert "不得把网页发布方当作者单位" in prompt["writing_guidance"]
     assert len(rig.calls) == 2
-    validate_result(result)
+    publication.validate_result(result)
 
 
-async def test_local_repair_preserves_reader_guidance_and_independently_approved_signal(
+async def test_repair_keeps_reader_guidance_and_approved_signal(
     rig,
 ):
-    """The existing four-call repair path remains bounded and separately reviewed."""
-    original, fixed = story(), story("修正后的虚构事件，不是真实报道。")
-    signal = story("仅确认虚构事件存在。")
+    """Keep the four-call repair path bounded and separately reviewed."""
+    original, fixed = (
+        story_editor.story(),
+        story_editor.story("修正后的虚构事件，不是真实报道。"),
+    )
+    signal = story_editor.story("仅确认虚构事件存在。")
     policy = reader_policy()
     rig.replies = [
-        reply(writer(original, signal)),
-        reply(review(body="blocked", signal="approved")),
-        reply(writer(fixed)),
-        reply(review()),
+        story_editor.reply(story_editor.writer(original, signal)),
+        story_editor.reply(
+            story_editor.review(body="blocked", signal="approved")
+        ),
+        story_editor.reply(story_editor.writer(fixed)),
+        story_editor.reply(story_editor.review()),
     ]
     result = await rig.run(policy=policy)
     assert result["content"] == fixed and result["signal"] == signal
@@ -1566,40 +1662,55 @@ async def test_local_repair_preserves_reader_guidance_and_independently_approved
     )
     for index in (0, 2):
         prompt = rig.calls[index]["prompt"]
-        assert prompt["writing_guidance"] == _WRITING_GUIDANCE
-        assert prompt["chart_guidance"] == _CHART_GUIDANCE
+        assert (
+            prompt["writing_guidance"]
+            == newsletter_workflow_story_editor._WRITING_GUIDANCE
+        )
+        assert (
+            prompt["chart_guidance"]
+            == newsletter_workflow_story_editor._CHART_GUIDANCE
+        )
         assert prompt["reader_profile"] == policy["reader-profile.md"]
-    assert "repair只在原修订范围内改善解释" in _WRITING_GUIDANCE
+    assert (
+        "repair只在原修订范围内改善解释"
+        in newsletter_workflow_story_editor._WRITING_GUIDANCE
+    )
     assert "不得更改已批准的简讯" in rig.calls[2]["prompt"]["task"]
     assert len({call["path"] for call in rig.calls}) == 4
     for checkpoint in rig.checkpoints:
-        validate_result(checkpoint)
+        publication.validate_result(checkpoint)
 
 
-async def test_reader_guidance_adds_no_length_or_background_gate_for_abstract_brief(
+async def test_abstract_brief_has_no_length_or_background_gate(
     rig,
 ):
-    """A simulated reviewer decision is not changed by a new stylistic validator."""
+    """Keep simulated review decisions independent of stylistic validators."""
     rig.packet["content"]["sources"][0]["access_scope"] = "abstract"
-    rig.packet["content_hash"] = content_hash(rig.packet["content"])
-    content = story("离线虚构事件。")
-    rig.replies = [reply(writer(content)), reply(review())]
+    rig.packet["content_hash"] = contracts.content_hash(rig.packet["content"])
+    content = story_editor.story("离线虚构事件。")
+    rig.replies = [
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(story_editor.review()),
+    ]
     result = await rig.run(policy=reader_policy())
     assert result["content"] == content and result["issues"] == []
     assert len(rig.calls) == 2
-    validate_result(result)
+    publication.validate_result(result)
 
 
 @pytest.mark.parametrize("kind", ["ai_ml", "economy"])
-async def test_explainer_examples_reach_writer_without_formula_or_statistic_keyword_gate(
-    rig, kind
-):
-    """Check targeted guidance, not real quality; model-approved text is not censored."""
+async def test_explainer_guidance_has_no_formula_or_statistic_gate(rig, kind):
+    """Check targeted guidance without censoring model-approved text."""
     content = {
-        **story("离线虚构统计记录：参数λ、78.64%、样本期；不是实际研究结论。"),
+        **story_editor.story(
+            "离线虚构统计记录：参数λ、78.64%、样本期；不是实际研究结论。"
+        ),
         "kind": kind,
     }
-    rig.replies = [reply(writer(content)), reply(review())]
+    rig.replies = [
+        story_editor.reply(story_editor.writer(content)),
+        story_editor.reply(story_editor.review()),
+    ]
     result = await rig.run(policy=reader_policy())
     guidance = rig.calls[0]["prompt"]["writing_guidance"]
     assert "帮助读者想明白的解释者" in guidance
@@ -1613,4 +1724,4 @@ async def test_explainer_examples_reach_writer_without_formula_or_statistic_keyw
     assert result["content"] == content and result["issues"] == []
     assert len(rig.calls) == 2
     assert "writing_guidance" not in rig.calls[1]["prompt"]
-    validate_result(result)
+    publication.validate_result(result)

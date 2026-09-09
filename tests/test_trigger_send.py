@@ -1,18 +1,18 @@
-"""Synthetic HTTP responses only: no listener, credentials, model or mail calls."""
+"""Synthetic HTTP responses, without credentials, model calls or mail."""
 
 import argparse
 import ast
 import io
 import json
+import pathlib
 import signal
 import subprocess
 import sys
-import urllib.error
-from pathlib import Path
+import urllib.error as urllib_error
 
 import pytest
 
-from newsletter import trigger
+import newsletter.trigger as trigger
 
 
 def run(state="ready", **fields):
@@ -82,7 +82,7 @@ def client(monkeypatch):
             return self
 
     value = Client()
-    monkeypatch.setattr(trigger.urllib.request, "build_opener", value.build)
+    monkeypatch.setattr(trigger.urllib_request, "build_opener", value.build)
     return value
 
 
@@ -180,9 +180,9 @@ def test_unsuccessful_send_response_is_not_success_or_retried(client, state):
     "failure",
     [
         TimeoutError("private timeout"),
-        urllib.error.URLError("private transport"),
+        urllib_error.URLError("private transport"),
         b"private-invalid-json",
-        urllib.error.HTTPError(
+        urllib_error.HTTPError(
             "https://newsletter.example.org",
             503,
             "private",
@@ -399,7 +399,7 @@ def test_posix_deadline_interrupts_network_and_restores_handler(
 
 
 def test_standalone_module_is_stdlib_only_and_help_needs_no_dependencies():
-    path = Path(trigger.__file__)
+    path = pathlib.Path(trigger.__file__)
     tree = ast.parse(path.read_text())
     imported = {
         (node.module or "").split(".")[0]
@@ -425,7 +425,11 @@ def test_standalone_module_is_stdlib_only_and_help_needs_no_dependencies():
 def test_checkout_wrapper_needs_no_install_pythonpath_or_repo_working_directory(
     tmp_path,
 ):
-    script = Path(__file__).resolve().parents[1] / "scripts" / "trigger_run.py"
+    script = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "trigger_run.py"
+    )
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(script), "--check-config", "--send"],
         cwd=tmp_path,

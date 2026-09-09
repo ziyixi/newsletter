@@ -1,25 +1,29 @@
 """V2 composition and operator diagnostics do not run models or send email."""
 
 import asyncio
-from dataclasses import replace
+import dataclasses
+import sqlite3
 
+import fastapi
 import pytest
-from fastapi import FastAPI
 
-from newsletter import lifecycle
-from newsletter.adapters import DisabledNotion
-from newsletter.editor import MockEditor
-from newsletter.notion_cli import status
-from newsletter.preflight import PreflightReport
-from newsletter.settings import Settings
-from newsletter.store import Store
-from newsletter.workflow.pipeline import freeze_workflow
-from newsletter.workflow.state import WorkflowState
+import newsletter.adapters as adapters
+import newsletter.editor as editor
+import newsletter.lifecycle as lifecycle
+import newsletter.notion_cli as notion_cli
+import newsletter.notion_sync as notion_sync
+import newsletter.preflight as preflight
+import newsletter.settings as newsletter_settings
+import newsletter.store as store
+import newsletter.worker as worker
+import newsletter.workflow.pipeline as pipeline
+import newsletter.workflow.state as state
+import newsletter.workflow.story_recipe as story_recipe
 
 
 @pytest.fixture
 def settings(tmp_path):
-    return Settings(
+    return newsletter_settings.Settings(
         data_dir=tmp_path / "live",
         mode="live",
         editor_backend="codex",
@@ -32,13 +36,13 @@ def settings(tmp_path):
     )
 
 
-async def test_two_consumers_stop_before_store_and_old_projection_is_not_claimed(
+async def test_consumers_stop_before_store_and_skip_legacy_projection(
     settings, monkeypatch
 ):
     events = []
 
     async def checked(*args, **kwargs):
-        return PreflightReport((), ())
+        return preflight.PreflightReport((), ())
 
     async def idle_worker(self):
         events.append("worker-start")
@@ -56,19 +60,21 @@ async def test_two_consumers_stop_before_store_and_old_projection_is_not_claimed
             self.journal.store.db.execute("SELECT 1")
             events.append("sync-stop")
 
-    monkeypatch.setattr(lifecycle, "preflight", checked)
-    monkeypatch.setattr(lifecycle.Worker, "run", idle_worker)
-    monkeypatch.setattr(lifecycle.NotionSync, "run", idle_sync)
-    app = FastAPI()
+    monkeypatch.setattr(preflight, "preflight", checked)
+    monkeypatch.setattr(worker.Worker, "run", idle_worker)
+    monkeypatch.setattr(notion_sync.NotionSync, "run", idle_sync)
+    app = fastapi.FastAPI()
     async with lifecycle.service_lifespan(
-        app, settings=settings, editor=MockEditor()
+        app, settings=settings, editor=editor.MockEditor()
     ):
         await asyncio.sleep(0)
         assert events == ["worker-start", "sync-start"]
-        assert isinstance(app.state.worker.notion, DisabledNotion)
+        assert isinstance(app.state.worker.notion, adapters.DisabledNotion)
         assert app.state.worker.skip_packet_projection
         before = (settings.data_dir / "newsletter.sqlite3").read_bytes()
-        assert status(settings.data_dir / "newsletter.sqlite3")["enabled"]
+        assert notion_cli.status(settings.data_dir / "newsletter.sqlite3")[
+            "enabled"
+        ]
         assert (settings.data_dir / "newsletter.sqlite3").read_bytes() == before
         assert not app.state.store.db.execute("SELECT 1 FROM sends").fetchone()
     assert events == ["worker-start", "sync-start", "sync-stop", "worker-stop"]
@@ -78,45 +84,44 @@ async def test_destination_failure_does_not_leave_content_worker_running(
     settings, monkeypatch
 ):
     async def checked(*args, **kwargs):
-        return PreflightReport((), ())
+        return preflight.PreflightReport((), ())
 
     async def forbidden(*args, **kwargs):
         pytest.fail("A consumer started before initialization completed")
 
-    monkeypatch.setattr(lifecycle, "preflight", checked)
-    app = FastAPI()
+    monkeypatch.setattr(preflight, "preflight", checked)
+    app = fastapi.FastAPI()
     async with lifecycle.service_lifespan(
         app, settings=settings, start_worker=False
     ):
         pass
-    monkeypatch.setattr(lifecycle.Worker, "run", forbidden)
+    monkeypatch.setattr(worker.Worker, "run", forbidden)
     with pytest.raises(ValueError, match="explicit migration"):
         async with lifecycle.service_lifespan(
-            app, settings=replace(settings, notion_archive_private=True)
+            app,
+            settings=dataclasses.replace(settings, notion_archive_private=True),
         ):
             pytest.fail("Changed audience/privacy was silently adopted")
 
 
 def test_status_missing_database_never_creates_it(tmp_path):
-    import sqlite3
-
     path = tmp_path / "absent.sqlite3"
     with pytest.raises(sqlite3.OperationalError):
-        status(path)
+        notion_cli.status(path)
     assert not path.exists()
 
 
 def test_legacy_recipe_is_rejected_for_v2_before_freezing(
     settings, tmp_path, monkeypatch
 ):
-    from newsletter.workflow import pipeline
-
-    with_store = Store(tmp_path / "source.sqlite3", "live")
+    with_store = store.Store(tmp_path / "source.sqlite3", "live")
     try:
         monkeypatch.setattr(
-            pipeline, "is_story_recipe", lambda definition: False
+            story_recipe, "is_story_recipe", lambda definition: False
         )
         with pytest.raises(ValueError, match="story publication"):
-            freeze_workflow(settings, WorkflowState(with_store), "2026-09-07")
+            pipeline.freeze_workflow(
+                settings, state.WorkflowState(with_store), "2026-09-07"
+            )
     finally:
         with_store.close()

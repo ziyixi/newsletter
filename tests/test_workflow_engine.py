@@ -1,28 +1,19 @@
-"""Offline logical DAG safety, fanout and durable recovery; no real providers."""
+"""Test offline DAG safety, fanout and durable recovery."""
 
 import asyncio
+import dataclasses
 import json
-from dataclasses import FrozenInstanceError
 
 import pytest
 
-from newsletter.store import Store
-from newsletter.workflow import (
-    DefinitionError,
-    NodeFailure,
-    NodeResult,
-    WorkflowEngine,
-    WorkflowError,
-    WorkflowRepository,
-    load_definition,
-    parse_definition,
-)
-from newsletter.workflow.definition import MAX_DEFINITION_BYTES, MAX_NODES
-from newsletter.workflow.repository import MAX_ARTIFACT_BYTES
+import newsletter.store as newsletter_store
+import newsletter.workflow.definition as newsletter_workflow_definition
+import newsletter.workflow.engine as newsletter_workflow_engine
+import newsletter.workflow.repository as newsletter_workflow_repository
 
 
 def definition(*nodes):
-    return parse_definition(
+    return newsletter_workflow_definition.parse_definition(
         {"version": 1, "id": "daily-newsletter", "nodes": list(nodes)}
     )
 
@@ -33,14 +24,14 @@ def node(identifier="discover", kind="discovery", **fields):
 
 @pytest.fixture
 def repo(tmp_path):
-    store = Store(tmp_path / "workflow.sqlite3", "mock")
-    repository = WorkflowRepository(store)
+    store = newsletter_store.Store(tmp_path / "workflow.sqlite3", "mock")
+    repository = newsletter_workflow_repository.WorkflowRepository(store)
     yield repository
     store.close()
 
 
 def test_literal_yaml_has_immutable_semantic_snapshot():
-    loaded = load_definition("""
+    loaded = newsletter_workflow_definition.load_definition("""
 version: 1
 id: daily-newsletter
 nodes:
@@ -58,8 +49,11 @@ nodes:
     assert loaded.nodes[0].params != params
     snapshot = loaded.snapshot()
     snapshot["nodes"][0]["params"]["direction"] = "changed"
-    assert loaded.digest != parse_definition(snapshot).digest
-    with pytest.raises(FrozenInstanceError):
+    assert (
+        loaded.digest
+        != newsletter_workflow_definition.parse_definition(snapshot).digest
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
         loaded.id = "changed"
 
 
@@ -67,22 +61,36 @@ nodes:
     "bad",
     [
         "version: 1\nversion: 1\nid: test\nnodes: []",
-        "version: 1\nid: test\nnodes: [{id: n, type: discovery, params: {k: 1, k: 2}}]",
+        (
+            "version: 1\n"
+            "id: test\n"
+            "nodes: [{id: n, type: discovery, params: {k: 1, k: 2}}]"
+        ),
         "version: 1\nid: test\nnodes: &tasks [{id: n, type: discovery}]",
         "version: 1\nid: test\nnodes: [*alias]",
         "!!python/object/apply:os.system ['DO_NOT_EXECUTE']",
-        "version: 1\nid: test\nnodes: [{id: n, type: discovery, params: {x: .nan}}]",
-        "version: 1\nid: test\nnodes: [{id: n, type: discovery, params: {x: 2026-09-06}}]",
+        (
+            "version: 1\n"
+            "id: test\n"
+            "nodes: [{id: n, type: discovery, params: {x: .nan}}]"
+        ),
+        (
+            "version: 1\n"
+            "id: test\n"
+            "nodes: [{id: n, type: discovery, params: {x: 2026-09-06}}]"
+        ),
         "version: 1\nid: test\nnodes: [" + "[" * 30 + "0" + "]" * 30 + "]",
         "not: [valid",
         "\x00",
         b"\xff",
-        b"a" * (MAX_DEFINITION_BYTES + 1),
+        b"a" * (newsletter_workflow_definition.MAX_DEFINITION_BYTES + 1),
     ],
 )
 def test_unsafe_yaml_fails_with_safe_diagnostics(bad):
-    with pytest.raises(DefinitionError) as caught:
-        load_definition(bad)
+    with pytest.raises(
+        newsletter_workflow_definition.DefinitionError
+    ) as caught:
+        newsletter_workflow_definition.load_definition(bad)
     assert "DO_NOT_EXECUTE" not in str(caught.value)
 
 
@@ -110,7 +118,10 @@ def test_unsafe_yaml_fails_with_safe_diagnostics(bad):
         [node("a", "selection", on_error="continue")],
         [node("a", "composition", on_error="continue")],
         [node("a", on_error="retry_forever")],
-        [node(f"node-{index}") for index in range(MAX_NODES + 1)],
+        [
+            node(f"node-{index}")
+            for index in range(newsletter_workflow_definition.MAX_NODES + 1)
+        ],
         [
             node(f"node-{index}", map={"from": "run.items", "max_items": 32})
             for index in range(5)
@@ -118,7 +129,9 @@ def test_unsafe_yaml_fails_with_safe_diagnostics(bad):
     ],
 )
 def test_invalid_graphs_rejected(nodes):
-    with pytest.raises(DefinitionError) as caught:
+    with pytest.raises(
+        newsletter_workflow_definition.DefinitionError
+    ) as caught:
         definition(*nodes)
     assert "SECRET_SENTINEL" not in str(caught.value)
 
@@ -128,11 +141,11 @@ def test_file_loader_rejects_symlinks_and_missing_file(tmp_path):
     actual.write_text("version: 1\nid: test\nnodes: [{id: n, type: discovery}]")
     link = tmp_path / "link.yml"
     link.symlink_to(actual)
-    with pytest.raises(DefinitionError):
-        load_definition(link)
-    with pytest.raises(DefinitionError):
-        load_definition(tmp_path / "missing.yml")
-    assert load_definition(actual).id == "test"
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        newsletter_workflow_definition.load_definition(link)
+    with pytest.raises(newsletter_workflow_definition.DefinitionError):
+        newsletter_workflow_definition.load_definition(tmp_path / "missing.yml")
+    assert newsletter_workflow_definition.load_definition(actual).id == "test"
 
 
 def test_repository_freezes_graph_and_inputs_with_idempotent_start(repo):
@@ -145,10 +158,10 @@ def test_repository_freezes_graph_and_inputs_with_idempotent_start(repo):
         repo.snapshot("run-1")["inputs"]["instructions"][0]["text"]
         == "original"
     )
-    with pytest.raises(WorkflowError) as caught:
+    with pytest.raises(newsletter_workflow_repository.WorkflowError) as caught:
         repo.start("run-1", graph, inputs)
     assert caught.value.code == "conflict"
-    with pytest.raises(WorkflowError):
+    with pytest.raises(newsletter_workflow_repository.WorkflowError):
         repo.start("run-1", definition(node(params={"limit": 2})), {})
 
 
@@ -171,7 +184,7 @@ async def test_serial_dependencies_persist_outputs_before_next_handler(repo):
         seen.append("later")
         return {"selected": True}
 
-    engine = WorkflowEngine(
+    engine = newsletter_workflow_engine.WorkflowEngine(
         repo, {"discovery": first, "selection": later}, external
     )
     result = await engine.run("run")
@@ -197,16 +210,18 @@ async def test_dynamic_fanout_preserves_input_order_and_runs_each_item_once(
         seen.append(context.item_id)
         return {"id": context.item_id, "text": context.item["text"]}
 
-    engine = WorkflowEngine(repo, {"discovery": handler})
+    engine = newsletter_workflow_engine.WorkflowEngine(
+        repo, {"discovery": handler}
+    )
     assert await engine.step("run") is True
     assert not seen and repo.get("run")["nodes"]["discover"]["map_expanded"]
     repo.expand_map("run", "discover", pinned)
     frozen = repo.get("run")["nodes"]["discover"]
-    with pytest.raises(WorkflowError) as caught:
+    with pytest.raises(newsletter_workflow_repository.WorkflowError) as caught:
         repo.expand_map("run", "discover", list(reversed(pinned)))
     assert caught.value.code == "conflict"
     assert repo.get("run")["nodes"]["discover"] == frozen
-    with pytest.raises(WorkflowError) as caught:
+    with pytest.raises(newsletter_workflow_repository.WorkflowError) as caught:
         repo.expand_map("run", "discover", [{"id": "another"}])
     assert caught.value.code == "conflict"
     assert (await engine.run("run"))["state"] == "succeeded"
@@ -243,7 +258,7 @@ async def test_engine_runs_selected_research_by_frozen_priority_not_item_id(
         seen.append((context.item_id, context.item["priority"]))
         return context.item
 
-    engine = WorkflowEngine(
+    engine = newsletter_workflow_engine.WorkflowEngine(
         repo, {"selection": selection, "research": research}
     )
     assert await engine.step("run") is True  # Selection result persisted.
@@ -272,9 +287,11 @@ async def test_existing_expanded_map_order_is_not_migrated_or_recomputed(repo):
         seen.append(context.item_id)
         return context.item
 
-    assert (await WorkflowEngine(repo, {"discovery": handler}).run("run"))[
-        "state"
-    ] == "succeeded"
+    assert (
+        await newsletter_workflow_engine.WorkflowEngine(
+            repo, {"discovery": handler}
+        ).run("run")
+    )["state"] == "succeeded"
     assert seen == ["a", "z"] and repo.output("run", "discover") == old_order
     assert repo.get("run")["nodes"]["discover"]["map_hash"] == frozen_hash
     assert repo.snapshot("run")["inputs"]["items"] == original
@@ -306,7 +323,7 @@ async def test_empty_supplement_map_skips_but_finalization_still_runs(repo):
         assert context.dependency_states["supplements"]["state"] == "skipped"
         return {"draft": "completed"}
 
-    result = await WorkflowEngine(
+    result = await newsletter_workflow_engine.WorkflowEngine(
         repo, {"gap_plan": plan, "research": research, "finalization": final}
     ).run("run")
     assert result["state"] == "succeeded" and not research_calls
@@ -332,7 +349,9 @@ async def test_invalid_map_input_fails_without_handler_call(repo, items):
     async def handler(context):
         calls.append(context)
 
-    result = await WorkflowEngine(repo, {"discovery": handler}).run("run")
+    result = await newsletter_workflow_engine.WorkflowEngine(
+        repo, {"discovery": handler}
+    ).run("run")
     assert result["state"] == "failed" and not calls
     assert repo.attempts("run")[0]["error_code"] == "invalid_input"
 
@@ -355,9 +374,11 @@ async def test_explicit_optional_map_failure_preserves_failed_children(repo):
 
     async def research(context):
         if context.item_id == "bad":
-            raise NodeFailure("unavailable")
+            raise newsletter_workflow_engine.NodeError("unavailable")
         if context.item_id == "uncertain":
-            raise NodeFailure("external_unknown", ambiguous=True)
+            raise newsletter_workflow_engine.NodeError(
+                "external_unknown", ambiguous=True
+            )
         return {"id": "good", "evidence": "verified"}
 
     async def compose(context):
@@ -373,7 +394,7 @@ async def test_explicit_optional_map_failure_preserves_failed_children(repo):
         ]
         return {"coverage_checked": True}
 
-    result = await WorkflowEngine(
+    result = await newsletter_workflow_engine.WorkflowEngine(
         repo, {"research": research, "composition": compose}
     ).run("run")
     assert result["state"] == "succeeded"
@@ -394,9 +415,11 @@ async def test_nonmapped_optional_provider_failure_has_explicit_empty_artifact(
     )
 
     async def fail(context):
-        raise NodeFailure("unavailable")
+        raise newsletter_workflow_engine.NodeError("unavailable")
 
-    result = await WorkflowEngine(repo, {"api_feed": fail}).run("run")
+    result = await newsletter_workflow_engine.WorkflowEngine(
+        repo, {"api_feed": fail}
+    ).run("run")
     assert result["state"] == "succeeded"
     status = result["nodes"]["discover"]
     assert (
@@ -423,17 +446,21 @@ async def test_required_failure_blocks_downstream_and_does_not_retry(
 
     async def fail(context):
         calls.append(context.node_id)
-        raise NodeFailure("unavailable", ambiguous=ambiguous)
+        raise newsletter_workflow_engine.NodeError(
+            "unavailable", ambiguous=ambiguous
+        )
 
-    engine = WorkflowEngine(repo, {"discovery": fail, "review": fail})
+    engine = newsletter_workflow_engine.WorkflowEngine(
+        repo, {"discovery": fail, "review": fail}
+    )
     assert (await engine.run("run"))["state"] == expected
     assert await engine.step("run") is False and calls == ["first"]
 
 
 async def test_restart_recovers_inflight_to_unknown_without_replaying(tmp_path):
     path = tmp_path / "durable.sqlite3"
-    store = Store(path, "mock")
-    repo = WorkflowRepository(store)
+    store = newsletter_store.Store(path, "mock")
+    repo = newsletter_workflow_repository.WorkflowRepository(store)
     repo.start(
         "run",
         definition(node(map={"from": "run.items", "max_items": 2})),
@@ -444,8 +471,8 @@ async def test_restart_recovers_inflight_to_unknown_without_replaying(tmp_path):
     repo.finish(first, "succeeded", {"id": "a"})
     inflight = repo.claim("run", "discover", "b", {})
     store.close()
-    store = Store(path, "mock")
-    repo = WorkflowRepository(store)
+    store = newsletter_store.Store(path, "mock")
+    repo = newsletter_workflow_repository.WorkflowRepository(store)
     assert repo.recover() == 1 and repo.recover() == 0
     assert repo.get("run")["state"] == "unknown"
     assert len(repo.artifacts("run")) == 1
@@ -455,11 +482,13 @@ async def test_restart_recovers_inflight_to_unknown_without_replaying(tmp_path):
         calls.append(context)
 
     assert (
-        await WorkflowEngine(repo, {"discovery": forbidden}).step("run")
+        await newsletter_workflow_engine.WorkflowEngine(
+            repo, {"discovery": forbidden}
+        ).step("run")
         is False
     )
     assert not calls
-    with pytest.raises(WorkflowError):
+    with pytest.raises(newsletter_workflow_repository.WorkflowError):
         repo.finish(inflight, "succeeded", {"id": "b"})
     store.close()
 
@@ -471,23 +500,25 @@ async def test_cancellation_records_unknown_before_propagating(repo):
         raise asyncio.CancelledError()
 
     with pytest.raises(asyncio.CancelledError):
-        await WorkflowEngine(repo, {"discovery": canceled}).run("run")
+        await newsletter_workflow_engine.WorkflowEngine(
+            repo, {"discovery": canceled}
+        ).run("run")
     assert repo.get("run")["state"] == "unknown"
     assert repo.attempts("run")[0]["error_code"] == "interrupted"
 
 
-async def test_generic_errors_and_invalid_artifacts_never_persist_exception_text(
-    repo, capsys
-):
+async def test_failures_never_persist_exception_text(repo, capsys):
     sentinel = "SECRET_SENTINEL_DO_NOT_LOG"
     repo.start("failure", definition(node()), {})
 
     async def bad(context):
         raise ValueError(sentinel)
 
-    assert (await WorkflowEngine(repo, {"discovery": bad}).run("failure"))[
-        "state"
-    ] == "failed"
+    assert (
+        await newsletter_workflow_engine.WorkflowEngine(
+            repo, {"discovery": bad}
+        ).run("failure")
+    )["state"] == "failed"
     assert sentinel not in json.dumps(repo.get("failure")) + json.dumps(
         repo.attempts("failure")
     )
@@ -495,10 +526,12 @@ async def test_generic_errors_and_invalid_artifacts_never_persist_exception_text
     repo.start("oversized", definition(node()), {})
 
     async def oversized(context):
-        return "x" * (MAX_ARTIFACT_BYTES + 1)
+        return "x" * (newsletter_workflow_repository.MAX_ARTIFACT_BYTES + 1)
 
     assert (
-        await WorkflowEngine(repo, {"discovery": oversized}).run("oversized")
+        await newsletter_workflow_engine.WorkflowEngine(
+            repo, {"discovery": oversized}
+        ).run("oversized")
     )["state"] == "failed"
     assert not repo.artifacts("oversized")
 
@@ -507,9 +540,13 @@ async def test_explicit_skip_differs_from_failure(repo):
     repo.start("run", definition(node()), {})
 
     async def skip(context):
-        return NodeResult.skipped({"candidates": []}, "no_findings")
+        return newsletter_workflow_engine.NodeResult.skipped(
+            {"candidates": []}, "no_findings"
+        )
 
-    result = await WorkflowEngine(repo, {"discovery": skip}).run("run")
+    result = await newsletter_workflow_engine.WorkflowEngine(
+        repo, {"discovery": skip}
+    ).run("run")
     assert (
         result["state"] == "succeeded"
         and result["nodes"]["discover"]["state"] == "skipped"
@@ -531,8 +568,10 @@ def test_claims_are_serialized_across_engine_instances_and_respect_dependencies(
 
 
 def test_unknown_handler_registry_type_rejected(repo):
-    with pytest.raises(NodeFailure):
-        WorkflowEngine(repo, {"send": lambda _: None})
+    with pytest.raises(newsletter_workflow_engine.NodeError):
+        newsletter_workflow_engine.WorkflowEngine(
+            repo, {"send": lambda _: None}
+        )
 
 
 async def test_invalid_map_does_not_spin_when_another_run_holds_execution_claim(
@@ -549,7 +588,9 @@ async def test_invalid_map_does_not_spin_when_another_run_holds_execution_claim(
     async def forbidden(context):
         pytest.fail("An unclaimed node must not invoke its handler")
 
-    engine = WorkflowEngine(repo, {"discovery": forbidden})
+    engine = newsletter_workflow_engine.WorkflowEngine(
+        repo, {"discovery": forbidden}
+    )
     assert await engine.run_step("invalid") is False
     assert repo.get("invalid")["state"] == "queued"
     assert repo.attempts("invalid") == []
@@ -568,7 +609,7 @@ def test_map_aggregate_cannot_bypass_children_or_unmet_dependencies(repo):
         ),
         {"items": [{"id": "one"}]},
     )
-    with pytest.raises(WorkflowError):
+    with pytest.raises(newsletter_workflow_repository.WorkflowError):
         repo.expand_map("run", "mapped", [{"id": "one"}])
     attempt = repo.claim("run", "first", "", {})
     repo.finish(attempt, "succeeded", {})
@@ -598,9 +639,11 @@ async def test_shared_prerequisite_failures_cannot_continue(
 
     async def fail(context):
         calls.append((context.node_id, context.item_id))
-        raise NodeFailure(code, ambiguous=ambiguous)
+        raise newsletter_workflow_engine.NodeError(code, ambiguous=ambiguous)
 
-    engine = WorkflowEngine(repo, {"discovery": fail, "review": fail})
+    engine = newsletter_workflow_engine.WorkflowEngine(
+        repo, {"discovery": fail, "review": fail}
+    )
     result = await engine.run("run")
     assert result["state"] == ("unknown" if ambiguous else "failed")
     assert calls == [("discovery", "a" if mapped else "")]

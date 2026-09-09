@@ -1,26 +1,26 @@
-"""One frozen repair and honest parent/child accounting; SQLite fixtures only."""
+"""Test one frozen repair and parent/child accounting with SQLite fixtures."""
 
+import concurrent.futures as futures
 import copy
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from test_usage import notification, record_one
-from test_workflow_state import approval, binding, packet, ready, request
 
-from newsletter.collection.repository import RunRepository
-from newsletter.store import Store, StoreError
-from newsletter.workflow.definition import parse_definition
-from newsletter.workflow.repository import WorkflowRepository
-from newsletter.workflow.state import MAX_REPAIR_SNAPSHOT_BYTES, WorkflowState
+import newsletter.collection.repository as repository
+import newsletter.store as newsletter_store
+import newsletter.workflow.definition as newsletter_workflow_definition
+import newsletter.workflow.repository as newsletter_workflow_repository
+import newsletter.workflow.state as newsletter_workflow_state
+import tests.support.usage as usage
+import tests.support.workflow_state as workflow_state
 
 
 @pytest.fixture
 def source(tmp_path):
-    store = Store(tmp_path / "repair.sqlite3", "mock")
-    state = WorkflowState(store)
-    runs = RunRepository(store)
-    graph = parse_definition(
+    store = newsletter_store.Store(tmp_path / "repair.sqlite3", "mock")
+    state = newsletter_workflow_state.WorkflowState(store)
+    runs = repository.RunRepository(store)
+    graph = newsletter_workflow_definition.parse_definition(
         {
             "version": 1,
             "id": "fixture-source",
@@ -40,14 +40,15 @@ def source(tmp_path):
         [],
         workflow_snapshot={"definition": graph.snapshot(), "inputs": inputs},
     )
-    material = packet(store, "public-fixture")
-    frozen = binding(run["id"], [material])
+    material = workflow_state.packet(store, "public-fixture")
+    frozen = workflow_state.binding(run["id"], [material])
     frozen["result"]["review"] = {
         "passed": False,
         "findings": ["Synthetic review objection."],
     }
     edition = store.prepare(
-        request("source-edition", [material]), workflow_binding=frozen
+        workflow_state.request("source-edition", [material]),
+        workflow_binding=frozen,
     )
     edition = store.finish(
         edition["id"],
@@ -64,7 +65,7 @@ def source(tmp_path):
     )
     # Real immutable workflow artifact to prove repair creation does not rewrite
     # the failed review or force an original attempt back to pending.
-    workflow = WorkflowRepository(store)
+    workflow = newsletter_workflow_repository.WorkflowRepository(store)
     workflow.start(run["id"], graph, inputs)
     attempt = workflow.claim(run["id"], "review", "", inputs)
     workflow.finish(
@@ -175,7 +176,7 @@ def test_existing_repair_rejects_changed_source_or_frozen_inputs(
         args = {"definition": definition}
     else:
         args = {"source_edition_id": "different-edition"}
-    with pytest.raises(StoreError) as caught:
+    with pytest.raises(newsletter_store.StoreError) as caught:
         create(source, **args)
     assert caught.value.code == "conflict"
     assert source["state"].repair(source["run"]["id"]) == original
@@ -197,7 +198,7 @@ def test_idempotent_receipt_remains_available_after_parent_advances(source):
 
 def test_repair_cannot_create_a_second_generation(source):
     receipt = create(source)
-    with pytest.raises(StoreError) as caught:
+    with pytest.raises(newsletter_store.StoreError) as caught:
         create(source, parent_run_id=receipt["child_run_id"])
     assert caught.value.code == "conflict"
     assert (
@@ -222,7 +223,7 @@ def test_repair_cannot_create_a_second_generation(source):
 )
 def test_parent_must_still_be_the_expected_review_blocked_run(source, patch):
     source["runs"].update(source["run"]["id"], **patch)
-    with pytest.raises(StoreError) as caught:
+    with pytest.raises(newsletter_store.StoreError) as caught:
         create(source)
     assert caught.value.code == "conflict"
     assert source["state"].repair(source["run"]["id"]) is None
@@ -247,7 +248,7 @@ def test_source_edition_must_be_review_failed_and_never_submitted(
     source, patch
 ):
     source["store"].finish(source["edition"]["id"], **patch)
-    with pytest.raises(StoreError) as caught:
+    with pytest.raises(newsletter_store.StoreError) as caught:
         create(source)
     assert caught.value.code == "conflict"
     assert source["state"].repair(source["run"]["id"]) is None
@@ -268,18 +269,20 @@ def test_parent_workflow_binding_cannot_be_missing_or_point_to_another_run(
                 "UPDATE workflow_editions SET run_id=? WHERE edition_id=?",
                 ("other-run", source["edition"]["id"]),
             )
-    with pytest.raises(StoreError) as caught:
+    with pytest.raises(newsletter_store.StoreError) as caught:
         create(source)
     assert caught.value.code == "conflict"
 
 
 def test_any_same_date_send_reservation_prevents_a_new_repair(source):
     store = source["store"]
-    alternate = ready(store, "already-submitted", [source["material"]])
+    alternate = workflow_state.ready(
+        store, "already-submitted", [source["material"]]
+    )
     store.projection_result(source["material"]["id"], "done")
-    assert store.reserve_send(approval(alternate))[1]
+    assert store.reserve_send(workflow_state.approval(alternate))[1]
     before = old_rows(store)
-    with pytest.raises(StoreError) as caught:
+    with pytest.raises(newsletter_store.StoreError) as caught:
         create(source)
     assert caught.value.code == "conflict"
     assert old_rows(store) == before
@@ -288,10 +291,10 @@ def test_any_same_date_send_reservation_prevents_a_new_repair(source):
 def test_missing_parent_fails_safely_even_before_collection_tables_exist(
     tmp_path,
 ):
-    store = Store(tmp_path / "empty.sqlite3", "mock")
+    store = newsletter_store.Store(tmp_path / "empty.sqlite3", "mock")
     try:
-        with pytest.raises(StoreError) as caught:
-            WorkflowState(store).create_repair(
+        with pytest.raises(newsletter_store.StoreError) as caught:
+            newsletter_workflow_state.WorkflowState(store).create_repair(
                 "missing-parent",
                 "missing-edition",
                 {
@@ -310,7 +313,7 @@ def test_missing_parent_fails_safely_even_before_collection_tables_exist(
     "bad", [None, {"version": 1}, {"unexpected": "synthetic"}]
 )
 def test_invalid_definition_is_not_frozen(source, bad):
-    with pytest.raises(StoreError) as caught:
+    with pytest.raises(newsletter_store.StoreError) as caught:
         create(source, definition=bad)
     assert caught.value.code == "invalid_argument"
 
@@ -318,7 +321,7 @@ def test_invalid_definition_is_not_frozen(source, bad):
 @pytest.mark.parametrize("bad", ["wrong-date", None])
 def test_frozen_repair_cannot_change_or_omit_issue_date(source, bad):
     inputs = {**source["inputs"], "issue_date": bad}
-    with pytest.raises(StoreError) as caught:
+    with pytest.raises(newsletter_store.StoreError) as caught:
         create(source, inputs=inputs)
     assert caught.value.code == "conflict"
 
@@ -330,12 +333,16 @@ def test_invalid_or_oversized_snapshot_has_fixed_non_secret_diagnostics(
     inputs = copy.deepcopy(source["inputs"])
     inputs["private_fixture"] = "DO_NOT_INCLUDE_IN_ERROR"
     if mode == "too_large":
-        inputs["padding"] = "中" * (MAX_REPAIR_SNAPSHOT_BYTES // 2)
+        inputs["padding"] = "中" * (
+            newsletter_workflow_state.MAX_REPAIR_SNAPSHOT_BYTES // 2
+        )
     elif mode == "nonfinite":
         inputs["number"] = float("nan")
     else:
         inputs["recursive"] = inputs
-    with pytest.raises(StoreError, match="^Invalid repair snapshot$") as caught:
+    with pytest.raises(
+        newsletter_store.StoreError, match=r"^Invalid repair snapshot$"
+    ) as caught:
         create(source, inputs=inputs)
     assert (
         caught.value.code == "invalid_argument"
@@ -344,20 +351,22 @@ def test_invalid_or_oversized_snapshot_has_fixed_non_secret_diagnostics(
     assert source["state"].repair(source["run"]["id"]) is None
 
 
-def test_parent_child_usage_aggregates_latest_invocations_without_cross_run_leak(
+def test_parent_child_usage_aggregation_has_no_cross_run_leak(
     source,
 ):
     state, parent = source["state"], source["run"]["id"]
     # Synthetic reported counters use the requested prior total for arithmetic
     # regression; this test never loads a real run, session log or provider.
-    prior = record_one(notification(5_500_000, 403_990, 4_000_000, 100_000))[-1]
+    prior = usage.record_one(
+        usage.notification(5_500_000, 403_990, 4_000_000, 100_000)
+    )[-1]
     state.usage_sink(parent)(prior)
-    unrelated = record_one(notification(999_000, 1_000))[-1]
+    unrelated = usage.record_one(usage.notification(999_000, 1_000))[-1]
     state.usage_sink("unrelated-run")(unrelated)
     receipt = create(source)
     child = receipt["child_run_id"]
     assert state.usage(child)["usage"]["total_tokens"] == 5_903_990
-    current = record_one(notification(80_000, 5_000, 50_000, 2_000))
+    current = usage.record_one(usage.notification(80_000, 5_000, 50_000, 2_000))
     for row in current + [current[-1]]:
         state.usage_sink(child)(row)
     assert state.usage(parent) == state.usage(child)
@@ -371,7 +380,7 @@ def test_parent_child_usage_aggregates_latest_invocations_without_cross_run_leak
         .fetchone()[0]
         == 3
     )
-    with pytest.raises(StoreError):
+    with pytest.raises(newsletter_store.StoreError):
         state.usage_sink(child)(
             prior
         )  # Do not copy parent rows into the child.
@@ -379,9 +388,9 @@ def test_parent_child_usage_aggregates_latest_invocations_without_cross_run_leak
 
 def test_missing_child_usage_preserves_known_parent_and_partial_status(source):
     parent = source["run"]["id"]
-    source["state"].usage_sink(parent)(record_one()[-1])
+    source["state"].usage_sink(parent)(usage.record_one()[-1])
     child = create(source)["child_run_id"]
-    source["state"].usage_sink(child)(record_one()[0])
+    source["state"].usage_sink(child)(usage.record_one()[0])
     result = source["state"].usage(child)
     assert result["usage"]["total_tokens"] == 120
     assert result["partial"] and result["missing_invocations"] == 1
@@ -389,11 +398,11 @@ def test_missing_child_usage_preserves_known_parent_and_partial_status(source):
 
 def test_repair_and_combined_usage_survive_reopening_database(source, tmp_path):
     receipt = create(source)
-    source["state"].usage_sink(source["run"]["id"])(record_one()[-1])
-    source["state"].usage_sink(receipt["child_run_id"])(record_one()[-1])
-    peer = Store(tmp_path / "repair.sqlite3", "mock")
+    source["state"].usage_sink(source["run"]["id"])(usage.record_one()[-1])
+    source["state"].usage_sink(receipt["child_run_id"])(usage.record_one()[-1])
+    peer = newsletter_store.Store(tmp_path / "repair.sqlite3", "mock")
     try:
-        state = WorkflowState(peer)
+        state = newsletter_workflow_state.WorkflowState(peer)
         assert state.repair(source["run"]["id"]) == receipt
         assert (
             state.usage(receipt["child_run_id"])["usage"]["total_tokens"] == 240
@@ -406,9 +415,9 @@ def test_concurrent_identical_requests_create_one_repair_row(source, tmp_path):
     gate = threading.Barrier(2)
 
     def create_peer(_):
-        peer = Store(tmp_path / "repair.sqlite3", "mock")
+        peer = newsletter_store.Store(tmp_path / "repair.sqlite3", "mock")
         try:
-            state = WorkflowState(peer)
+            state = newsletter_workflow_state.WorkflowState(peer)
             gate.wait(timeout=5)
             return state.create_repair(
                 source["run"]["id"],
@@ -419,7 +428,7 @@ def test_concurrent_identical_requests_create_one_repair_row(source, tmp_path):
         finally:
             peer.close()
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with futures.ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(create_peer, range(2)))
     assert results[0] == results[1]
     assert (

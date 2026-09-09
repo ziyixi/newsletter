@@ -5,28 +5,27 @@ through FakeMail; a separate render-only check exercises real-count formatting.
 """
 
 import base64
+import copy
+import email.parser as parser
+import email.policy as policy
 import io
-from copy import deepcopy
-from email import policy
-from email.parser import BytesParser
 
 import httpx
+import PIL.Image as Image
 import pytest
-import test_story_editor as story_fixtures
-from PIL import Image
-from test_publication import DAY, result, story, task
-from test_rendering import SAMPLE_DRAFT, SAMPLE_PACKETS, ParsedEmail
-from test_usage import notification, record_one
 
-from newsletter.adapters import FakeMail
-from newsletter.rendering import CHART_CID, preview_html, render_edition
-from newsletter.store import Store
-from newsletter.todofy import FakeTodofy, unavailable_digest
-from newsletter.usage import summarize_usage
-from newsletter.workflow.publication import PublicationRepository, assemble
+import newsletter.adapters as adapters
+import newsletter.rendering as newsletter_rendering
+import newsletter.store as newsletter_store
+import newsletter.todofy as todofy
+import newsletter.usage as newsletter_usage
+import newsletter.workflow.publication as newsletter_workflow_publication
+import tests.support.publication as publication
+import tests.support.rendering as rendering
+import tests.support.story_editor as story_editor
+import tests.support.usage as tests_support_usage
 
 # Reuse the offline writer/reviewer harness, including observed-source receipts.
-rig = story_fixtures.rig
 
 
 @pytest.fixture(autouse=True)
@@ -40,49 +39,58 @@ def forbid_network(monkeypatch):
 
 
 @pytest.mark.parametrize("chart_status", ["approved", "blocked", "not_present"])
-async def test_degraded_publication_preserves_topic_identity_and_chart_audit_in_mail(
+async def test_degraded_mail_keeps_topic_identity_and_chart_audit(
     tmp_path, rig, chart_status
 ):
-    science = story_fixtures.story(chart=chart_status != "not_present")
+    science = story_editor.story(chart=chart_status != "not_present")
     science.update(kind="science", title="离线科学样题：两组观测意味着什么")
-    proposed_chart = deepcopy(science.get("chart"))
+    proposed_chart = copy.deepcopy(science.get("chart"))
     rig.replies = [
-        story_fixtures.reply(story_fixtures.writer(science)),
-        story_fixtures.reply(story_fixtures.review(chart=chart_status)),
+        story_editor.reply(story_editor.writer(science)),
+        story_editor.reply(story_editor.review(chart=chart_status)),
     ]
     science_result = await rig.run(mode="deep")
     assert (
         len(rig.calls) == 2
     )  # A rejected optional chart cannot trigger body repair.
 
-    tasks = [task(1), task(2, id="story-a"), task(3), task(4)]
+    tasks = [
+        publication.task(1),
+        publication.task(2, id="story-a"),
+        publication.task(3),
+        publication.task(4),
+    ]
     values = [
-        result(
+        publication.result(
             1,
-            content=story(
+            content=publication.story(
                 1,
                 kind="ai_ml",
                 title="离线 AI 样题：已审简讯保留",
                 limitations="AI 样题的独立边界。",
             ),
         ),
-        result(1, "deep", content=False, reason="editor_unavailable"),
+        publication.result(
+            1, "deep", content=False, reason="editor_unavailable"
+        ),
         science_result,
-        result(
+        publication.result(
             3,
-            content=story(
+            content=publication.story(
                 3,
                 kind="world",
                 title="离线世界样题：独立公共事件",
                 limitations="世界样题的独立边界。",
             ),
         ),
-        result(4, content=False),
+        publication.result(4, content=False),
     ]
-    store = Store(tmp_path / "reader.sqlite3", "mock")
+    store = newsletter_store.Store(tmp_path / "reader.sqlite3", "mock")
     try:
-        repository = PublicationRepository(store)
-        repository.save_plan("reader-release", DAY, tasks)
+        repository = newsletter_workflow_publication.PublicationRepository(
+            store
+        )
+        repository.save_plan("reader-release", publication.DAY, tasks)
         tasks_by_id = {item["id"]: item for item in tasks}
         for value in values:
             repository.save(
@@ -90,24 +98,29 @@ async def test_degraded_publication_preserves_topic_identity_and_chart_audit_in_
                 tasks_by_id[value["story_id"]],
                 value["mode"],
                 value,
-                issue_date=DAY,
+                issue_date=publication.DAY,
             )
-        built = assemble(
+        built = newsletter_workflow_publication.assemble(
             "reader-release",
-            DAY,
+            publication.DAY,
             tasks,
             repository.results("reader-release"),
             reason="workflow_deadline",
         )
-        repository.record_publication("reader-release", DAY, tasks, built)
+        repository.record_publication(
+            "reader-release", publication.DAY, tasks, built
+        )
     finally:
         store.close()
 
     # Diagnostics must survive the freeze and a process restart, not just exist
-    # in an in-memory fixture. They are operator audit, not invented reader copy.
-    store = Store(tmp_path / "reader.sqlite3", "mock")
+    # in an in-memory fixture. They are operator audit, not invented reader
+    # copy.
+    store = newsletter_store.Store(tmp_path / "reader.sqlite3", "mock")
     try:
-        repository = PublicationRepository(store)
+        repository = newsletter_workflow_publication.PublicationRepository(
+            store
+        )
         assert repository.get_publication("reader-release") == built
         saved = next(
             value
@@ -134,14 +147,16 @@ async def test_degraded_publication_preserves_topic_identity_and_chart_audit_in_
         "brief",
         "deferred",
     ]
-    personal = await FakeTodofy().fetch(DAY)
-    rendered = render_edition(
+    personal = await todofy.FakeTodofy().fetch(publication.DAY)
+    rendered = newsletter_rendering.render_edition(
         built["draft"],
         built["packets"],
-        DAY,
+        publication.DAY,
         is_fixture=True,
         personal_digest=personal,
-        usage=summarize_usage(record_one()),
+        usage=newsletter_usage.summarize_usage(
+            tests_support_usage.record_one()
+        ),
     )
     panels = rendered["html"].split('class="story-panel"')[1:]
     sections = built["draft"]["sections"]
@@ -185,14 +200,15 @@ async def test_degraded_publication_preserves_topic_identity_and_chart_audit_in_
         "draft": built["draft"],
         "rendered": rendered,
     }
-    mail = FakeMail(tmp_path / "mail")
+    mail = adapters.FakeMail(tmp_path / "mail")
     sent = await mail.send(edition, "reader-fixture")
     artifact = next((tmp_path / "mail").glob("*.eml"))
     frozen_bytes = artifact.read_bytes()
-    message = BytesParser(policy=policy.default).parsebytes(frozen_bytes)
+    message = parser.BytesParser(policy=policy.default).parsebytes(frozen_bytes)
     assert sent["delivery_state"] == "simulated"
     assert message["X-Newsletter-Simulated"] == "true"
-    # MIME uses CRLF transport line endings; no text or inline styling may change.
+    # MIME uses CRLF transport line endings; no text or inline styling may
+    # change.
     for subtype, field in (("html", "html"), ("plain", "text")):
         decoded = message.get_body(preferencelist=(subtype,)).get_content()
         assert decoded.replace("\r\n", "\n").rstrip("\n") == rendered[
@@ -203,23 +219,28 @@ async def test_degraded_publication_preserves_topic_identity_and_chart_audit_in_
         for part in message.walk()
         if part.get_content_type() == "image/png"
     ]
-    parsed = ParsedEmail(rendered["html"])
+    parsed = rendering.ParsedEmail(rendered["html"])
     if chart_status == "approved":
         assert built["draft"]["chart"] == proposed_chart
         assert len(images) == len(parsed.images) == 1
-        assert parsed.images[0]["src"] == CHART_CID
+        assert parsed.images[0]["src"] == newsletter_rendering.CHART_CID
         assert parsed.images[0]["alt"] == proposed_chart["alt_text"]
         assert images[0]["Content-ID"] == "<newsletter-chart>"
         png = base64.b64decode(rendered["chart_png"])
         assert images[0].get_payload(decode=True) == png
         image = Image.open(io.BytesIO(png))
         assert image.format == "PNG" and image.width == 1280
-        assert CHART_CID not in preview_html(rendered)
-        assert "data:image/png;base64," in preview_html(rendered)
+        assert (
+            newsletter_rendering.CHART_CID
+            not in newsletter_rendering.preview_html(rendered)
+        )
+        assert "data:image/png;base64," in newsletter_rendering.preview_html(
+            rendered
+        )
     else:
         assert "chart" not in built["draft"]
         assert not images and not parsed.images and rendered["chart_png"] == ""
-        assert CHART_CID not in rendered["html"]
+        assert newsletter_rendering.CHART_CID not in rendered["html"]
         assert "一图看懂" not in rendered["html"]
     assert await mail.send(edition, "reader-fixture") == sent
     assert artifact.read_bytes() == frozen_bytes
@@ -227,8 +248,8 @@ async def test_degraded_publication_preserves_topic_identity_and_chart_audit_in_
 
 
 def test_wide_reader_layout_has_utf8_headroom_and_disjoint_partial_usage():
-    """Representative HTML size guard, not a promise about every Gmail client."""
-    draft = deepcopy(SAMPLE_DRAFT)
+    """Guard representative HTML size, not every Gmail client's behavior."""
+    draft = copy.deepcopy(rendering.SAMPLE_DRAFT)
     draft["title"] = draft["subject"] = "八题离线验收样张，不是真实新闻"
     kinds = [
         "ai_ml",
@@ -254,20 +275,30 @@ def test_wide_reader_layout_has_utf8_headroom_and_disjoint_partial_usage():
                 }
                 for part in range(1, 5 if number <= 2 else 3)
             ],
-            "limitations": f"第{number}题仅为离线样张，不能当作事实或推断因果。",
+            "limitations": (
+                f"第{number}题仅为离线样张，不能当作事实或推断因果。"
+            ),
         }
         for number, kind in enumerate(kinds, 1)
     ]
-    packets = deepcopy(SAMPLE_PACKETS)
+    packets = copy.deepcopy(rendering.SAMPLE_PACKETS)
     # Exercise production footer formatting without sending or claiming these
     # synthetic source/usage values came from a real account.
     packets[0]["is_fixture"] = False
-    usage = summarize_usage(
-        record_one(notification(6_000_000, 90_000, cached=5_000_000))
+    usage = newsletter_usage.summarize_usage(
+        tests_support_usage.record_one(
+            tests_support_usage.notification(
+                6_000_000, 90_000, cached=5_000_000
+            )
+        )
     )
     usage["partial"] = True
-    rendered = render_edition(
-        draft, packets, DAY, personal_digest=unavailable_digest(), usage=usage
+    rendered = newsletter_rendering.render_edition(
+        draft,
+        packets,
+        publication.DAY,
+        personal_digest=todofy.unavailable_digest(),
+        usage=usage,
     )
     html_bytes = len(rendered["html"].encode("utf-8"))
     assert html_bytes < 90 * 1024, (

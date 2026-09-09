@@ -1,29 +1,23 @@
-"""Todofy is always faked or HTTP MockTransport here; no live models or accounts."""
+"""Test Todofy with fakes and HTTP transports, never live accounts."""
 
 import asyncio
 import base64
+import datetime
 import json
-from datetime import UTC, datetime
 
 import httpx
 import pytest
 
-from newsletter.contracts import validate_personal_digest
-from newsletter.todofy import (
-    DisabledTodofy,
-    FakeTodofy,
-    Todofy,
-    unavailable_digest,
-    validate_todofy_configuration,
-)
+import newsletter.contracts as contracts
+import newsletter.todofy as todofy
 
 TODAY = "2026-09-05"
-INSTANT = datetime(2026, 9, 5, 18, 0, tzinfo=UTC)
+INSTANT = datetime.datetime(2026, 9, 5, 18, 0, tzinfo=datetime.UTC)
 USER, PASSWORD = "test-user", "test-secret-not-for-output"
 
 
 def adapter(handler, **options):
-    return Todofy(
+    return todofy.Todofy(
         "https://todofy.example.org",
         USER,
         PASSWORD,
@@ -39,7 +33,11 @@ def recommendation():
             {
                 "rank": 1,
                 "title": "确认会议安排",
-                "reason": "邀请有两个候选时段。尚未确认你的时间，请对照日历后回复。\n不是已安排的会议。",
+                "reason": (
+                    "邀请有两个候选时段。尚未确认你的时间，"
+                    "请对照日历后回复。\n"
+                    "不是已安排的会议。"
+                ),
             },
             {
                 "rank": 2,
@@ -62,7 +60,7 @@ def forbid_http_network(monkeypatch):
     )
 
 
-async def test_fetches_ten_candidates_once_and_preserves_selected_full_reasons():
+async def test_fetches_ten_candidates_once_preserves_selected_full_reasons():
     calls = []
 
     def handler(request):
@@ -94,7 +92,11 @@ async def test_fetches_ten_candidates_once_and_preserves_selected_full_reasons()
 
 async def test_summary_is_opt_in_and_only_one_call():
     calls = []
-    narrative = "事项一有待回复，当前信息尚不足以确认截止时间。\n\n事项二只是通知，无需行动。"
+    narrative = (
+        "事项一有待回复，当前信息尚不足以确认截止时间。\n"
+        "\n"
+        "事项二只是通知，无需行动。"
+    )
 
     def handler(request):
         calls.append(request)
@@ -121,7 +123,9 @@ async def test_empty_summary_is_success_not_upstream_obsolete_alarm():
         lambda _: httpx.Response(
             200,
             json={
-                "summary": "Please check your service as it's highly not possible...",
+                "summary": (
+                    "Please check your service as it's highly not possible..."
+                ),
                 "task_count": 0,
                 "time_window_hours": 24,
             },
@@ -309,7 +313,7 @@ async def test_current_rolling_window_cannot_masquerade_as_historical_or_future(
 
 async def test_issue_date_uses_configured_timezone():
     seen = []
-    backend = Todofy(
+    backend = todofy.Todofy(
         "https://todofy.example.org",
         USER,
         PASSWORD,
@@ -318,7 +322,7 @@ async def test_issue_date_uses_configured_timezone():
                 seen.append(request) or httpx.Response(200, json={"tasks": []})
             )
         ),
-        clock=lambda: datetime(2026, 9, 6, 1, 0, tzinfo=UTC),
+        clock=lambda: datetime.datetime(2026, 9, 6, 1, 0, tzinfo=datetime.UTC),
     )
     assert (await backend.fetch(TODAY))["state"] == "empty"
     assert len(seen) == 1
@@ -340,8 +344,10 @@ async def test_issue_date_uses_configured_timezone():
     ],
 )
 def test_reject_unsafe_service_url_without_echoing_input(url):
-    with pytest.raises(ValueError) as caught:
-        Todofy(url, USER, PASSWORD)
+    with pytest.raises(
+        ValueError, match="Invalid Todofy HTTPS origin or credentials"
+    ) as caught:
+        todofy.Todofy(url, USER, PASSWORD)
     assert url not in str(caught.value)
     assert PASSWORD not in str(caught.value)
 
@@ -358,7 +364,7 @@ def test_reject_unsafe_service_url_without_echoing_input(url):
 )
 def test_reject_invalid_auth_without_echo(username, password):
     with pytest.raises(ValueError, match="Invalid Todofy"):
-        validate_todofy_configuration(
+        todofy.validate_todofy_configuration(
             "https://todofy.example.org", username, password
         )
 
@@ -376,15 +382,15 @@ def test_reject_invalid_auth_without_echo(username, password):
 )
 def test_invalid_bounds(options):
     with pytest.raises(ValueError, match="Invalid Todofy"):
-        Todofy("https://todofy.example.org", USER, PASSWORD, **options)
+        todofy.Todofy("https://todofy.example.org", USER, PASSWORD, **options)
 
 
 async def test_fakes_and_disabled_are_offline_and_honest():
-    disabled = await DisabledTodofy().fetch(TODAY)
+    disabled = await todofy.DisabledTodofy().fetch(TODAY)
     assert disabled["state"] == "disabled"
     assert "task_count" not in disabled
-    first = await FakeTodofy().fetch(TODAY)
-    assert first == await FakeTodofy().fetch(TODAY)
+    first = await todofy.FakeTodofy().fetch(TODAY)
+    assert first == await todofy.FakeTodofy().fetch(TODAY)
     assert first["is_fixture"]
     assert len(first["items"]) == 3
     assert all(len(item["detail"]) > 35 for item in first["items"])
@@ -393,8 +399,8 @@ async def test_fakes_and_disabled_are_offline_and_honest():
         or "不是从你的账户读取" in first["summary"]
     )
     assert "未连接" in first["limitations"]
-    validate_personal_digest(first)
-    validate_personal_digest(disabled)
+    contracts.validate_personal_digest(first)
+    contracts.validate_personal_digest(disabled)
 
 
 @pytest.mark.parametrize(
@@ -402,11 +408,11 @@ async def test_fakes_and_disabled_are_offline_and_honest():
 )
 async def test_invalid_issue_dates(value):
     with pytest.raises(ValueError, match="Invalid Todofy issue date"):
-        await DisabledTodofy().fetch(value)
+        await todofy.DisabledTodofy().fetch(value)
 
 
 def test_unknown_exception_text_cannot_become_visible_error_code():
-    result = unavailable_digest(PASSWORD)
+    result = todofy.unavailable_digest(PASSWORD)
     assert result["error_code"] == "todofy_unavailable"
     assert PASSWORD not in str(result)
 
@@ -453,10 +459,10 @@ async def test_top_limits_display_after_filtering_not_the_candidate_request():
     assert result["items"][0]["detail"] == payload["tasks"][2]["reason"]
     assert "1 条明确例行通知" in result["summary"]
     assert "1 条候选超过展示上限" in result["summary"]
-    validate_personal_digest(result)
+    contracts.validate_personal_digest(result)
 
 
-async def test_all_routine_candidates_do_not_fill_slots_or_claim_no_events_or_paid_bills():
+async def test_routine_candidates_add_no_filler_or_paid_bill_claims():
     payload = {
         "tasks": [
             {
@@ -482,17 +488,17 @@ async def test_all_routine_candidates_do_not_fill_slots_or_claim_no_events_or_pa
     assert "这不表示账单已支付" in result["summary"]
     assert "不推断所有账户自动还款" in result["limitations"]
     assert "没有新的入库事件" not in result["summary"]
-    validate_personal_digest(result)
+    contracts.validate_personal_digest(result)
 
 
-async def test_successful_upstream_can_select_zero_from_nonempty_source_records():
+async def test_nonempty_upstream_can_yield_zero_selected_items():
     result = await adapter(
         lambda _: httpx.Response(200, json={"tasks": [], "task_count": 12})
     ).fetch(TODAY)
     assert result["state"] == "current"
     assert result["items"] == [] and result["task_count"] == 12
     assert "不代表没有未完成任务" in result["summary"]
-    validate_personal_digest(result)
+    contracts.validate_personal_digest(result)
 
 
 async def test_risk_candidates_exceeding_cap_are_counted_not_silently_hidden():

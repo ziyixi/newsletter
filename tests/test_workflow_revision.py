@@ -1,19 +1,19 @@
-"""One bounded repair and independent re-review, without real SDK/provider calls."""
+"""Test one bounded repair and independent review without providers."""
 
+import copy
+import importlib.resources as resources
 import json
-from copy import deepcopy
-from importlib.resources import files
-from types import SimpleNamespace
+import types
 
 import pytest
 
-from newsletter.contracts import content_hash
-from newsletter.editor import CodexEditor
-from newsletter.store import Store
-from newsletter.workflow.definition import load_definition, parse_definition
-from newsletter.workflow.engine import NodeContext, NodeFailure, WorkflowEngine
-from newsletter.workflow.nodes import EditorialNodes, validate_revision_subgraph
-from newsletter.workflow.repository import WorkflowRepository
+import newsletter.contracts as contracts
+import newsletter.editor as newsletter_editor
+import newsletter.store as newsletter_store
+import newsletter.workflow.definition as newsletter_workflow_definition
+import newsletter.workflow.engine as engine
+import newsletter.workflow.nodes as newsletter_workflow_nodes
+import newsletter.workflow.repository as newsletter_workflow_repository
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ def prior():
                 "workflow_id": "fixture",
                 "producer_id": "fixture",
                 "content": body,
-                "content_hash": content_hash(body),
+                "content_hash": contracts.content_hash(body),
                 "created_at": "2026-09-06T00:00:00Z",
                 "is_fixture": True,
             }
@@ -74,7 +74,7 @@ def prior():
 
 
 def revision_reply(prior, *, passed=True):
-    draft = deepcopy(prior["draft"])
+    draft = copy.deepcopy(prior["draft"])
     draft["sections"][0]["paragraphs"][0]["text"] = "删除数字后的虚构测试说明。"
     return {
         "draft": draft,
@@ -88,8 +88,8 @@ def revision_reply(prior, *, passed=True):
 
 @pytest.fixture
 def rig(tmp_path, monkeypatch, prior):
-    store = Store(tmp_path / "revision.sqlite3", "mock")
-    definition = parse_definition(
+    store = newsletter_store.Store(tmp_path / "revision.sqlite3", "mock")
+    definition = newsletter_workflow_definition.parse_definition(
         {
             "version": 1,
             "id": "held-edition-revision",
@@ -103,9 +103,9 @@ def rig(tmp_path, monkeypatch, prior):
             ],
         }
     )
-    validate_revision_subgraph(definition)
-    repository = WorkflowRepository(store)
-    state = SimpleNamespace(
+    newsletter_workflow_nodes.validate_revision_subgraph(definition)
+    repository = newsletter_workflow_repository.WorkflowRepository(store)
+    state = types.SimpleNamespace(
         store=store,
         definition=definition,
         repository=repository,
@@ -125,15 +125,15 @@ def rig(tmp_path, monkeypatch, prior):
         value, searched, opened = state.replies.pop(0)
         return json.dumps(value), opened, searched
 
-    monkeypatch.setattr(CodexEditor, "execute", execute)
-    nodes = EditorialNodes(
+    monkeypatch.setattr(newsletter_editor.CodexEditor, "execute", execute)
+    nodes = newsletter_workflow_nodes.EditorialNodes(
         store,
         definition,
-        CodexEditor(tmp_path / "unused-auth"),
+        newsletter_editor.CodexEditor(tmp_path / "unused-auth"),
         tmp_path / "jobs",
     )
     state.nodes = nodes
-    state.engine = WorkflowEngine(
+    state.engine = engine.WorkflowEngine(
         repository, {"revision": nodes, "final_review": nodes}
     )
 
@@ -173,7 +173,7 @@ async def test_initial_pass_skips_revision_and_second_review_without_model(
     assert final["revision"]["performed"] is False
 
 
-async def test_failed_review_gets_one_minimal_revision_and_fresh_independent_review(
+async def test_failed_review_gets_one_revision_and_independent_review(
     rig, prior
 ):
     repair = revision_reply(prior)
@@ -248,7 +248,7 @@ async def test_actual_repair_even_identical_text_requires_independent_review(
     rig, prior
 ):
     repair = revision_reply(prior)
-    repair["draft"] = deepcopy(prior["draft"])
+    repair["draft"] = copy.deepcopy(prior["draft"])
     rig.replies = [
         (repair, True, {"https://example.com/evidence"}),
         (
@@ -302,7 +302,7 @@ async def test_forged_skip_requires_actual_skipped_dependency_and_original_hash(
             "source_hash": rig.nodes.result_hash(prior),
         },
     }
-    ctx = NodeContext(
+    ctx = engine.NodeContext(
         "run",
         "final_review",
         "",
@@ -311,30 +311,35 @@ async def test_forged_skip_requires_actual_skipped_dependency_and_original_hash(
         {"issue_date": "2026-09-06"},
         {"revision": {"state": "succeeded"}},
     )
-    with pytest.raises(NodeFailure):
+    with pytest.raises(engine.NodeError):
         await rig.nodes.execute("final_review", ctx, rig.path)
     ctx.dependency_states["revision"]["state"] = "skipped"
     result["draft"] = {
         **prior["draft"],
         "title": "Changed after initial review",
     }
-    with pytest.raises(NodeFailure):
+    with pytest.raises(engine.NodeError):
         await rig.nodes.execute("final_review", ctx, rig.path)
     assert not rig.calls
 
 
-async def test_complete_recipe_never_uses_recovery_input_instead_of_review_dependency(
+async def test_complete_recipe_never_uses_recovery_input_not_review_dependency(
     rig, prior
 ):
-    definition = load_definition(
-        files("newsletter").joinpath("workflows/legacy-daily.yaml").read_bytes()
+    definition = newsletter_workflow_definition.load_definition(
+        resources.files("newsletter")
+        .joinpath("workflows/legacy-daily.yaml")
+        .read_bytes()
     )
-    nodes = EditorialNodes(
-        rig.store, definition, CodexEditor(rig.path / "unused-auth"), rig.path
+    nodes = newsletter_workflow_nodes.EditorialNodes(
+        rig.store,
+        definition,
+        newsletter_editor.CodexEditor(rig.path / "unused-auth"),
+        rig.path,
     )
-    alternate = deepcopy(prior)
+    alternate = copy.deepcopy(prior)
     alternate["review"] = {"passed": True, "findings": []}
-    ctx = NodeContext(
+    ctx = engine.NodeContext(
         "run",
         "revision",
         "",
@@ -349,7 +354,7 @@ async def test_complete_recipe_never_uses_recovery_input_instead_of_review_depen
             },
         },
     )
-    with pytest.raises(NodeFailure):
+    with pytest.raises(engine.NodeError):
         await nodes.execute("revision", ctx, rig.path)
     assert not rig.calls
     ctx.inputs["review"] = prior

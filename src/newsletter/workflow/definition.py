@@ -4,15 +4,15 @@ Node implementations and their parameter schemas live in trusted application
 code. YAML cannot register code, expand environment variables or grant sending.
 """
 
+import dataclasses
 import json
+import pathlib
 import re
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, cast
 
 import yaml
 
-from newsletter.contracts import canonical_json, content_hash
+import newsletter.contracts as contracts
 
 MAX_DEFINITION_BYTES = 65_536
 MAX_NODES = 32
@@ -77,8 +77,9 @@ class DefinitionError(ValueError):
 
     def __init__(self) -> None:
         super().__init__(
-            "Invalid workflow definition: use version 1, registered node types, unique IDs, "
-            "acyclic dependencies and bounded literal parameters/maps."
+            "Invalid workflow definition: use version 1, registered "
+            "node types, unique IDs, acyclic dependencies and bounded "
+            "literal parameters/maps."
         )
 
 
@@ -100,14 +101,18 @@ def _parameters(value: object, depth: int = 0) -> None:
     raise DefinitionError()
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class MapDefinition:
+    """Describe a bounded expansion over a run input or dependency field."""
+
     source: str
     max_items: int
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class NodeDefinition:
+    """Freeze a registered node and its literal parameters and dependencies."""
+
     id: str
     type: str
     needs: tuple[str, ...]
@@ -117,9 +122,11 @@ class NodeDefinition:
 
     @property
     def params(self) -> dict[str, Any]:
+        """Return a detached copy of the frozen literal parameters."""
         return cast(dict[str, Any], json.loads(self.params_json))
 
     def snapshot(self) -> dict[str, Any]:
+        """Serialize the node for hashing and durable replay."""
         result: dict[str, Any] = {
             "id": self.id,
             "type": self.type,
@@ -135,13 +142,16 @@ class NodeDefinition:
         return result
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class WorkflowDefinition:
+    """Freeze an ordered workflow graph with a versioned semantic snapshot."""
+
     id: str
     nodes: tuple[NodeDefinition, ...]
     version: int = 1
 
     def snapshot(self) -> dict[str, Any]:
+        """Serialize the complete semantic graph without executable code."""
         return {
             "version": self.version,
             "id": self.id,
@@ -150,11 +160,12 @@ class WorkflowDefinition:
 
     @property
     def digest(self) -> str:
-        return content_hash(self.snapshot())
+        """Hash the canonical semantic snapshot."""
+        return contracts.content_hash(self.snapshot())
 
 
 def parse_definition(value: object) -> WorkflowDefinition:
-    """Validate a semantic snapshot too; persisted definitions do not bypass checks."""
+    """Validate semantic snapshots, including persisted definitions."""
     try:
         return _parse_definition(value)
     except (KeyError, TypeError, ValueError, RecursionError, OverflowError):
@@ -171,78 +182,7 @@ def _parse_definition(value: object) -> WorkflowDefinition:
     items = value["nodes"]
     if not isinstance(items, list) or not 1 <= len(items) <= MAX_NODES:
         raise DefinitionError()
-    nodes = []
-    for item in items:
-        if not isinstance(item, dict) or set(item) - {
-            "id",
-            "type",
-            "needs",
-            "params",
-            "map",
-            "on_error",
-        }:
-            raise DefinitionError()
-        identifier, kind = item["id"], item["type"]
-        if (
-            not isinstance(identifier, str)
-            or not _ID.fullmatch(identifier)
-            or identifier == "run"
-        ):
-            raise DefinitionError()
-        if not isinstance(kind, str) or kind not in NODE_TYPES:
-            raise DefinitionError()
-        on_error = item.get("on_error", "stop")
-        if on_error not in {"stop", "continue"} or (
-            on_error == "continue" and kind not in CONTINUE_TYPES
-        ):
-            raise DefinitionError()
-        needs = item.get("needs", [])
-        if (
-            not isinstance(needs, list)
-            or len(needs) > MAX_NODES
-            or any(
-                not isinstance(dep, str) or not _ID.fullmatch(dep)
-                for dep in needs
-            )
-            or len(set(needs)) != len(needs)
-            or identifier in needs
-        ):
-            raise DefinitionError()
-        params = item.get("params", {})
-        if not isinstance(params, dict):
-            raise DefinitionError()
-        _parameters(params)
-        params_json = canonical_json(params)
-        if len(params_json.encode("utf-8")) > 8192:
-            raise DefinitionError()
-        mapping = None
-        if "map" in item:
-            mapping = item["map"]
-            if not isinstance(mapping, dict) or set(mapping) != {
-                "from",
-                "max_items",
-            }:
-                raise DefinitionError()
-            source, maximum = mapping["from"], mapping["max_items"]
-            if (
-                not isinstance(source, str)
-                or type(maximum) is not int
-                or not 1 <= maximum <= MAX_MAP_ITEMS
-            ):
-                raise DefinitionError()
-            parts = source.split(".")
-            if not 2 <= len(parts) <= 4 or not _ID.fullmatch(parts[0]):
-                raise DefinitionError()
-            if any(not _FIELD.fullmatch(field) for field in parts[1:]):
-                raise DefinitionError()
-            if parts[0] != "run" and parts[0] not in needs:
-                raise DefinitionError()
-            mapping = MapDefinition(source, maximum)
-        nodes.append(
-            NodeDefinition(
-                identifier, kind, tuple(needs), params_json, mapping, on_error
-            )
-        )
+    nodes = [_parse_node(item) for item in items]
     by_id = {node.id: node for node in nodes}
     if len(by_id) != len(nodes) or any(
         set(node.needs) - by_id.keys() for node in nodes
@@ -263,11 +203,82 @@ def _parse_definition(value: object) -> WorkflowDefinition:
         raise DefinitionError()
     result = WorkflowDefinition(value["id"], tuple(nodes))
     if (
-        len(canonical_json(result.snapshot()).encode("utf-8"))
+        len(contracts.canonical_json(result.snapshot()).encode("utf-8"))
         > MAX_DEFINITION_BYTES
     ):
         raise DefinitionError()
     return result
+
+
+def _parse_node(item: object) -> NodeDefinition:
+    if not isinstance(item, dict) or set(item) - {
+        "id",
+        "type",
+        "needs",
+        "params",
+        "map",
+        "on_error",
+    }:
+        raise DefinitionError()
+    identifier, kind = item["id"], item["type"]
+    if (
+        not isinstance(identifier, str)
+        or not _ID.fullmatch(identifier)
+        or identifier == "run"
+    ):
+        raise DefinitionError()
+    if not isinstance(kind, str) or kind not in NODE_TYPES:
+        raise DefinitionError()
+    on_error = item.get("on_error", "stop")
+    if on_error not in {"stop", "continue"} or (
+        on_error == "continue" and kind not in CONTINUE_TYPES
+    ):
+        raise DefinitionError()
+    needs = item.get("needs", [])
+    if (
+        not isinstance(needs, list)
+        or len(needs) > MAX_NODES
+        or any(
+            not isinstance(dep, str) or not _ID.fullmatch(dep) for dep in needs
+        )
+        or len(set(needs)) != len(needs)
+        or identifier in needs
+    ):
+        raise DefinitionError()
+    params = item.get("params", {})
+    if not isinstance(params, dict):
+        raise DefinitionError()
+    _parameters(params)
+    params_json = contracts.canonical_json(params)
+    if len(params_json.encode("utf-8")) > 8192:
+        raise DefinitionError()
+    mapping = _parse_map(item["map"], needs) if "map" in item else None
+    return NodeDefinition(
+        identifier, kind, tuple(needs), params_json, mapping, on_error
+    )
+
+
+def _parse_map(mapping: object, needs: list[str]) -> MapDefinition:
+    if not isinstance(mapping, dict) or set(mapping) != {
+        "from",
+        "max_items",
+    }:
+        raise DefinitionError()
+    source, maximum = mapping["from"], mapping["max_items"]
+    if (
+        not isinstance(source, str)
+        or type(maximum) is not int
+        or not 1 <= maximum <= MAX_MAP_ITEMS
+    ):
+        raise DefinitionError()
+    parts = source.split(".")
+    if not 2 <= len(parts) <= 4 or not _ID.fullmatch(parts[0]):
+        raise DefinitionError()
+    if any(not _FIELD.fullmatch(field) for field in parts[1:]):
+        raise DefinitionError()
+    if parts[0] != "run" and parts[0] not in needs:
+        raise DefinitionError()
+    return MapDefinition(source, maximum)
 
 
 class _UniqueSafeLoader(yaml.SafeLoader):
@@ -291,10 +302,10 @@ _UniqueSafeLoader.add_constructor(
 )
 
 
-def load_definition(source: Path | bytes | str) -> WorkflowDefinition:
-    """Path loads are operator-owned files; strings are literal YAML, never paths."""
+def load_definition(source: pathlib.Path | bytes | str) -> WorkflowDefinition:
+    """Read operator-owned paths or literal YAML strings."""
     try:
-        if isinstance(source, Path):
+        if isinstance(source, pathlib.Path):
             absolute = source.absolute()
             if (
                 any(path.is_symlink() for path in (absolute, *absolute.parents))

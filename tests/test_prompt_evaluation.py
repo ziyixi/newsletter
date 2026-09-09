@@ -1,32 +1,30 @@
 """Runner safety tests use injected fakes only, not model-quality evaluation."""
 
 import asyncio
-import importlib.util
+import copy
+import importlib.util as util
 import json
+import pathlib
 import stat
-from copy import deepcopy
-from pathlib import Path
-from types import SimpleNamespace
+import types
 
 import httpx
 import pytest
-from test_publication import DAY, URL, packet, story, task
-from test_usage import notification
 
-from newsletter.contracts import canonical_json, content_hash
-from newsletter.errors import EditorError
-from newsletter.usage import codex_usage
-from newsletter.workflow.schema import (
-    discovery_schema,
-    object_schema,
-    planning_schema,
-)
+import newsletter.contracts as contracts
+import newsletter.errors as errors
+import newsletter.usage as newsletter_usage
+import newsletter.workflow.schema as newsletter_workflow_schema
+import tests.support.publication as publication
+import tests.support.usage as tests_support_usage
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "evaluate_prompts.py"
-SPEC = importlib.util.spec_from_file_location(
-    "prompt_evaluation_script", SCRIPT
+SCRIPT = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "evaluate_prompts.py"
 )
-runner = importlib.util.module_from_spec(SPEC)
+SPEC = util.spec_from_file_location("prompt_evaluation_script", SCRIPT)
+runner = util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 
 
@@ -38,10 +36,12 @@ def selection_case(identifier="selection-test", **changes):
             "task": "Synthetic input, not an actual research or mail request."
         },
         "instructions": "Offline test instructions. Do not use tools.",
-        "schema": planning_schema(["candidate-1"], [URL], 1),
+        "schema": newsletter_workflow_schema.planning_schema(
+            ["candidate-1"], [publication.URL], 1
+        ),
         "validation": {
             "candidate_ids": ["candidate-1"],
-            "source_urls": [URL],
+            "source_urls": [publication.URL],
             "max_tasks": 1,
         },
         "allow_web": False,
@@ -50,8 +50,11 @@ def selection_case(identifier="selection-test", **changes):
 
 
 def selection_reply():
-    return canonical_json(
-        {"research_tasks": [task()], "note": "Synthetic test selection."}
+    return contracts.canonical_json(
+        {
+            "research_tasks": [publication.task()],
+            "note": "Synthetic test selection.",
+        }
     )
 
 
@@ -60,12 +63,12 @@ def summary_case():
         "summary-test",
         kind="summary",
         # Transport shape is independent of application validation in this test.
-        schema=object_schema(
+        schema=newsletter_workflow_schema.object_schema(
             {key: {"type": "string"} for key in runner.BODY_FIELDS}
         ),
         validation={
             "story_id": "story-1",
-            "packets": [packet()],
+            "packets": [publication.packet()],
             "paragraph_limit": 2,
         },
     )
@@ -87,7 +90,9 @@ def no_network(monkeypatch):
 def harness(tmp_path):
     codex_home = tmp_path / "dedicated-auth"
     codex_home.mkdir(mode=0o700)
-    state = SimpleNamespace(calls=[], constructors=[], replies=[], progress=[])
+    state = types.SimpleNamespace(
+        calls=[], constructors=[], replies=[], progress=[]
+    )
 
     class FakeEditor:
         def __init__(self, home, model, *, timeout_seconds):
@@ -98,13 +103,16 @@ def harness(tmp_path):
             state.calls.append((prompt, schema, instructions, workspace))
             assert state.replies, "No hidden retries or unexpected model calls"
             print("private-diagnostic-sentinel")
-            with codex_usage(self.model) as usage:
+            with newsletter_usage.codex_usage(self.model) as usage:
                 usage.start_turn()
                 usage.bind_turn("thread-test", "turn-test")
-                usage.observe("thread/tokenUsage/updated", notification())
                 usage.observe(
                     "thread/tokenUsage/updated",
-                    notification(150, 30, cached=90),
+                    tests_support_usage.notification(),
+                )
+                usage.observe(
+                    "thread/tokenUsage/updated",
+                    tests_support_usage.notification(150, 30, cached=90),
                 )
                 response = state.replies.pop(0)
                 if isinstance(response, BaseException):
@@ -134,7 +142,7 @@ def harness(tmp_path):
     return state
 
 
-async def test_explicit_authorization_precedes_directory_creation_or_editor_construction(
+async def test_authorization_precedes_directories_and_editor(
     harness,
 ):
     with pytest.raises(
@@ -186,7 +194,9 @@ async def test_output_refuses_known_cloud_sync_and_other_auth_homes(
     user_home = tmp_path / "user"
     parent = user_home / "Library" / folder
     parent.mkdir(parents=True)
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: user_home))
+    monkeypatch.setattr(
+        pathlib.Path, "home", classmethod(lambda cls: user_home)
+    )
     output = parent / "results"
     with pytest.raises(runner.EvaluationError, match="unsafe_path"):
         await harness.run(output=output)
@@ -197,10 +207,10 @@ async def test_case_inputs_outputs_latest_usage_and_private_modes_are_durable(
     harness, capsys
 ):
     cases = [selection_case(), summary_case()]
-    untouched = deepcopy(cases)
+    untouched = copy.deepcopy(cases)
     harness.replies = [
         (selection_reply(), set(), False),
-        (canonical_json(story()), set(), False),
+        (contracts.canonical_json(publication.story()), set(), False),
     ]
     result = await harness.run(cases)
     assert result["all_structurally_valid"] and cases == untouched
@@ -220,9 +230,11 @@ async def test_case_inputs_outputs_latest_usage_and_private_modes_are_durable(
     ):
         directory = harness.output / f"case-{index:03d}"
         saved = json.loads((directory / "input.json").read_text())
-        assert saved["input_hash"] == content_hash(case)
+        assert saved["input_hash"] == contracts.content_hash(case)
         assert (
-            saved["actual_prompt"] == call[0] == canonical_json(case["prompt"])
+            saved["actual_prompt"]
+            == call[0]
+            == contracts.canonical_json(case["prompt"])
         )
         assert saved["schema"] == call[1] == case["schema"]
         assert saved["instructions"] == call[2] == case["instructions"]
@@ -243,7 +255,7 @@ async def test_case_inputs_outputs_latest_usage_and_private_modes_are_durable(
             0o700 if path.is_dir() else 0o600
         )
     manifest = json.loads((harness.output / "manifest.json").read_text())
-    assert manifest["input_hash"] == content_hash({"cases": cases})
+    assert manifest["input_hash"] == contracts.content_hash({"cases": cases})
     assert manifest["versions"]["code_sha256"]["scripts/evaluate_prompts.py"]
     assert json.loads((harness.output / "summary.json").read_text()) == result
     assert "private-diagnostic-sentinel" not in capsys.readouterr().out
@@ -259,7 +271,7 @@ async def test_case_inputs_outputs_latest_usage_and_private_modes_are_durable(
 async def test_account_failure_persists_partial_usage_and_skips_all_later_cases(
     harness, error
 ):
-    harness.replies = [EditorError(error)]
+    harness.replies = [errors.EditorError(error)]
     result = await harness.run([selection_case(), selection_case("next-case")])
     assert result["stopped_reason"] == error and len(harness.calls) == 1
     assert [case["status"] for case in result["cases"]] == ["failed", "skipped"]
@@ -271,7 +283,9 @@ async def test_account_failure_persists_partial_usage_and_skips_all_later_cases(
     assert not (harness.output / "case-002" / "raw-output.txt").exists()
 
 
-@pytest.mark.parametrize("opened,searched", [({URL}, False), (set(), True)])
+@pytest.mark.parametrize(
+    "opened,searched", [({publication.URL}, False), (set(), True)]
+)
 async def test_frozen_input_web_actions_fail_observation_without_retry(
     harness, opened, searched
 ):
@@ -297,31 +311,31 @@ async def test_live_discovery_uses_observed_open_and_production_parser(harness):
         "discovery-test",
         kind="discovery",
         allow_web=True,
-        schema=discovery_schema(),
+        schema=newsletter_workflow_schema.discovery_schema(),
         validation={
             "direction": "finance",
-            "issue_date": DAY,
+            "issue_date": publication.DAY,
             "seeds": [],
             "history": [],
         },
     )
     candidate = {
         "title": "Synthetic candidate",
-        "url": URL,
+        "url": publication.URL,
         "doi": "",
         "version": "",
         "event_key": "synthetic-event",
-        "published_at": DAY,
+        "published_at": publication.DAY,
         "summary": "A synthetic finding.",
         "why_now": "Synthetic new evidence.",
         "access_scope": "abstract",
     }
     harness.replies = [
         (
-            canonical_json(
+            contracts.canonical_json(
                 {"candidates": [candidate], "note": "Synthetic scan."}
             ),
-            {URL},
+            {publication.URL},
             True,
         )
     ]
@@ -340,15 +354,17 @@ async def test_malformed_answers_are_saved_but_never_repaired_by_runner(
 ):
     case = selection_case() if kind == "selection" else summary_case()
     if kind == "selection":
-        response = canonical_json(
+        response = contracts.canonical_json(
             {
-                "research_tasks": [task(candidate_ids=["foreign-id"])],
+                "research_tasks": [
+                    publication.task(candidate_ids=["foreign-id"])
+                ],
                 "note": "bad",
             }
         )
     else:
-        response = canonical_json(
-            {**story(), "chart": {}}
+        response = contracts.canonical_json(
+            {**publication.story(), "chart": {}}
         )  # body-only means no optional components.
     harness.replies = [(response, set(), False)]
     result = await harness.run([case])
@@ -379,11 +395,13 @@ async def test_unknown_exception_is_sanitized_not_echoed(harness, capsys):
     harness.replies = [RuntimeError("vendor-response-secret-sentinel")]
     result = await harness.run()
     assert result["cases"][0]["error_code"] == "unavailable"
-    assert "vendor-response-secret-sentinel" not in canonical_json(result)
+    assert "vendor-response-secret-sentinel" not in contracts.canonical_json(
+        result
+    )
     assert "vendor-response-secret-sentinel" not in capsys.readouterr().out
 
 
-async def test_existing_production_correction_is_recorded_not_hidden_as_one_turn(
+async def test_existing_production_correction_recorded_not_hidden_as_one_turn(
     harness,
 ):
     class CorrectionEditor:
@@ -391,14 +409,16 @@ async def test_existing_production_correction_is_recorded_not_hidden_as_one_turn
             pass
 
         async def execute(self, *args):
-            with codex_usage("fixture-model") as usage:
+            with newsletter_usage.codex_usage("fixture-model") as usage:
                 for index, (input_tokens, output_tokens) in enumerate(
                     [(100, 20), (250, 50)], 1
                 ):
                     turn_id = f"turn-{index}"
                     usage.start_turn()
                     usage.bind_turn("thread-test", turn_id)
-                    event = notification(input_tokens, output_tokens)
+                    event = tests_support_usage.notification(
+                        input_tokens, output_tokens
+                    )
                     event["turnId"] = turn_id
                     usage.observe("thread/tokenUsage/updated", event)
                     usage.observe("turn/completed", {"turn": {"id": turn_id}})
@@ -425,7 +445,7 @@ async def test_entire_suite_is_validated_before_any_model_or_artifact(
 ):
     case = selection_case("invalid-second")
     mutation(case)
-    with pytest.raises((runner.EvaluationError, EditorError)):
+    with pytest.raises((runner.EvaluationError, errors.EditorError)):
         await harness.run([selection_case(), case])
     assert not harness.calls and not harness.output.exists()
 
@@ -453,11 +473,11 @@ def test_cli_uses_only_explicit_configuration_not_environment_or_dotenv(
     tmp_path, monkeypatch
 ):
     suite = tmp_path / "suite.json"
-    suite.write_text(canonical_json({"cases": [selection_case()]}))
+    suite.write_text(contracts.canonical_json({"cases": [selection_case()]}))
     monkeypatch.setenv("NEWSLETTER_MODEL", "must-not-select-from-environment")
     monkeypatch.setenv("NEWSLETTER_CODEX_HOME", "/must-not-use-this-auth")
     monkeypatch.setenv("RESEND_API_KEY", "synthetic-secret-not-a-real-key")
-    original_read = Path.read_text
+    original_read = pathlib.Path.read_text
 
     def guarded_read(path, *args, **kwargs):
         assert path.name != ".env", (
@@ -471,7 +491,7 @@ def test_cli_uses_only_explicit_configuration_not_environment_or_dotenv(
         received.append(kwargs)
         return {"all_structurally_valid": True}
 
-    monkeypatch.setattr(Path, "read_text", guarded_read)
+    monkeypatch.setattr(pathlib.Path, "read_text", guarded_read)
     monkeypatch.setattr(runner, "evaluate", capture)
     assert (
         runner.main(

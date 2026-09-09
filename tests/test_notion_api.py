@@ -3,18 +3,13 @@
 import copy
 import hashlib
 import json
-from uuid import UUID
+import uuid
 
 import httpx
 import pytest
 
-from newsletter.adapters import AdapterError
-from newsletter.notion_api import (
-    API_VERSION,
-    MAX_PNG_BYTES,
-    SCHEMAS,
-    NotionWorkspace,
-)
+import newsletter.adapters as adapters
+import newsletter.notion_api as notion_api
 
 MATERIAL = "11111111-1111-4111-8111-111111111111"
 EDITION = "22222222-2222-4222-8222-222222222222"
@@ -46,7 +41,7 @@ def source(kind, *, complete=True):
         }
     }
     if complete:
-        for key, spec in SCHEMAS[kind].items():
+        for key, spec in notion_api.SCHEMAS[kind].items():
             if key == "title":
                 continue
             detail = {}
@@ -86,7 +81,7 @@ class Rig:
         }
         self.requests = []
         self.extra = None
-        self.api = NotionWorkspace(
+        self.api = notion_api.NotionWorkspace(
             TOKEN, MATERIAL, EDITION, transport=httpx.MockTransport(self.handle)
         )
 
@@ -97,7 +92,11 @@ class Rig:
             and request.url.host == "api.notion.com"
         )
         assert request.headers["Authorization"] == "Bearer " + TOKEN
-        assert request.headers["Notion-Version"] == API_VERSION == "2026-03-11"
+        assert (
+            request.headers["Notion-Version"]
+            == notion_api.API_VERSION
+            == "2026-03-11"
+        )
         if request.url.path.startswith(
             "/v1/data_sources/"
         ) and not request.url.path.endswith("/query"):
@@ -127,8 +126,7 @@ class Rig:
             r
             for r in self.requests
             if r.method == "PATCH"
-            or r.method == "POST"
-            and not r.url.path.endswith("/query")
+            or (r.method == "POST" and not r.url.path.endswith("/query"))
         ]
 
 
@@ -152,11 +150,13 @@ def forbid_real_network(monkeypatch):
     ],
 )
 def test_invalid_configuration_never_opens_network(args):
-    with pytest.raises(AdapterError, match="INVALID_NOTION_CONFIGURATION"):
-        NotionWorkspace(*args)
+    with pytest.raises(
+        adapters.AdapterError, match="INVALID_NOTION_CONFIGURATION"
+    ):
+        notion_api.NotionWorkspace(*args)
 
 
-async def test_setup_is_read_only_by_default_and_validate_never_creates_missing_columns():
+async def test_read_only_setup_and_validation_never_create_columns():
     rig = Rig(complete=False)
     original = copy.deepcopy(rig.sources)
     result = await rig.api.setup()
@@ -164,12 +164,12 @@ async def test_setup_is_read_only_by_default_and_validate_never_creates_missing_
     assert "title" not in result["missing"]["material"]
     assert "sync_key" in result["missing"]["material"]
     assert result["bindings"]["edition"] == {"title": "title"}
-    with pytest.raises(AdapterError, match="NOTION_SCHEMA_MISSING"):
+    with pytest.raises(adapters.AdapterError, match="NOTION_SCHEMA_MISSING"):
         await rig.api.validate()
     assert rig.sources == original and not rig.mutations()
 
 
-async def test_setup_inspects_both_before_adding_only_missing_columns_and_keeps_title():
+async def test_setup_inspects_both_and_adds_only_missing_columns():
     rig = Rig(complete=False)
     rig.sources[MATERIAL]["properties"]["My notes"] = {
         "id": "notes",
@@ -194,7 +194,7 @@ async def test_setup_inspects_both_before_adding_only_missing_columns_and_keeps_
             "type": "single_property",
             "single_property": {},
         }
-        assert len(rig.api.property_ids(kind)) == len(SCHEMAS[kind])
+        assert len(rig.api.property_ids(kind)) == len(notion_api.SCHEMAS[kind])
     assert rig.sources[MATERIAL]["properties"]["My notes"]["id"] == "notes"
     assert (await rig.api.setup(apply=True))["ready"] is True
     assert (
@@ -224,7 +224,7 @@ async def test_wrong_second_schema_prevents_any_write_to_first(defect):
         second["in_trash"] = True
     else:
         second["id"] = PAGE
-    with pytest.raises(AdapterError, match="NOTION_SCHEMA_MISMATCH"):
+    with pytest.raises(adapters.AdapterError, match="NOTION_SCHEMA_MISMATCH"):
         await rig.api.setup(apply=True)
     assert len(rig.requests) == 2 and not rig.mutations()
 
@@ -240,12 +240,12 @@ async def test_stable_ids_survive_user_renames_but_not_property_replacement():
     changed_copy["value"] = "not-the-id"
     assert rig.api.property_ids("material")["value"] == "material-value"
     properties["Renamed by reader"]["id"] = "replacement"
-    with pytest.raises(AdapterError, match="NOTION_SCHEMA_MISMATCH"):
+    with pytest.raises(adapters.AdapterError, match="NOTION_SCHEMA_MISMATCH"):
         await rig.api.validate()
 
 
 @pytest.mark.parametrize("managed", [False, True])
-async def test_dual_relations_cannot_implicitly_update_an_unmanaged_reverse_column(
+async def test_dual_relations_cannot_modify_unmanaged_reverse(
     managed,
 ):
     rig = Rig()
@@ -260,12 +260,14 @@ async def test_dual_relations_cannot_implicitly_update_an_unmanaged_reverse_colu
     if managed:
         await rig.api.validate()
     else:
-        with pytest.raises(AdapterError, match="NOTION_SCHEMA_MISMATCH"):
+        with pytest.raises(
+            adapters.AdapterError, match="NOTION_SCHEMA_MISMATCH"
+        ):
             await rig.api.setup(apply=True)
     assert not rig.mutations()
 
 
-async def test_create_properties_only_and_patch_are_stable_id_bound_without_user_fields():
+async def test_properties_and_patches_use_stable_ids_not_user_fields():
     rig = Rig()
     original = {
         "title": {"title": rich("Synthetic title")},
@@ -317,7 +319,7 @@ async def test_property_value_reads_stable_id_not_visible_column_name():
     assert value["rich_text"] == rich("frozen")
     value["rich_text"].clear()
     assert page["properties"]["Human rename"]["rich_text"] == rich("frozen")
-    with pytest.raises(AdapterError, match="NOTION_SCHEMA_MISMATCH"):
+    with pytest.raises(adapters.AdapterError, match="NOTION_SCHEMA_MISMATCH"):
         rig.api.property_value("edition", page, "content_hash")
 
 
@@ -342,7 +344,7 @@ async def test_invalid_properties_are_rejected_before_even_schema_reads(
     properties,
 ):
     rig = Rig()
-    with pytest.raises(AdapterError, match="INVALID_NOTION_INPUT"):
+    with pytest.raises(adapters.AdapterError, match="INVALID_NOTION_INPUT"):
         await rig.api.patch("material", PAGE, properties)
     assert not rig.requests
 
@@ -362,7 +364,7 @@ async def test_utf16_boundary_and_optional_empty_metadata_are_preserved():
     assert len(rig.mutations()) == 1
 
 
-async def test_lookup_exact_rich_text_filter_paginates_raw_duplicates_without_following_urls():
+async def test_lookup_paginates_duplicates_without_following_urls():
     rig = Rig()
     key = "material:synthetic-key"
     page = {
@@ -397,7 +399,7 @@ async def test_lookup_exact_rich_text_filter_paginates_raw_duplicates_without_fo
     assert len(rig.requests) == 4
 
 
-async def test_children_paginates_only_top_level_and_returns_normalized_image_url_unchanged():
+async def test_children_pagination_keeps_top_level_and_image_urls():
     rig = Rig()
     image = {
         "object": "block",
@@ -435,7 +437,7 @@ async def test_children_paginates_only_top_level_and_returns_normalized_image_ur
 
 
 @pytest.mark.parametrize("repeat", [False, True])
-async def test_pagination_limit_and_repeated_cursor_never_return_a_partial_success(
+async def test_pagination_limit_repeated_cursor_never_return_partial_success(
     monkeypatch, repeat
 ):
     monkeypatch.setattr("newsletter.notion_api.MAX_PAGES", 2)
@@ -450,7 +452,7 @@ async def test_pagination_limit_and_repeated_cursor_never_return_a_partial_succe
         },
     )
     with pytest.raises(
-        AdapterError,
+        adapters.AdapterError,
         match="NOTION_INVALID_RESPONSE"
         if repeat
         else "NOTION_PAGINATION_LIMIT",
@@ -470,7 +472,7 @@ async def test_append_is_one_bounded_request_and_preserves_returned_ids():
         },
     ]
     result = [
-        {"object": "block", "id": str(UUID(int=i + 1)), **block}
+        {"object": "block", "id": str(uuid.UUID(int=i + 1)), **block}
         for i, block in enumerate(blocks)
     ]
     rig.extra = lambda request: httpx.Response(
@@ -493,19 +495,19 @@ async def test_append_is_one_bounded_request_and_preserves_returned_ids():
 )
 async def test_bad_or_oversized_blocks_fail_before_network(blocks):
     rig = Rig()
-    with pytest.raises(AdapterError, match="INVALID_NOTION_INPUT"):
+    with pytest.raises(adapters.AdapterError, match="INVALID_NOTION_INPUT"):
         await rig.api.append(PAGE, blocks)
     assert not rig.requests
 
 
-async def test_json_byte_limit_is_checked_independently_of_text_and_array_limits():
+async def test_json_byte_limit_checked_independently_of_text_array_limits():
     rig = Rig()
-    with pytest.raises(AdapterError, match="INVALID_NOTION_INPUT"):
+    with pytest.raises(adapters.AdapterError, match="INVALID_NOTION_INPUT"):
         await rig.api.append(PAGE, [paragraph("界" * 2000)] * 100)
     assert not rig.requests
 
 
-async def test_total_nested_blocks_and_unresolved_chart_placeholders_are_rejected():
+async def test_total_nested_blocks_unresolved_chart_placeholders_rejected():
     rig = Rig()
     table = {
         "object": "block",
@@ -527,7 +529,7 @@ async def test_total_nested_blocks_and_unresolved_chart_placeholders_are_rejecte
         [{"type": "_newsletter_chart", "_newsletter_chart": {}}],
         [{"type": [], "paragraph": {}}],
     ):
-        with pytest.raises(AdapterError, match="INVALID_NOTION_INPUT"):
+        with pytest.raises(adapters.AdapterError, match="INVALID_NOTION_INPUT"):
             await rig.api.append(PAGE, blocks)
     assert not rig.requests
 
@@ -545,13 +547,14 @@ async def test_malformed_mutation_success_receipt_is_unknown_not_retryable(
             "has_more": False,
         },
     )
-    with pytest.raises(AdapterError) as exc:
-        if method == "patch":
-            await rig.api.patch(
-                "edition", PAGE, {"delivery": {"select": {"name": "未发送"}}}
-            )
-        else:
-            await rig.api.append(PAGE, [paragraph()])
+    if method == "patch":
+        operation = rig.api.patch(
+            "edition", PAGE, {"delivery": {"select": {"name": "未发送"}}}
+        )
+    else:
+        operation = rig.api.append(PAGE, [paragraph()])
+    with pytest.raises(adapters.AdapterError) as exc:
+        await operation
     assert exc.value.code == "NOTION_UNKNOWN" and exc.value.ambiguous
     assert len(rig.mutations()) == 1
 
@@ -559,7 +562,7 @@ async def test_malformed_mutation_success_receipt_is_unknown_not_retryable(
 @pytest.mark.parametrize(
     "bad_reply", ["invalid-schema", "missing-added-column"]
 )
-async def test_schema_patch_invalid_success_is_ambiguous_and_stops_before_second_write(
+async def test_bad_schema_patch_success_stops_before_second_write(
     bad_reply,
 ):
     rig = Rig(complete=False)
@@ -577,7 +580,7 @@ async def test_schema_patch_invalid_success_is_ambiguous_and_stops_before_second
         return original(request)
 
     rig.api._transport = httpx.MockTransport(response)
-    with pytest.raises(AdapterError) as exc:
+    with pytest.raises(adapters.AdapterError) as exc:
         await rig.api.setup(apply=True)
     assert exc.value.code == "NOTION_UNKNOWN" and exc.value.ambiguous
     assert len(rig.mutations()) == 1
@@ -603,7 +606,7 @@ async def test_read_redirect_content_type_and_duplicate_json_are_hard_errors(
     rig.extra = lambda request: httpx.Response(
         status, headers=headers, content=content
     )
-    with pytest.raises(AdapterError) as exc:
+    with pytest.raises(adapters.AdapterError) as exc:
         await rig.api.get_page(PAGE)
     assert exc.value.code == code and not exc.value.ambiguous
     assert len(rig.requests) == 1
@@ -624,7 +627,7 @@ async def test_read_redirect_content_type_and_duplicate_json_are_hard_errors(
         (307, "NOTION_UNKNOWN", True),
     ],
 )
-async def test_mutation_failures_do_not_retry_redirect_or_expose_provider_diagnostics(
+async def test_mutation_failure_never_retries_or_leaks_diagnostics(
     status, code, ambiguous
 ):
     rig = Rig()
@@ -633,7 +636,7 @@ async def test_mutation_failures_do_not_retry_redirect_or_expose_provider_diagno
         headers={"Location": "https://example.org/leak", "Retry-After": "1"},
         json={"message": TOKEN + " private provider diagnostic"},
     )
-    with pytest.raises(AdapterError) as exc:
+    with pytest.raises(adapters.AdapterError) as exc:
         await rig.api.append(PAGE, [paragraph()])
     assert exc.value.code == code and exc.value.ambiguous is ambiguous
     assert TOKEN not in str(exc.value) and "diagnostic" not in str(exc.value)
@@ -647,7 +650,7 @@ async def test_mutation_failures_do_not_retry_redirect_or_expose_provider_diagno
 async def test_bad_create_success_response_is_ambiguous(payload):
     rig = Rig()
     rig.extra = lambda request: httpx.Response(200, json=payload)
-    with pytest.raises(AdapterError) as exc:
+    with pytest.raises(adapters.AdapterError) as exc:
         await rig.api.create("material", {"title": {"title": rich("fixture")}})
     assert exc.value.code == "NOTION_UNKNOWN" and exc.value.ambiguous
     assert len(rig.mutations()) == 1
@@ -677,11 +680,13 @@ async def test_unknown_read_vs_write_classification(
         return httpx.Response(503, text=TOKEN)
 
     rig.extra = response
-    with pytest.raises(AdapterError) as exc:
-        if mutation:
-            await rig.api.append(PAGE, [paragraph()])
-        else:
-            await rig.api.get_page(PAGE)
+    operation = (
+        rig.api.append(PAGE, [paragraph()])
+        if mutation
+        else rig.api.get_page(PAGE)
+    )
+    with pytest.raises(adapters.AdapterError) as exc:
+        await operation
     read_code = (
         "NOTION_UNAVAILABLE"
         if failure in {"network", "server"}
@@ -732,15 +737,17 @@ async def test_upload_png_uses_two_fixed_endpoints_sha_filename_and_multipart():
     assert len(rig.requests) == 2
 
 
-@pytest.mark.parametrize("png", [b"not-png", b"", PNG + b"x" * MAX_PNG_BYTES])
+@pytest.mark.parametrize(
+    "png", [b"not-png", b"", PNG + b"x" * notion_api.MAX_PNG_BYTES]
+)
 async def test_invalid_or_too_large_png_does_not_create_a_file_upload(png):
     rig = Rig()
-    with pytest.raises(AdapterError, match="INVALID_NOTION_INPUT"):
+    with pytest.raises(adapters.AdapterError, match="INVALID_NOTION_INPUT"):
         await rig.api.upload_png(png)
     assert not rig.requests
 
 
-async def test_upload_send_timeout_is_ambiguous_and_does_not_repeat_either_phase():
+async def test_upload_send_timeout_ambiguous_never_repeat_either_phase():
     rig = Rig()
 
     def response(request):
@@ -756,7 +763,7 @@ async def test_upload_send_timeout_is_ambiguous_and_does_not_repeat_either_phase
         raise httpx.ReadTimeout("private", request=request)
 
     rig.extra = response
-    with pytest.raises(AdapterError) as exc:
+    with pytest.raises(adapters.AdapterError) as exc:
         await rig.api.upload_png(PNG)
     assert exc.value.code == "NOTION_UNKNOWN" and exc.value.ambiguous
     assert len(rig.requests) == 2

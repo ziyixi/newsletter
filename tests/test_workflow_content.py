@@ -1,112 +1,28 @@
-"""Offline discovery/planning/research boundaries, with synthetic engine responses."""
+"""Test discovery, planning and research with synthetic engine responses."""
 
 import json
+import pathlib
 import re
-from pathlib import Path
 
 import pytest
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from newsletter.collection.instructions import Instruction, load_instructions
-from newsletter.contracts import (
-    ContractError,
-    content_hash,
-    parse_message,
-    to_dict,
-)
-from newsletter.errors import EditorError
-from newsletter.settings import Settings
-from newsletter.store import Store
-from newsletter.workflow.content import (
-    _DISCOVERY,
-    _SAFETY,
-    _SELECTION,
-    ContentPreparation,
-    _candidate_view,
-    parse_discovery,
-    parse_plan,
-    public_context,
-)
-from newsletter.workflow.definition import load_definition
-from newsletter.workflow.engine import NodeContext
-from newsletter.workflow.nodes import EditorialNodes
-from newsletter.workflow.schema import (
-    CANDIDATE_FIELDS,
-    CANDIDATE_LEGACY_FIELDS,
-    CANDIDATE_RESEARCH_FIELDS,
-    TASK_FIELDS,
-    discovery_schema,
-    planning_schema,
-)
-from newsletter.workflow.sources import (
-    Candidate,
-    candidate_id,
-    deduplicate_candidates,
-    identity_keys,
-)
-from newsletter.workflow.story_nodes import StoryNodes
-
-DAY = "2026-09-06"
-URL = "https://arxiv.org/abs/2609.00001v2"
+import newsletter.collection.instructions as instructions
+import newsletter.contracts as contracts
+import newsletter.errors as errors
+import newsletter.settings as settings
+import newsletter.store as newsletter_store
+import newsletter.workflow.content as content
+import newsletter.workflow.definition as newsletter_workflow_definition
+import newsletter.workflow.engine as newsletter_workflow_engine
+import newsletter.workflow.nodes as newsletter_workflow_nodes
+import newsletter.workflow.schema as newsletter_workflow_schema
+import newsletter.workflow.sources as sources
+import newsletter.workflow.story_nodes as story_nodes
+import tests.support.workflow_content as workflow_content
 
 
-def candidate(**changes):
-    result = Candidate(
-        id="candidate-1",
-        direction="01-ai-ml",
-        title="Synthetic research candidate",
-        url=URL,
-        doi="",
-        version="v2",
-        event_key="",
-        published_at=DAY,
-        summary="Synthetic research question; its claims require independent primary reading.",
-        why_now="A new controlled experiment changes the previous reported result and merits verification.",
-        access_scope="abstract",
-        provenance="web_open",
-    )
-    result.update(changes)
-    return result
-
-
-def discovered(*items):
-    return json.dumps(
-        {
-            "note": "Synthetic public discovery",
-            "candidates": [
-                {
-                    key: item.get(key, [] if key == "evidence_urls" else "")
-                    for key in CANDIDATE_FIELDS
-                }
-                for item in items
-            ],
-        }
-    )
-
-
-def task(**changes):
-    return {
-        "id": "research-1",
-        "candidate_ids": ["candidate-1"],
-        "question": "Check methods and controls",
-        "why": "A decision needs evidence",
-        "priority": 1,
-        "evidence_context": "The abstract omits the matched-data comparison.",
-        "source_urls": [URL],
-        **changes,
-    }
-
-
-def planned(*items):
-    return json.dumps(
-        {
-            "research_tasks": list(items),
-            "note": "Synthetic selection, not verification",
-        }
-    )
-
-
-def material(url=URL):
+def material(url=workflow_content.URL):
     return {
         "title": "Synthetic material",
         "body": "Synthetic findings with explicit limitations.",
@@ -115,7 +31,7 @@ def material(url=URL):
                 "id": "source-1",
                 "title": "Original source",
                 "url": url,
-                "published_at": DAY,
+                "published_at": workflow_content.DAY,
                 "access_scope": "abstract",
                 "excerpt": "",
             }
@@ -124,99 +40,143 @@ def material(url=URL):
     }
 
 
-class Engine:
-    def __init__(self, *outputs):
-        self.outputs, self.calls = list(outputs), []
-
-    async def execute(self, prompt, schema, instructions, workspace):
-        self.calls.append((json.loads(prompt), schema, instructions, workspace))
-        return self.outputs.pop(0)
-
-
 def test_discovery_ids_are_local_stable_and_exact_open_url_is_preserved():
-    c = candidate(url=URL + "#abstract")
-    result = parse_discovery(discovered(c), {URL}, True, c["direction"], DAY)
-    assert result.candidates[0]["id"] == candidate_id(c)
-    assert result.candidates[0]["url"] == URL + "#abstract"
+    c = workflow_content.candidate(url=workflow_content.URL + "#abstract")
+    result = content.parse_discovery(
+        workflow_content.discovered(c),
+        {workflow_content.URL},
+        True,
+        c["direction"],
+        workflow_content.DAY,
+    )
+    assert result.candidates[0]["id"] == sources.candidate_id(c)
+    assert result.candidates[0]["url"] == workflow_content.URL + "#abstract"
     assert result.candidates[0]["provenance"] == "web_open"
-    parse_message(result.candidates[0], pb.Candidate)
+    contracts.parse_message(result.candidates[0], editorial_pb2.Candidate)
 
 
 @pytest.mark.parametrize(
     "value,opened,searched",
     [
-        (candidate(url="https://arxiv.org/pdf/2609.00001v2"), {URL}, True),
-        (candidate(), {URL}, False),
-        (candidate(), set(), True),
-        (candidate(access_scope="verified"), {URL}, True),
-        (candidate(published_at="2026-09-07"), {URL}, True),
-        (candidate(published_at="2026-09"), {URL}, True),
-        (candidate(doi="made-up DOI"), {URL}, True),
         (
-            candidate(url="http://127.0.0.1/private"),
+            workflow_content.candidate(
+                url="https://arxiv.org/pdf/2609.00001v2"
+            ),
+            {workflow_content.URL},
+            True,
+        ),
+        (workflow_content.candidate(), {workflow_content.URL}, False),
+        (workflow_content.candidate(), set(), True),
+        (
+            workflow_content.candidate(access_scope="verified"),
+            {workflow_content.URL},
+            True,
+        ),
+        (
+            workflow_content.candidate(published_at="2026-09-07"),
+            {workflow_content.URL},
+            True,
+        ),
+        (
+            workflow_content.candidate(published_at="2026-09"),
+            {workflow_content.URL},
+            True,
+        ),
+        (
+            workflow_content.candidate(doi="made-up DOI"),
+            {workflow_content.URL},
+            True,
+        ),
+        (
+            workflow_content.candidate(url="http://127.0.0.1/private"),
             {"http://127.0.0.1/private"},
             True,
         ),
     ],
 )
-def test_discovery_rejects_unopened_canonical_switches_bad_dates_scopes_and_ssrf(
+def test_discovery_rejects_bad_identity_dates_scopes_and_urls(
     value, opened, searched
 ):
-    with pytest.raises((EditorError, ContractError)):
-        parse_discovery(discovered(value), opened, searched, "01-ai-ml", DAY)
+    with pytest.raises((errors.EditorError, contracts.ContractError)):
+        content.parse_discovery(
+            workflow_content.discovered(value),
+            opened,
+            searched,
+            "01-ai-ml",
+            workflow_content.DAY,
+        )
 
 
-def test_unopened_feed_candidate_can_only_reuse_actual_metadata_not_model_claims():
-    seed = candidate(
+def test_unopened_feed_reuses_real_metadata_not_model_claims():
+    seed = workflow_content.candidate(
         provenance="crossref_metadata",
         access_scope="metadata",
         summary="Only a title record",
     )
-    output = candidate(
+    output = workflow_content.candidate(
         access_scope="metadata", summary="Invented clinical results"
     )
-    result = parse_discovery(
-        discovered(output), set(), True, "02-science", DAY, seeds=[seed]
+    result = content.parse_discovery(
+        workflow_content.discovered(output),
+        set(),
+        True,
+        "02-science",
+        workflow_content.DAY,
+        seeds=[seed],
     )
     assert result.candidates[0]["summary"] == "Only a title record"
     assert result.candidates[0]["provenance"] == "crossref_metadata"
-    with pytest.raises(EditorError):
-        parse_discovery(
-            discovered(candidate(access_scope="full_text")),
+    with pytest.raises(errors.EditorError):
+        content.parse_discovery(
+            workflow_content.discovered(
+                workflow_content.candidate(access_scope="full_text")
+            ),
             set(),
             True,
             "02-science",
-            DAY,
+            workflow_content.DAY,
             seeds=[seed],
         )
 
 
 def test_discovery_cap_empty_note_and_shape_fail_closed():
-    with pytest.raises(EditorError):
-        parse_discovery(
-            discovered(*[candidate()] * 6), {URL}, True, "01-ai-ml", DAY
+    with pytest.raises(errors.EditorError):
+        content.parse_discovery(
+            workflow_content.discovered(*[workflow_content.candidate()] * 6),
+            {workflow_content.URL},
+            True,
+            "01-ai-ml",
+            workflow_content.DAY,
         )
     for raw in (
         '{"candidates":[],"note":""}',
         '{"candidates":[],"note":"x","extra":1}',
     ):
-        with pytest.raises(EditorError):
-            parse_discovery(raw, set(), True, "01-ai-ml", DAY)
+        with pytest.raises(errors.EditorError):
+            content.parse_discovery(
+                raw, set(), True, "01-ai-ml", workflow_content.DAY
+            )
     assert (
-        parse_discovery(discovered(), set(), True, "01-ai-ml", DAY).candidates
+        content.parse_discovery(
+            workflow_content.discovered(),
+            set(),
+            True,
+            "01-ai-ml",
+            workflow_content.DAY,
+        ).candidates
         == []
     )
 
 
 def test_discovery_schema_exposes_parser_string_and_empty_value_boundaries():
-    schema = discovery_schema()
+    schema = newsletter_workflow_schema.discovery_schema()
     props = schema["properties"]["candidates"]["items"]["properties"]
     optional = {
         "doi",
         "version",
         "event_key",
         "published_at",
-        *CANDIDATE_RESEARCH_FIELDS,
+        *newsletter_workflow_schema.CANDIDATE_RESEARCH_FIELDS,
     }
     for name, field in props.items():
         if name == "evidence_urls":
@@ -247,29 +207,36 @@ def test_discovery_schema_exposes_parser_string_and_empty_value_boundaries():
         ("why_now", 1000),
         ("version", 1200),
         ("event_key", 1200),
-        *((name, 1200) for name in CANDIDATE_RESEARCH_FIELDS),
+        *(
+            (name, 1200)
+            for name in newsletter_workflow_schema.CANDIDATE_RESEARCH_FIELDS
+        ),
     ],
 )
 def test_discovery_schema_lengths_match_actual_parser(field, maximum):
-    props = discovery_schema()["properties"]["candidates"]["items"][
-        "properties"
-    ]
+    props = newsletter_workflow_schema.discovery_schema()["properties"][
+        "candidates"
+    ]["items"]["properties"]
     assert props[field]["maxLength"] == maximum
-    result = parse_discovery(
-        discovered(candidate(**{field: "x" * maximum})),
-        {URL},
+    result = content.parse_discovery(
+        workflow_content.discovered(
+            workflow_content.candidate(**{field: "x" * maximum})
+        ),
+        {workflow_content.URL},
         True,
         "01-ai-ml",
-        DAY,
+        workflow_content.DAY,
     )
     assert result.candidates[0][field] == "x" * maximum
-    with pytest.raises(EditorError):
-        parse_discovery(
-            discovered(candidate(**{field: "x" * (maximum + 1)})),
-            {URL},
+    with pytest.raises(errors.EditorError):
+        content.parse_discovery(
+            workflow_content.discovered(
+                workflow_content.candidate(**{field: "x" * (maximum + 1)})
+            ),
+            {workflow_content.URL},
             True,
             "01-ai-ml",
-            DAY,
+            workflow_content.DAY,
         )
 
 
@@ -278,91 +245,115 @@ def test_discovery_schema_lengths_match_actual_parser(field, maximum):
     ["2026-09", "20260906", "2026-9-06", "2026-09-06T00:00:00Z", "unknown"],
 )
 def test_discovery_schema_rejects_non_date_shapes(value):
-    field = discovery_schema()["properties"]["candidates"]["items"][
-        "properties"
-    ]["published_at"]
+    field = newsletter_workflow_schema.discovery_schema()["properties"][
+        "candidates"
+    ]["items"]["properties"]["published_at"]
     assert re.fullmatch(field["pattern"], value) is None
-    with pytest.raises(ContractError):
-        parse_discovery(
-            discovered(candidate(published_at=value)),
-            {URL},
+    with pytest.raises(contracts.ContractError):
+        content.parse_discovery(
+            workflow_content.discovered(
+                workflow_content.candidate(published_at=value)
+            ),
+            {workflow_content.URL},
             True,
             "01-ai-ml",
-            DAY,
+            workflow_content.DAY,
         )
 
 
 @pytest.mark.parametrize(
     "value,valid",
-    [("", True), (DAY, True), ("2026-02-30", False), ("2026-09-07", False)],
+    [
+        ("", True),
+        (workflow_content.DAY, True),
+        ("2026-02-30", False),
+        ("2026-09-07", False),
+    ],
 )
 def test_date_shape_is_not_a_substitute_for_calendar_and_issue_date_validation(
     value, valid
 ):
-    field = discovery_schema()["properties"]["candidates"]["items"][
-        "properties"
-    ]["published_at"]
+    field = newsletter_workflow_schema.discovery_schema()["properties"][
+        "candidates"
+    ]["items"]["properties"]["published_at"]
     assert re.fullmatch(field["pattern"], value) is not None
     if valid:
-        result = parse_discovery(
-            discovered(candidate(published_at=value)),
-            {URL},
+        result = content.parse_discovery(
+            workflow_content.discovered(
+                workflow_content.candidate(published_at=value)
+            ),
+            {workflow_content.URL},
             True,
             "01-ai-ml",
-            DAY,
+            workflow_content.DAY,
         )
         assert result.candidates[0]["published_at"] == value
     else:
-        with pytest.raises((ContractError, EditorError)):
-            parse_discovery(
-                discovered(candidate(published_at=value)),
-                {URL},
+        with pytest.raises((contracts.ContractError, errors.EditorError)):
+            content.parse_discovery(
+                workflow_content.discovered(
+                    workflow_content.candidate(published_at=value)
+                ),
+                {workflow_content.URL},
                 True,
                 "01-ai-ml",
-                DAY,
+                workflow_content.DAY,
             )
 
 
 def test_dedup_matches_doi_alias_arxiv_versions_tracking_urls_and_events():
-    assert identity_keys(candidate()) & identity_keys(
-        candidate(url="https://arxiv.org/pdf/2609.00001v1")
+    assert sources.identity_keys(
+        workflow_content.candidate()
+    ) & sources.identity_keys(
+        workflow_content.candidate(url="https://arxiv.org/pdf/2609.00001v1")
     )
-    doi = candidate(url="https://doi.org/10.1234/ABC", doi="10.1234/abc")
-    publisher = candidate(
+    doi = workflow_content.candidate(
+        url="https://doi.org/10.1234/ABC", doi="10.1234/abc"
+    )
+    publisher = workflow_content.candidate(
         url="https://example.org/article", doi="https://doi.org/10.1234/ABC"
     )
-    assert len(deduplicate_candidates([doi, publisher])) == 1
-    original = candidate(
+    assert len(sources.deduplicate_candidates([doi, publisher])) == 1
+    original = workflow_content.candidate(
         url="https://example.org/story?article=1&utm_source=feed",
         title="First title",
     )
-    alias = candidate(
+    alias = workflow_content.candidate(
         url="https://example.org/story?article=1#section", title="Another title"
     )
-    assert len(deduplicate_candidates([original, alias])) == 1
-    same_event = candidate(
+    assert len(sources.deduplicate_candidates([original, alias])) == 1
+    same_event = workflow_content.candidate(
         url="https://example.net/other",
         title="Different title",
         event_key="storm:2026-09-06",
     )
     original["event_key"] = "storm:2026-09-06"
-    assert len(deduplicate_candidates([original, same_event])) == 1
+    assert len(sources.deduplicate_candidates([original, same_event])) == 1
 
 
 def test_dedup_retains_meaningful_query_parameters():
-    first = candidate(url="https://example.org/story?id=1", title="first")
-    second = candidate(url="https://example.org/story?id=2", title="second")
-    assert len(deduplicate_candidates([first, second])) == 2
+    first = workflow_content.candidate(
+        url="https://example.org/story?id=1", title="first"
+    )
+    second = workflow_content.candidate(
+        url="https://example.org/story?id=2", title="second"
+    )
+    assert len(sources.deduplicate_candidates([first, second])) == 2
 
 
-def test_history_suppresses_repetition_but_preserves_explained_new_versions_not_downgrades():
-    c = candidate()
-    assert deduplicate_candidates([c], [c]) == []
-    old = candidate(version="v1")
-    assert deduplicate_candidates([c], [old]) == [c]
-    assert deduplicate_candidates([old], [c]) == []
-    assert deduplicate_candidates([candidate(why_now="New")], [old]) == []
-    assert deduplicate_candidates([c], [{"title": c["title"]}]) == []
+def test_history_keeps_explained_upgrades_not_repeats_or_downgrades():
+    c = workflow_content.candidate()
+    assert sources.deduplicate_candidates([c], [c]) == []
+    old = workflow_content.candidate(version="v1")
+    assert sources.deduplicate_candidates([c], [old]) == [c]
+    assert sources.deduplicate_candidates([old], [c]) == []
+    assert (
+        sources.deduplicate_candidates(
+            [workflow_content.candidate(why_now="New")], [old]
+        )
+        == []
+    )
+    assert sources.deduplicate_candidates([c], [{"title": c["title"]}]) == []
 
 
 @pytest.mark.parametrize(
@@ -381,44 +372,64 @@ def test_history_suppresses_repetition_but_preserves_explained_new_versions_not_
     ],
 )
 def test_plan_only_selects_known_unique_identifiers_and_bounded_tasks(changes):
-    with pytest.raises((EditorError, ContractError)):
-        parse_plan(planned(task(**changes)), {"candidate-1"}, {URL}, 12)
+    with pytest.raises((errors.EditorError, contracts.ContractError)):
+        content.parse_plan(
+            workflow_content.planned(workflow_content.task(**changes)),
+            {"candidate-1"},
+            {workflow_content.URL},
+            12,
+        )
 
 
 def test_duplicate_tasks_and_duplicate_selected_candidate_rejected():
-    with pytest.raises(EditorError):
-        parse_plan(
-            planned(task(), task(id="other", priority=2)),
+    with pytest.raises(errors.EditorError):
+        content.parse_plan(
+            workflow_content.planned(
+                workflow_content.task(),
+                workflow_content.task(id="other", priority=2),
+            ),
             {"candidate-1"},
-            {URL},
+            {workflow_content.URL},
             8,
         )
 
 
 def test_gap_plan_can_have_no_candidate_but_has_context_and_only_given_urls():
-    result = parse_plan(
-        planned(task(candidate_ids=[])), set(), {URL}, 3, gaps=True
+    result = content.parse_plan(
+        workflow_content.planned(workflow_content.task(candidate_ids=[])),
+        set(),
+        {workflow_content.URL},
+        3,
+        gaps=True,
     )
     assert result.research_tasks[0]["evidence_context"]
     assert (
-        to_dict(parse_message(result.research_tasks[0], pb.ResearchTask))[
-            "priority"
-        ]
+        contracts.to_dict(
+            contracts.parse_message(
+                result.research_tasks[0], editorial_pb2.ResearchTask
+            )
+        )["priority"]
         == 1
     )
 
 
-async def test_discover_passes_public_history_watchlist_and_never_private_fields(
+async def test_discover_passes_public_history_watchlist_never_private_fields(
     tmp_path,
 ):
-    engine = Engine((discovered(candidate()), {URL}, True))
-    service = ContentPreparation(engine)
-    instruction = Instruction(
+    engine = workflow_content.Engine(
+        (
+            workflow_content.discovered(workflow_content.candidate()),
+            {workflow_content.URL},
+            True,
+        )
+    )
+    service = content.ContentPreparation(engine)
+    instruction = instructions.Instruction(
         "01-ai-ml", "Find substantial public research", "a" * 64
     )
     await service.discover(
         instruction,
-        DAY,
+        workflow_content.DAY,
         tmp_path.resolve() / "discover",
         history=[{"title": "Old paper", "personal_digest": "private marker"}],
         watchlist=[
@@ -434,17 +445,24 @@ async def test_discover_passes_public_history_watchlist_and_never_private_fields
     assert "不得读本地文件" in engine.calls[0][2]
 
 
-async def test_shortlist_accepts_12_cap_and_empty_candidates_do_not_invoke_model(
+async def test_shortlist_accepts_12_cap_empty_candidates_never_invoke_model(
     tmp_path,
 ):
-    engine = Engine((planned(task()), set(), False))
-    service = ContentPreparation(engine)
+    engine = workflow_content.Engine(
+        (workflow_content.planned(workflow_content.task()), set(), False)
+    )
+    service = content.ContentPreparation(engine)
     assert (
-        await service.shortlist([], DAY, tmp_path.resolve() / "empty")
+        await service.shortlist(
+            [], workflow_content.DAY, tmp_path.resolve() / "empty"
+        )
     ).research_tasks == []
     assert not engine.calls
     selected = await service.shortlist(
-        [candidate()], DAY, tmp_path.resolve() / "select", max_tasks=12
+        [workflow_content.candidate()],
+        workflow_content.DAY,
+        tmp_path.resolve() / "select",
+        max_tasks=12,
     )
     assert selected.research_tasks[0]["id"] == "research-1"
     assert engine.calls[0][1]["properties"]["research_tasks"]["maxItems"] == 12
@@ -452,17 +470,17 @@ async def test_shortlist_accepts_12_cap_and_empty_candidates_do_not_invoke_model
 
 
 def test_promoted_selection_keeps_evaluated_text_and_public_safety_boundary():
-    directory = Path(__file__).resolve().parents[1]
+    directory = pathlib.Path(__file__).resolve().parents[1]
     evaluated = (directory / "evals/prompts/v3-selection.md").read_text(
         encoding="utf-8"
     )
-    assert evaluated.strip() in _SELECTION
-    assert _SELECTION.startswith(_SAFETY)
-    assert "不得读本地文件、密钥、个人事件、登录信息" in _SELECTION
-    assert "不search/open，不新增ID或URL" in _SELECTION
-    assert "question只提出一个核心问题和一两项决定性核查" in _SELECTION
-    assert "不承诺执行列表之外的研究" in _SELECTION
-    assert "reader_profile仅表达本次冻结的显式读者偏好" in _SELECTION
+    assert evaluated.strip() in content._SELECTION
+    assert content._SELECTION.startswith(content._SAFETY)
+    assert "不得读本地文件、密钥、个人事件、登录信息" in content._SELECTION
+    assert "不search/open，不新增ID或URL" in content._SELECTION
+    assert "question只提出一个核心问题和一两项决定性核查" in content._SELECTION
+    assert "不承诺执行列表之外的研究" in content._SELECTION
+    assert "reader_profile仅表达本次冻结的显式读者偏好" in content._SELECTION
 
 
 @pytest.mark.parametrize(
@@ -475,7 +493,7 @@ def test_promoted_selection_keeps_evaluated_text_and_public_safety_boundary():
 def test_current_discovery_instructions_match_versioned_evaluation_inputs(
     production, evaluated
 ):
-    directory = Path(__file__).resolve().parents[1]
+    directory = pathlib.Path(__file__).resolve().parents[1]
     actual = directory / "src/newsletter/instructions/discovery" / production
     expected = directory / "evals/prompts" / evaluated
     assert actual.read_text(encoding="utf-8") == expected.read_text(
@@ -483,29 +501,40 @@ def test_current_discovery_instructions_match_versioned_evaluation_inputs(
     )
 
 
-async def test_discovery_explicitly_requires_real_search_even_when_no_candidates(
+async def test_empty_discovery_still_requires_real_search(
     tmp_path,
 ):
-    engine = Engine((discovered(), set(), False), (discovered(), set(), True))
-    service = ContentPreparation(engine)
-    instruction = Instruction(
+    engine = workflow_content.Engine(
+        (workflow_content.discovered(), set(), False),
+        (workflow_content.discovered(), set(), True),
+    )
+    service = content.ContentPreparation(engine)
+    instruction = instructions.Instruction(
         "04-economy", "Find public finance research", "a" * 64
     )
-    seed = candidate(provenance="crossref_metadata", access_scope="metadata")
-    with pytest.raises(EditorError) as error:
+    seed = workflow_content.candidate(
+        provenance="crossref_metadata", access_scope="metadata"
+    )
+    with pytest.raises(errors.EditorError) as error:
         await service.discover(
-            instruction, DAY, tmp_path.resolve() / "bad", seeds=[seed]
+            instruction,
+            workflow_content.DAY,
+            tmp_path.resolve() / "bad",
+            seeds=[seed],
         )
     assert error.value.code == "invalid_output"
     result = await service.discover(
-        instruction, DAY, tmp_path.resolve() / "good", seeds=[seed]
+        instruction,
+        workflow_content.DAY,
+        tmp_path.resolve() / "good",
+        seeds=[seed],
     )
     assert result.candidates == []
-    assert engine.calls[0][2] == _DISCOVERY
-    assert _DISCOVERY.startswith(_SAFETY)
-    assert "必须实际调用hosted web search" in _DISCOVERY
-    assert "已有metadata线索或最后没有合格候选" in _DISCOVERY
-    assert "不能伪造搜索或打开记录" in _DISCOVERY
+    assert engine.calls[0][2] == content._DISCOVERY
+    assert content._DISCOVERY.startswith(content._SAFETY)
+    assert "必须实际调用hosted web search" in content._DISCOVERY
+    assert "已有metadata线索或最后没有合格候选" in content._DISCOVERY
+    assert "不能伪造搜索或打开记录" in content._DISCOVERY
 
 
 @pytest.mark.parametrize(
@@ -516,11 +545,11 @@ async def test_discovery_explicitly_requires_real_search_even_when_no_candidates
 async def test_shortlist_rejects_invalid_reader_profile_before_model(
     tmp_path, profile
 ):
-    engine = Engine()
-    with pytest.raises(EditorError) as error:
-        await ContentPreparation(engine).shortlist(
-            [candidate()],
-            DAY,
+    engine = workflow_content.Engine()
+    with pytest.raises(errors.EditorError) as error:
+        await content.ContentPreparation(engine).shortlist(
+            [workflow_content.candidate()],
+            workflow_content.DAY,
             tmp_path.resolve() / "bad",
             reader_profile=profile,
         )
@@ -530,28 +559,38 @@ async def test_shortlist_rejects_invalid_reader_profile_before_model(
 
 @pytest.mark.parametrize(
     "node_class,recipe",
-    [(EditorialNodes, "legacy-daily.yaml"), (StoryNodes, "daily.yaml")],
+    [
+        (newsletter_workflow_nodes.EditorialNodes, "legacy-daily.yaml"),
+        (story_nodes.StoryNodes, "daily.yaml"),
+    ],
 )
 async def test_selection_uses_only_reader_profile_from_frozen_run_policy(
     tmp_path, node_class, recipe
 ):
-    directory = Path(__file__).resolve().parents[1]
-    definition = load_definition(
+    directory = pathlib.Path(__file__).resolve().parents[1]
+    definition = newsletter_workflow_definition.load_definition(
         directory / "src/newsletter/workflows" / recipe
     )
     ids = {node.type: node.id for node in definition.nodes}
-    engine = Engine((planned(task()), set(), False))
-    store = Store(tmp_path / "selection.sqlite3", "mock")
-    profile = "Frozen explicit preference: understand AI/ML/CS and financial mechanisms.\n"
+    engine = workflow_content.Engine(
+        (workflow_content.planned(workflow_content.task()), set(), False)
+    )
+    store = newsletter_store.Store(tmp_path / "selection.sqlite3", "mock")
+    profile = (
+        "Frozen explicit preference: understand AI/ML/CS and "
+        "financial mechanisms.\n"
+    )
     try:
         nodes = node_class(store, definition, engine, tmp_path.resolve())
-        ctx = NodeContext(
+        ctx = newsletter_workflow_engine.NodeContext(
             run_id="synthetic-selection",
             node_id=ids["selection"],
             item_id="",
             params={"max_tasks": 8},
             inputs={
-                ids["deduplicate"]: {"candidates": [candidate()]},
+                ids["deduplicate"]: {
+                    "candidates": [workflow_content.candidate()]
+                },
                 ids["history"]: {
                     "candidates": [],
                     "watchlist": [],
@@ -559,7 +598,7 @@ async def test_selection_uses_only_reader_profile_from_frozen_run_policy(
                 },
             },
             run_inputs={
-                "issue_date": DAY,
+                "issue_date": workflow_content.DAY,
                 "policy": {
                     "reader-profile.md": profile,
                     "editorial.md": "Unrelated editorial policy marker",
@@ -579,12 +618,12 @@ async def test_selection_uses_only_reader_profile_from_frozen_run_policy(
         assert "Unrelated editorial policy marker" not in json.dumps(prompt)
         assert "Secret configuration marker" not in json.dumps(prompt)
         assert "Private event marker" not in json.dumps(prompt)
-        assert engine.calls[0][2] == _SELECTION
+        assert engine.calls[0][2] == content._SELECTION
     finally:
         store.close()
 
 
-async def test_research_uses_existing_fresh_search_open_provenance_even_for_old_candidate(
+async def test_old_candidates_still_need_fresh_research_provenance(
     tmp_path,
 ):
     output = json.dumps(
@@ -594,16 +633,24 @@ async def test_research_uses_existing_fresh_search_open_provenance_even_for_old_
             "packets": [material()],
         }
     )
-    engine = Engine((output, set(), True), (output, {URL}, True))
-    service = ContentPreparation(engine)
-    with pytest.raises(EditorError):
+    engine = workflow_content.Engine(
+        (output, set(), True), (output, {workflow_content.URL}, True)
+    )
+    service = content.ContentPreparation(engine)
+    with pytest.raises(errors.EditorError):
         await service.research(
-            task(), [candidate()], DAY, tmp_path.resolve() / "bad"
+            workflow_content.task(),
+            [workflow_content.candidate()],
+            workflow_content.DAY,
+            tmp_path.resolve() / "bad",
         )
     result = await service.research(
-        task(), [candidate()], DAY, tmp_path.resolve() / "good"
+        workflow_content.task(),
+        [workflow_content.candidate()],
+        workflow_content.DAY,
+        tmp_path.resolve() / "good",
     )
-    assert result.packets[0]["sources"][0]["url"] == URL
+    assert result.packets[0]["sources"][0]["url"] == workflow_content.URL
 
 
 async def test_gap_research_accepts_empty_candidates_with_explicit_question(
@@ -616,9 +663,12 @@ async def test_gap_research_accepts_empty_candidates_with_explicit_question(
             "packets": [],
         }
     )
-    engine = Engine((output, set(), True))
-    result = await ContentPreparation(engine).research(
-        task(candidate_ids=[]), [], DAY, tmp_path.resolve() / "gap-research"
+    engine = workflow_content.Engine((output, set(), True))
+    result = await content.ContentPreparation(engine).research(
+        workflow_content.task(candidate_ids=[]),
+        [],
+        workflow_content.DAY,
+        tmp_path.resolve() / "gap-research",
     )
     assert not result.packets
 
@@ -643,9 +693,15 @@ async def test_plan_gaps_uses_public_draft_and_strips_packet_record_extras(
             }
         ],
     }
-    engine = Engine((planned(task(candidate_ids=[])), set(), False))
-    result = await ContentPreparation(engine).plan_gaps(
-        draft, [packet], DAY, tmp_path.resolve() / "gap-plan"
+    engine = workflow_content.Engine(
+        (
+            workflow_content.planned(workflow_content.task(candidate_ids=[])),
+            set(),
+            False,
+        )
+    )
+    result = await content.ContentPreparation(engine).plan_gaps(
+        draft, [packet], workflow_content.DAY, tmp_path.resolve() / "gap-plan"
     )
     assert result.research_tasks[0]["candidate_ids"] == []
     assert engine.calls[0][1]["properties"]["research_tasks"]["maxItems"] == 3
@@ -655,36 +711,43 @@ async def test_plan_gaps_uses_public_draft_and_strips_packet_record_extras(
 async def test_extra_private_fields_on_candidates_are_rejected_before_model(
     tmp_path,
 ):
-    engine = Engine()
-    c = candidate(personal_digest="private marker")
-    with pytest.raises(ContractError):
-        await ContentPreparation(engine).shortlist(
-            [c], DAY, tmp_path.resolve() / "bad"
+    engine = workflow_content.Engine()
+    c = workflow_content.candidate(personal_digest="private marker")
+    with pytest.raises(contracts.ContractError):
+        await content.ContentPreparation(engine).shortlist(
+            [c], workflow_content.DAY, tmp_path.resolve() / "bad"
         )
     assert not engine.calls
 
 
-def test_schema_agrees_with_shared_proto_and_directions_are_eight_separate_files():
-    assert set(CANDIDATE_FIELDS) == set(
-        pb.Candidate.DESCRIPTOR.fields_by_name
+def test_schema_agrees_with_shared_proto_directions_eight_separate_files():
+    assert set(newsletter_workflow_schema.CANDIDATE_FIELDS) == set(
+        editorial_pb2.Candidate.DESCRIPTOR.fields_by_name
     ) - {
         "id",
         "direction",
         "provenance",
     }
-    assert set(TASK_FIELDS) == set(pb.ResearchTask.DESCRIPTOR.fields_by_name)
-    assert discovery_schema()["properties"]["candidates"]["maxItems"] == 5
+    assert set(newsletter_workflow_schema.TASK_FIELDS) == set(
+        editorial_pb2.ResearchTask.DESCRIPTOR.fields_by_name
+    )
     assert (
-        planning_schema([], [], 3, gaps=True)["properties"]["research_tasks"][
-            "items"
-        ]["properties"]["candidate_ids"]["maxItems"]
+        newsletter_workflow_schema.discovery_schema()["properties"][
+            "candidates"
+        ]["maxItems"]
+        == 5
+    )
+    assert (
+        newsletter_workflow_schema.planning_schema([], [], 3, gaps=True)[
+            "properties"
+        ]["research_tasks"]["items"]["properties"]["candidate_ids"]["maxItems"]
         == 0
     )
     directory = (
-        Path(__file__).resolve().parents[1]
+        pathlib.Path(__file__).resolve().parents[1]
         / "src/newsletter/instructions/discovery"
     )
-    directions = load_instructions(directory)
+    directions = instructions.load_instructions(directory)
     assert [d.id for d in directions] == [
         "01-ai-ml",
         "02-science",
@@ -696,7 +759,7 @@ def test_schema_agrees_with_shared_proto_and_directions_are_eight_separate_files
         "08-llm-architectures",
     ]
     assert all("最多5" in d.text for d in directions)
-    assert len(load_instructions(directory.parent)) == 3
+    assert len(instructions.load_instructions(directory.parent)) == 3
 
 
 @pytest.mark.parametrize(
@@ -706,10 +769,12 @@ def test_specialized_discovery_instructions_keep_source_and_dedup_boundaries(
     identifier,
 ):
     directory = (
-        Path(__file__).resolve().parents[1]
+        pathlib.Path(__file__).resolve().parents[1]
         / "src/newsletter/instructions/discovery"
     )
-    directions = {item.id: item for item in load_instructions(directory)}
+    directions = {
+        item.id: item for item in instructions.load_instructions(directory)
+    }
     text = directions[identifier].text
     for required in (
         "最多5",
@@ -726,17 +791,19 @@ def test_specialized_discovery_instructions_keep_source_and_dedup_boundaries(
         "01-ai-ml",
         "search",
         "open",
-        *CANDIDATE_RESEARCH_FIELDS,
+        *newsletter_workflow_schema.CANDIDATE_RESEARCH_FIELDS,
         "evidence_urls",
     ):
         assert required in text
-    assert directions[identifier].digest == content_hash(text)
+    assert directions[identifier].digest == contracts.content_hash(text)
     # Prompt/packaging contracts only, not a claim about live retrieval quality.
 
 
-def test_eight_retrieval_directions_do_not_expand_selection_output_or_model_timeouts():
-    root = Path(__file__).resolve().parents[1]
-    definition = load_definition(root / "src/newsletter/workflows/daily.yaml")
+def test_eight_directions_keep_selection_and_timeout_budgets():
+    root = pathlib.Path(__file__).resolve().parents[1]
+    definition = newsletter_workflow_definition.load_definition(
+        root / "src/newsletter/workflows/daily.yaml"
+    )
     roles = {node.type: node for node in definition.nodes}
     assert roles["discovery"].map.max_items == 8
     assert roles["discovery"].params == {"timeout_seconds": 150}
@@ -750,13 +817,17 @@ def test_eight_retrieval_directions_do_not_expand_selection_output_or_model_time
         len([node for node in definition.nodes if node.type == "selection"])
         == 1
     )
-    assert Settings().workflow_timeout_seconds == 5400
+    assert settings.Settings().workflow_timeout_seconds == 5400
 
 
-def test_one_paper_from_broad_and_specialized_retrievers_is_not_three_candidates():
+def test_cross_direction_paper_is_one_candidate():
     records = [
-        parse_discovery(
-            discovered(candidate()), {URL}, True, direction, DAY
+        content.parse_discovery(
+            workflow_content.discovered(workflow_content.candidate()),
+            {workflow_content.URL},
+            True,
+            direction,
+            workflow_content.DAY,
         ).candidates[0]
         for direction in (
             "01-ai-ml",
@@ -765,91 +836,120 @@ def test_one_paper_from_broad_and_specialized_retrievers_is_not_three_candidates
         )
     ]
     assert len({record["id"] for record in records}) == 1
-    assert len(deduplicate_candidates(records)) == 1
+    assert len(sources.deduplicate_candidates(records)) == 1
 
 
 def test_legacy_candidate_view_and_discovery_do_not_rewrite_old_hashes():
-    old = candidate()
-    old["id"] = candidate_id(old)
-    digest = content_hash(old)
-    assert not set(CANDIDATE_RESEARCH_FIELDS) & set(old)
-    assert _candidate_view(old) == old
-    assert content_hash(old) == digest
+    old = workflow_content.candidate()
+    old["id"] = sources.candidate_id(old)
+    digest = contracts.content_hash(old)
+    assert not set(newsletter_workflow_schema.CANDIDATE_RESEARCH_FIELDS) & set(
+        old
+    )
+    assert content._candidate_view(old) == old
+    assert contracts.content_hash(old) == digest
     raw = json.dumps(
         {
-            "candidates": [{key: old[key] for key in CANDIDATE_LEGACY_FIELDS}],
+            "candidates": [
+                {
+                    key: old[key]
+                    for key in (
+                        newsletter_workflow_schema.CANDIDATE_LEGACY_FIELDS
+                    )
+                }
+            ],
             "note": "Legacy public discovery checkpoint",
         }
     )
-    parsed = parse_discovery(raw, {URL}, True, "01-ai-ml", DAY).candidates[0]
-    assert parsed == old and content_hash(parsed) == digest
+    parsed = content.parse_discovery(
+        raw, {workflow_content.URL}, True, "01-ai-ml", workflow_content.DAY
+    ).candidates[0]
+    assert parsed == old and contracts.content_hash(parsed) == digest
 
 
 def test_research_provenance_fields_preserve_opened_evidence_and_unknowns():
     evidence = "https://openreview.net/forum?id=synthetic"
-    value = candidate(
+    value = workflow_content.candidate(
         authors="Synthetic Researcher",
-        affiliations="",  # The abstract does not establish the author's affiliation.
+        # The abstract does not establish the author's affiliation.
+        affiliations="",
         venue="Synthetic workshop",
         publication_status="Accepted workshop paper; source record only",
-        contribution="Tests an earlier error-bound assumption against a matched baseline.",
-        source_basis="A specific workshop entry records the author and decision.",
-        evidence_urls=[evidence, URL],
+        contribution=(
+            "Tests an earlier error-bound assumption against a matched "
+            "baseline."
+        ),
+        source_basis=(
+            "A specific workshop entry records the author and decision."
+        ),
+        evidence_urls=[evidence, workflow_content.URL],
     )
-    parsed = parse_discovery(
-        discovered(value), {URL, evidence}, True, "01-ai-ml", DAY
+    parsed = content.parse_discovery(
+        workflow_content.discovered(value),
+        {workflow_content.URL, evidence},
+        True,
+        "01-ai-ml",
+        workflow_content.DAY,
     )
-    for key in (*CANDIDATE_RESEARCH_FIELDS, "evidence_urls"):
+    for key in (
+        *newsletter_workflow_schema.CANDIDATE_RESEARCH_FIELDS,
+        "evidence_urls",
+    ):
         assert parsed.candidates[0][key] == value[key]
-    assert parsed.candidates[0]["id"] == candidate_id(candidate())
+    assert parsed.candidates[0]["id"] == sources.candidate_id(
+        workflow_content.candidate()
+    )
     # A source-schema field is not a domain/author prestige allowlist.
-    unlisted = candidate(
+    unlisted = workflow_content.candidate(
         authors="A new team",
         affiliations="Independent researchers",
         evidence_urls=["https://new-team.example.org/paper"],
     )
-    assert parse_discovery(
-        discovered(unlisted),
-        {URL, *unlisted["evidence_urls"]},
+    assert content.parse_discovery(
+        workflow_content.discovered(unlisted),
+        {workflow_content.URL, *unlisted["evidence_urls"]},
         True,
         "01-ai-ml",
-        DAY,
+        workflow_content.DAY,
     ).candidates
 
 
 @pytest.mark.parametrize(
     "urls,opened",
     [
-        (["https://openreview.net/forum?id=synthetic"], {URL}),
-        ([URL, URL], {URL}),
-        ([URL] * 5, {URL}),
-        ("https://openreview.net/", {URL}),
-        ([None], {URL}),
-        (["http://127.0.0.1/source"], {URL, "http://127.0.0.1/source"}),
-        (["https://openreview.net/" + "a" * 1200], {URL}),
+        (["https://openreview.net/forum?id=synthetic"], {workflow_content.URL}),
+        ([workflow_content.URL, workflow_content.URL], {workflow_content.URL}),
+        ([workflow_content.URL] * 5, {workflow_content.URL}),
+        ("https://openreview.net/", {workflow_content.URL}),
+        ([None], {workflow_content.URL}),
+        (
+            ["http://127.0.0.1/source"],
+            {workflow_content.URL, "http://127.0.0.1/source"},
+        ),
+        (["https://openreview.net/" + "a" * 1200], {workflow_content.URL}),
     ],
 )
-def test_discovery_rejects_unopened_duplicate_unsafe_or_unbounded_source_evidence(
-    urls, opened
-):
-    with pytest.raises((EditorError, ContractError)):
-        parse_discovery(
-            discovered(candidate(evidence_urls=urls)),
+def test_discovery_rejects_unsafe_unopened_or_unbounded_evidence(urls, opened):
+    with pytest.raises((errors.EditorError, contracts.ContractError)):
+        content.parse_discovery(
+            workflow_content.discovered(
+                workflow_content.candidate(evidence_urls=urls)
+            ),
             opened,
             True,
             "01-ai-ml",
-            DAY,
+            workflow_content.DAY,
         )
 
 
-def test_unopened_metadata_seed_cannot_gain_model_written_reputation_or_proof_urls():
-    seed = candidate(
+def test_unopened_seed_cannot_gain_reputation_or_proof_urls():
+    seed = workflow_content.candidate(
         url="https://doi.org/10.1234/synthetic",
         access_scope="metadata",
         provenance="crossref_metadata",
     )
-    seed["id"] = candidate_id(seed)
-    model = candidate(
+    seed["id"] = sources.candidate_id(seed)
+    model = workflow_content.candidate(
         **{
             **seed,
             "authors": "Invented famous author",
@@ -861,29 +961,40 @@ def test_unopened_metadata_seed_cannot_gain_model_written_reputation_or_proof_ur
             "evidence_urls": ["https://example.org/unopened"],
         }
     )
-    found = parse_discovery(
-        discovered(model), set(), True, "02-science", DAY, seeds=[seed]
+    found = content.parse_discovery(
+        workflow_content.discovered(model),
+        set(),
+        True,
+        "02-science",
+        workflow_content.DAY,
+        seeds=[seed],
     )
     assert found.candidates == [{**seed, "direction": "02-science"}]
     assert "Invented" not in json.dumps(found.candidates)
     assert "evidence_urls" not in found.candidates[0]
 
 
-async def test_shortlist_hands_off_source_and_contribution_fields_without_extra_search(
+async def test_shortlist_keeps_source_fields_without_extra_search(
     tmp_path,
 ):
-    supplied = candidate(
+    supplied = workflow_content.candidate(
         authors="Synthetic author",
         affiliations="Synthetic institution",
         venue="Synthetic journal",
         publication_status="Published according to the supplied entry",
-        contribution="A matched-budget comparison changes the earlier claimed advantage.",
-        source_basis="Original journal entry, not a ranking or reputation claim.",
-        evidence_urls=[URL],
+        contribution=(
+            "A matched-budget comparison changes the earlier claimed advantage."
+        ),
+        source_basis=(
+            "Original journal entry, not a ranking or reputation claim."
+        ),
+        evidence_urls=[workflow_content.URL],
     )
-    engine = Engine((planned(task()), set(), False))
-    await ContentPreparation(engine).shortlist(
-        [supplied], DAY, tmp_path.resolve() / "sources"
+    engine = workflow_content.Engine(
+        (workflow_content.planned(workflow_content.task()), set(), False)
+    )
+    await content.ContentPreparation(engine).shortlist(
+        [supplied], workflow_content.DAY, tmp_path.resolve() / "sources"
     )
     assert len(engine.calls) == 1
     assert engine.calls[0][0]["candidates_untrusted"] == [supplied]
@@ -892,12 +1003,13 @@ async def test_shortlist_hands_off_source_and_contribution_fields_without_extra_
     assert "这篇工作实际增加了什么" in engine.calls[0][2]
     assert "声誉只是发现线索，不是硬白名单" in engine.calls[0][2]
     assert "未知" in engine.calls[0][2]
-    # This verifies prompt routing and boundaries, not whether a model ranks well.
+    # This verifies prompt routing and boundaries, not whether a model ranks
+    # well.
 
 
 def test_public_context_is_bounded_and_allowlisted():
-    assert public_context(
+    assert content.public_context(
         [{"title": "Public", "token": "secret", "personal_digest": {}}]
     ) == [{"title": "Public"}]
-    with pytest.raises(EditorError):
-        public_context([{}] * 101)
+    with pytest.raises(errors.EditorError):
+        content.public_context([{}] * 101)

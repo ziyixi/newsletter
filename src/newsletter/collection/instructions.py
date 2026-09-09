@@ -1,36 +1,42 @@
-"""Load operator-owned Markdown as bounded data, never executable local skills."""
+"""Load bounded operator Markdown as data, not executable skills."""
 
+import dataclasses
+import pathlib
 import re
-from dataclasses import asdict, dataclass
-from pathlib import Path
 
-from newsletter.contracts import content_hash
+import newsletter.contracts as contracts
 
 MAX_DIRECTIONS = 8
 MAX_INSTRUCTION_BYTES = 24_000
 
 
 class InstructionError(ValueError):
+    """A bounded operator instruction directory could not be validated."""
+
     def __init__(self) -> None:
         super().__init__(
-            "Instructions must be 1..8 nonempty UTF-8 Markdown files in a real directory"
+            "Instructions must be 1..8 nonempty UTF-8 Markdown files in a "
+            "real directory"
         )
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class Instruction:
+    """One immutable collection direction and the hash of its original text."""
+
     id: str
     text: str
     digest: str
 
     def snapshot(self) -> dict[str, str]:
-        return asdict(self)
+        """Return the exact fields persisted when accepting a new run."""
+        return dataclasses.asdict(self)
 
 
-def load_instructions(directory: Path) -> list[Instruction]:
+def load_instructions(directory: pathlib.Path) -> list[Instruction]:
     """Sorted top-level *.md only; README/_notes do not become collection jobs.
 
-    No recursive traversal, symlinks, dynamic imports, templating or shell execution.
+    No recursion, symlinks, dynamic imports, templating or shell execution.
     The caller persists these exact bytes before accepting a trigger.
     """
     try:
@@ -67,7 +73,9 @@ def load_instructions(directory: Path) -> list[Instruction]:
                 or "\x00" in text
             ):
                 raise InstructionError()
-            result.append(Instruction(path.stem, text, content_hash(text)))
+            result.append(
+                Instruction(path.stem, text, contracts.content_hash(text))
+            )
         return result
     except (OSError, UnicodeError):
         raise InstructionError() from None

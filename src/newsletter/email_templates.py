@@ -1,4 +1,4 @@
-"""Bounded, offline email templates with no loader or ambient application objects.
+"""Bounded, offline templates with no loader or ambient application objects.
 
 Templates are reviewed configuration, not general-purpose Jinja programs. The
 small supported language keeps the packaged layout useful while excluding
@@ -7,33 +7,31 @@ imports, arbitrary calls, recursive macros and allocation-heavy expressions.
 
 from __future__ import annotations
 
-import hashlib
-import re
 from collections.abc import Iterator
-from contextvars import ContextVar
-from functools import lru_cache
-from html.parser import HTMLParser
-from typing import Any
+import contextvars
+import functools
+import hashlib
+import html.parser as parser
+import logging
+import re
+from typing import Any, cast
 
-from jinja2 import (
-    StrictUndefined,
-    Template,
-    meta,
-    nodes,
-    pass_context,
-    select_autoescape,
-)
-from jinja2.runtime import Macro
-from jinja2.sandbox import ImmutableSandboxedEnvironment
-from jinja2.visitor import NodeTransformer
-from markupsafe import Markup
+import jinja2
+import jinja2.meta as meta
+import jinja2.nodes as nodes
+import jinja2.runtime as runtime
+import jinja2.sandbox as sandbox
+import jinja2.visitor as visitor
+import markupsafe
 
-from .contracts import validate_public_url
+import newsletter.contracts as contracts
+import newsletter.diagnostics as diagnostics
 
 MAX_TEMPLATE_BYTES = 64 * 1024
 MAX_TEMPLATE_OUTPUT_BYTES = 1024 * 1024
 MAX_TEMPLATE_ITERATIONS = 2048
 MAX_TEMPLATE_WORK_BYTES = 4 * MAX_TEMPLATE_OUTPUT_BYTES
+_LOGGER = logging.getLogger(__name__)
 _CONTEXT_KEYS = frozenset(
     {
         "draft",
@@ -92,7 +90,7 @@ _NODE_TYPES = (
 
 
 class TemplateValidationError(ValueError):
-    """Safe diagnostics never interpolate a template or private context value."""
+    """Safe diagnostics exclude template source and private context values."""
 
 
 class _Budget:
@@ -115,7 +113,9 @@ class _Budget:
             )
 
 
-_BUDGET: ContextVar[_Budget] = ContextVar("email_template_budget")
+_BUDGET: contextvars.ContextVar[_Budget] = contextvars.ContextVar(
+    "email_template_budget"
+)
 
 
 class _BoundedList(list[Any]):
@@ -159,11 +159,11 @@ def _plain_context(value: Any, *, depth: int = 0) -> Any:
     )
 
 
-class _EmailEnvironment(ImmutableSandboxedEnvironment):
+class _EmailEnvironment(sandbox.ImmutableSandboxedEnvironment):
     def is_safe_callable(self, obj: Any) -> bool:
         return (
             obj is _literal
-            or isinstance(obj, Macro)
+            or isinstance(obj, runtime.Macro)
             or (
                 getattr(obj, "__name__", "") == "split"
                 and type(getattr(obj, "__self__", None))
@@ -175,7 +175,7 @@ class _EmailEnvironment(ImmutableSandboxedEnvironment):
         _BUDGET.get().tick()
         if (
             obj is not _literal
-            and not isinstance(obj, Macro)
+            and not isinstance(obj, runtime.Macro)
             and (args != ("\n",) or kwargs)
         ):
             raise TemplateValidationError(
@@ -192,14 +192,14 @@ class _EmailEnvironment(ImmutableSandboxedEnvironment):
         return result
 
 
-def _literal(value: str) -> Markup:
+def _literal(value: str) -> markupsafe.Markup:
     # Instrument trusted TemplateData nodes after validating user syntax. The
     # charge happens before Jinja adds a literal to a macro's temporary buffer.
     _BUDGET.get().output(value)
-    return Markup(value)
+    return markupsafe.Markup(value)
 
 
-@pass_context
+@jinja2.pass_context
 def _finalize(context: Any, value: Any) -> Any:
     del context
     if value is not None and not isinstance(value, str | int | float | bool):
@@ -210,8 +210,9 @@ def _finalize(context: Any, value: Any) -> Any:
     return value
 
 
-class _BoundedLiterals(NodeTransformer):
-    def visit_TemplateData(
+class _BoundedLiterals(visitor.NodeTransformer):
+    # Jinja dispatches visitors by their exact AST class name.
+    def visit_TemplateData(  # noqa: N802
         self, node: nodes.TemplateData, *args: Any, **kwargs: Any
     ) -> nodes.Call:
         call = nodes.Call(
@@ -239,8 +240,10 @@ def _number_format(pattern: str, value: Any) -> str:
 
 def _environment() -> _EmailEnvironment:
     environment = _EmailEnvironment(
-        autoescape=select_autoescape(default=True, default_for_string=True),
-        undefined=StrictUndefined,
+        autoescape=jinja2.select_autoescape(
+            default=True, default_for_string=True
+        ),
+        undefined=jinja2.StrictUndefined,
         trim_blocks=True,
         lstrip_blocks=True,
         keep_trailing_newline=True,
@@ -260,6 +263,86 @@ def _environment() -> _EmailEnvironment:
         if name in _TESTS
     }
     return environment
+
+
+def _check_node(node: nodes.Node, macros: dict[str, nodes.Macro]) -> None:
+    if isinstance(node, nodes.Name | nodes.Macro) and node.name.startswith("_"):
+        raise TemplateValidationError(
+            "Email template private names are forbidden"
+        )
+    if isinstance(node, nodes.Getattr) and node.attr.startswith("_"):
+        raise TemplateValidationError(
+            "Email template private attributes are forbidden"
+        )
+    if isinstance(node, nodes.Getitem) and (
+        not isinstance(node.arg, nodes.Const)
+        or not isinstance(node.arg.value, str | int)
+        or (isinstance(node.arg.value, str) and node.arg.value.startswith("_"))
+    ):
+        raise TemplateValidationError(
+            "Email template dynamic access is forbidden"
+        )
+    if isinstance(node, nodes.For) and node.recursive:
+        raise TemplateValidationError(
+            "Email template recursive loops are forbidden"
+        )
+    if isinstance(node, nodes.For) and not (
+        (
+            isinstance(node.iter, nodes.Name)
+            and node.iter.name in {"sections", "references"}
+        )
+        or isinstance(node.iter, nodes.Getattr | nodes.Getitem)
+        or (
+            isinstance(node.iter, nodes.Call)
+            and isinstance(node.iter.node, nodes.Getattr)
+            and node.iter.node.attr == "split"
+        )
+    ):
+        raise TemplateValidationError(
+            "Email template loops must iterate bounded context data"
+        )
+    if isinstance(node, nodes.Assign) and (
+        not isinstance(node.target, nodes.Name)
+        or node.target.name in _CONTEXT_KEYS
+        or node.target.name in macros
+    ):
+        raise TemplateValidationError(
+            "Email template context cannot be overwritten"
+        )
+    if isinstance(node, nodes.Test) and node.name not in _TESTS:
+        raise TemplateValidationError("Email template test is unsupported")
+    if isinstance(node, nodes.Filter):
+        if node.name not in _FILTERS:
+            raise TemplateValidationError(
+                "Email template filter is unsupported"
+            )
+        if node.name == "format" and (
+            not isinstance(node.node, nodes.Const)
+            or node.node.value not in {"%02d", "%d"}
+        ):
+            raise TemplateValidationError(
+                "Email template numeric format is unsupported"
+            )
+    if isinstance(node, nodes.Call):
+        if node.dyn_args is not None or node.dyn_kwargs is not None:
+            raise TemplateValidationError(
+                "Email template dynamic calls are forbidden"
+            )
+        macro_call = (
+            isinstance(node.node, nodes.Name) and node.node.name in macros
+        )
+        split_call = (
+            isinstance(node.node, nodes.Getattr)
+            and node.node.attr == "split"
+            and len(node.args) == 1
+            and isinstance(node.args[0], nodes.Const)
+            and node.args[0].value == "\n"
+            and not node.kwargs
+        )
+        if not macro_call and not split_call:
+            raise TemplateValidationError(
+                "Email template callable is unsupported"
+            )
 
 
 def _check_ast(tree: nodes.Template) -> None:
@@ -282,82 +365,7 @@ def _check_ast(tree: nodes.Template) -> None:
         node.name: node for node in all_nodes if isinstance(node, nodes.Macro)
     }
     for node in all_nodes:
-        if isinstance(node, nodes.Name | nodes.Macro) and node.name.startswith(
-            "_"
-        ):
-            raise TemplateValidationError(
-                "Email template private names are forbidden"
-            )
-        if isinstance(node, nodes.Getattr) and node.attr.startswith("_"):
-            raise TemplateValidationError(
-                "Email template private attributes are forbidden"
-            )
-        if isinstance(node, nodes.Getitem) and (
-            not isinstance(node.arg, nodes.Const)
-            or not isinstance(node.arg.value, str | int)
-            or isinstance(node.arg.value, str)
-            and node.arg.value.startswith("_")
-        ):
-            raise TemplateValidationError(
-                "Email template dynamic access is forbidden"
-            )
-        if isinstance(node, nodes.For) and node.recursive:
-            raise TemplateValidationError(
-                "Email template recursive loops are forbidden"
-            )
-        if isinstance(node, nodes.For) and not (
-            isinstance(node.iter, nodes.Name)
-            and node.iter.name in {"sections", "references"}
-            or isinstance(node.iter, nodes.Getattr | nodes.Getitem)
-            or isinstance(node.iter, nodes.Call)
-            and isinstance(node.iter.node, nodes.Getattr)
-            and node.iter.node.attr == "split"
-        ):
-            raise TemplateValidationError(
-                "Email template loops must iterate bounded context data"
-            )
-        if isinstance(node, nodes.Assign) and (
-            not isinstance(node.target, nodes.Name)
-            or node.target.name in _CONTEXT_KEYS
-            or node.target.name in macros
-        ):
-            raise TemplateValidationError(
-                "Email template context cannot be overwritten"
-            )
-        if isinstance(node, nodes.Test) and node.name not in _TESTS:
-            raise TemplateValidationError("Email template test is unsupported")
-        if isinstance(node, nodes.Filter):
-            if node.name not in _FILTERS:
-                raise TemplateValidationError(
-                    "Email template filter is unsupported"
-                )
-            if node.name == "format" and (
-                not isinstance(node.node, nodes.Const)
-                or node.node.value not in {"%02d", "%d"}
-            ):
-                raise TemplateValidationError(
-                    "Email template numeric format is unsupported"
-                )
-        if isinstance(node, nodes.Call):
-            if node.dyn_args is not None or node.dyn_kwargs is not None:
-                raise TemplateValidationError(
-                    "Email template dynamic calls are forbidden"
-                )
-            macro_call = (
-                isinstance(node.node, nodes.Name) and node.node.name in macros
-            )
-            split_call = (
-                isinstance(node.node, nodes.Getattr)
-                and node.node.attr == "split"
-                and len(node.args) == 1
-                and isinstance(node.args[0], nodes.Const)
-                and node.args[0].value == "\n"
-                and not node.kwargs
-            )
-            if not macro_call and not split_call:
-                raise TemplateValidationError(
-                    "Email template callable is unsupported"
-                )
+        _check_node(node, macros)
 
     for macro in macros.values():
         if any(
@@ -373,8 +381,8 @@ def _check_ast(tree: nodes.Template) -> None:
         )
 
 
-@lru_cache(maxsize=16)
-def _compiled(digest: str, source: str) -> Template:
+@functools.lru_cache(maxsize=16)
+def _compiled(digest: str, source: str) -> jinja2.Template:
     # Both immutable source and its digest are cache keys. Never key by a live
     # file path or one global template: another issue may use an older revision.
     del digest
@@ -385,13 +393,17 @@ def _compiled(digest: str, source: str) -> Template:
         return environment.from_string(_BoundedLiterals().visit(tree))
     except TemplateValidationError:
         raise
-    except Exception:
+    # Jinja compilation can invoke implementation-dependent parser failures.
+    except Exception as error:  # noqa: BLE001
+        diagnostics.record_failure(
+            _LOGGER, phase="template_compile", error=error
+        )
         raise TemplateValidationError(
             "Email template syntax is invalid"
         ) from None
 
 
-def _compile(source: str) -> Template:
+def _compile(source: str) -> jinja2.Template:
     if type(source) is not str or not source.strip():
         raise TemplateValidationError("Email template must contain text")
     if len(source.encode("utf-8")) > MAX_TEMPLATE_BYTES:
@@ -400,13 +412,16 @@ def _compile(source: str) -> Template:
 
 
 _TAGS = frozenset(
-    "html head meta title body style div span table thead tbody tfoot tr td th p h1 h2 h3 "
+    "html head meta title body style div span table thead tbody tfoot tr "
+    "td th p h1 h2 h3 "
     "h4 a sup sub br hr strong em b i u small ul ol li blockquote xml "
     "o:officedocumentsettings o:pixelsperinch".split()
 )
 _ATTRIBUTES = frozenset(
-    "class id style lang title role aria-label aria-hidden dir width height align valign "
-    "cellpadding cellspacing border bgcolor scope colspan rowspan xmlns xmlns:o".split()
+    "class id style lang title role aria-label aria-hidden dir width "
+    "height align valign "
+    "cellpadding cellspacing border bgcolor scope colspan rowspan xmlns "
+    "xmlns:o".split()
 )
 
 
@@ -419,7 +434,8 @@ def _check_css(value: str) -> None:
         or "<" in value
         or ">" in value
         or re.search(
-            r"url\s*\(|@import|@font-face|expression\s*\(|behavior\s*:|binding\s*:|image-set\s*\(",
+            "url\\s*\\(|@import|@font-face|expression\\s*\\(|behavior\\s*:|"
+            "binding\\s*:|image-set\\s*\\(",
             value,
             re.I,
         )
@@ -429,7 +445,7 @@ def _check_css(value: str) -> None:
         )
 
 
-class _EmailHTML(HTMLParser):
+class _EmailHTML(parser.HTMLParser):
     def __init__(
         self, allowed_links: frozenset[str], *, comment_depth: int = 0
     ) -> None:
@@ -474,7 +490,7 @@ class _EmailHTML(HTMLParser):
                         "Email template links must preserve source URLs"
                     )
                 try:
-                    validate_public_url(value)
+                    contracts.validate_public_url(value)
                 except ValueError:
                     raise TemplateValidationError(
                         "Email template contains an unsafe link"
@@ -484,8 +500,7 @@ class _EmailHTML(HTMLParser):
                 continue
             if tag == "img" and (
                 name == "alt"
-                or name == "src"
-                and value == "cid:newsletter-chart"
+                or (name == "src" and value == "cid:newsletter-chart")
             ):
                 continue
             if tag == "meta" and name in {"charset", "name", "content"}:
@@ -530,7 +545,7 @@ class _EmailHTML(HTMLParser):
         nested.close()
 
 
-def _render(template: Template, context: dict[str, Any]) -> str:
+def _render(template: jinja2.Template, context: dict[str, Any]) -> str:
     if set(context) != _CONTEXT_KEYS:
         raise TemplateValidationError(
             "Email template context version is incompatible"
@@ -566,7 +581,11 @@ def _render(template: Template, context: dict[str, Any]) -> str:
         return html
     except TemplateValidationError:
         raise
-    except Exception:
+    # Keep every renderer failure behind a content-free configuration error.
+    except Exception as error:  # noqa: BLE001
+        diagnostics.record_failure(
+            _LOGGER, phase="template_render", error=error
+        )
         raise TemplateValidationError(
             "Email template rendering failed"
         ) from None
@@ -575,7 +594,7 @@ def _render(template: Template, context: dict[str, Any]) -> str:
 
 
 def _fixture_context(*, full: bool) -> dict[str, Any]:
-    """Versioned renderer contract; synthetic markers, never live/private data."""
+    """Exercise the renderer contract with synthetic markers, not live data."""
     reference = {
         "number": 1,
         "citation": "fixture/source",
@@ -664,9 +683,9 @@ def _fixture_context(*, full: bool) -> dict[str, Any]:
     }
 
 
-@lru_cache(maxsize=16)
+@functools.lru_cache(maxsize=16)
 def validate_template(source: str) -> None:
-    """Compile and exercise required/optional layout branches without providers."""
+    """Compile and exercise required and optional layout branches offline."""
     template = _compile(source)
     for full in (False, True):
         context = _fixture_context(full=full)
@@ -723,12 +742,18 @@ def validate_template(source: str) -> None:
 
 
 def render_template(source: str, context: dict[str, Any]) -> str:
+    """Validate frozen source and render it under work and output budgets.
+
+    The caller supplies only normalized, bounded render data. Invalid source,
+    unsafe output, and exhausted budgets raise TemplateValidationError without
+    including the template or its private context in the error.
+    """
     validate_template(source)
     return _render(_compile(source), context)
 
 
 def template_from_inputs(inputs: dict[str, Any]) -> str | None:
-    """Read the immutable per-run snapshot, never the server's current pointer."""
+    """Read the frozen per-run snapshot, not the server's current pointer."""
     if "content_config" not in inputs:
         return None
     config = inputs["content_config"]
@@ -742,4 +767,4 @@ def template_from_inputs(inputs: dict[str, Any]) -> str | None:
         or type(files.get("templates/edition.html.j2")) is not str
     ):
         raise TemplateValidationError("Frozen email template is missing")
-    return files["templates/edition.html.j2"]
+    return cast(str, files["templates/edition.html.j2"])

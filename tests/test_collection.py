@@ -1,26 +1,19 @@
-"""Offline collection contracts and durable external-trigger behavior; never real providers."""
+"""Test collection contracts and durable triggers without real providers."""
 
+import dataclasses
 import json
-from dataclasses import replace
 
+import fastapi.testclient as testclient
 import pytest
-from fastapi.testclient import TestClient
 
-from newsletter.adapters import AdapterError
-from newsletter.app import create_app
-from newsletter.collection.collector import (
-    MockCollector,
-    ResearchResult,
-    parse_research,
-    research_schema,
-)
-from newsletter.collection.instructions import (
-    InstructionError,
-    load_instructions,
-)
-from newsletter.editor import EditorError
-from newsletter.preflight import PreflightError
-from newsletter.settings import Settings
+import newsletter.adapters as adapters
+import newsletter.app as app
+import newsletter.collection.collector as newsletter_collection_collector
+import newsletter.collection.instructions as newsletter_collection_instructions
+import newsletter.errors as newsletter_errors
+import newsletter.model_schema as model_schema
+import newsletter.preflight as preflight
+import newsletter.settings as newsletter_settings
 
 AUTH = {"Authorization": "Bearer " + "e" * 32}
 REQUEST = {"request_key": "external-job-01", "issue_date": "2026-09-05"}
@@ -34,17 +27,16 @@ def settings(tmp_path):
     (instructions / "science.md").write_text(
         "Collect a different science paper."
     )
-    return Settings(
+    return newsletter_settings.Settings(
         data_dir=tmp_path / "data",
         instructions_dir=instructions,
-        ingest_token="i" * 32,
         editor_token="e" * 32,
         send_token="s" * 32,
         notion_backend="fake",
     )
 
 
-class CountingCollector(MockCollector):
+class CountingCollector(newsletter_collection_collector.MockCollector):
     def __init__(self):
         self.seen = []
 
@@ -64,8 +56,8 @@ def test_trigger_runs_snapshot_collection_notion_editor_preview_without_send(
     settings,
 ):
     collector = CountingCollector()
-    with TestClient(
-        create_app(settings, collector=collector, start_worker=False)
+    with testclient.TestClient(
+        app.create_app(settings, collector=collector, start_worker=False)
     ) as client:
         assert client.post("/v1/runs", json=REQUEST).status_code == 401
         assert (
@@ -108,8 +100,8 @@ def test_trigger_runs_snapshot_collection_notion_editor_preview_without_send(
             ).status_code
             == 409
         )
-    with TestClient(
-        create_app(settings, collector=collector, start_worker=False)
+    with testclient.TestClient(
+        app.create_app(settings, collector=collector, start_worker=False)
     ) as client:
         assert (
             client.get("/v1/runs/" + run["id"], headers=AUTH).json() == result
@@ -122,7 +114,9 @@ def test_trigger_runs_snapshot_collection_notion_editor_preview_without_send(
 
 
 def test_new_trigger_rescans_but_retries_do_not_require_current_files(settings):
-    with TestClient(create_app(settings, start_worker=False)) as client:
+    with testclient.TestClient(
+        app.create_app(settings, start_worker=False)
+    ) as client:
         first = client.post("/v1/runs", json=REQUEST, headers=AUTH).json()
         (settings.instructions_dir / "science.md").unlink()
         second = client.post(
@@ -154,7 +148,9 @@ def test_new_trigger_rescans_but_retries_do_not_require_current_files(settings):
     ],
 )
 def test_trigger_rejects_invalid_or_extra_fields(settings, bad):
-    with TestClient(create_app(settings, start_worker=False)) as client:
+    with testclient.TestClient(
+        app.create_app(settings, start_worker=False)
+    ) as client:
         assert (
             client.post("/v1/runs", json=bad, headers=AUTH).status_code == 400
         )
@@ -166,15 +162,15 @@ def test_failed_notion_does_not_start_editor_or_retry(settings):
 
         async def project(self, packet):
             self.calls += 1
-            raise AdapterError("notion_unavailable", ambiguous=True)
+            raise adapters.AdapterError("notion_unavailable", ambiguous=True)
 
     class NeverEditor:
         async def prepare(self, *args):
             pytest.fail("editor ran before confirmed projection")
 
     notion = FailingNotion()
-    with TestClient(
-        create_app(
+    with testclient.TestClient(
+        app.create_app(
             settings, notion=notion, editor=NeverEditor(), start_worker=False
         )
     ) as client:
@@ -193,10 +189,12 @@ def test_failed_notion_does_not_start_editor_or_retry(settings):
 def test_honest_no_findings_is_not_a_fake_edition(settings):
     class EmptyCollector:
         async def collect(self, *args):
-            return ResearchResult([], "No sufficient source evidence found.")
+            return newsletter_collection_collector.ResearchResult(
+                [], "No sufficient source evidence found."
+            )
 
-    with TestClient(
-        create_app(settings, collector=EmptyCollector(), start_worker=False)
+    with testclient.TestClient(
+        app.create_app(settings, collector=EmptyCollector(), start_worker=False)
     ) as client:
         run = client.post("/v1/runs", json=REQUEST, headers=AUTH).json()
         drain(client)
@@ -207,13 +205,13 @@ def test_honest_no_findings_is_not_a_fake_edition(settings):
 
 def test_collecting_run_is_not_replayed_after_crash(settings):
     collector = CountingCollector()
-    with TestClient(
-        create_app(settings, collector=collector, start_worker=False)
+    with testclient.TestClient(
+        app.create_app(settings, collector=collector, start_worker=False)
     ) as client:
         run = client.post("/v1/runs", json=REQUEST, headers=AUTH).json()
         client.app.state.runs.claim()
-    with TestClient(
-        create_app(settings, collector=collector, start_worker=False)
+    with testclient.TestClient(
+        app.create_app(settings, collector=collector, start_worker=False)
     ) as client:
         recovered = client.get("/v1/runs/" + run["id"], headers=AUTH).json()
         assert (
@@ -228,19 +226,25 @@ def test_startup_fails_before_any_worker_or_health_is_served(
     settings, monkeypatch
 ):
     async def unavailable(*args, **kwargs):
-        raise PreflightError("CODEX_CHATGPT_AUTH_REQUIRED")
+        raise preflight.PreflightError("CODEX_CHATGPT_AUTH_REQUIRED")
 
-    monkeypatch.setattr("newsletter.lifecycle.preflight", unavailable)
-    with pytest.raises(PreflightError, match="CODEX_CHATGPT_AUTH_REQUIRED"):
-        with TestClient(create_app(settings)):
-            pytest.fail("startup incorrectly succeeded")
+    monkeypatch.setattr(preflight, "preflight", unavailable)
+    with (
+        pytest.raises(
+            preflight.PreflightError, match="CODEX_CHATGPT_AUTH_REQUIRED"
+        ),
+        testclient.TestClient(app.create_app(settings)),
+    ):
+        pytest.fail("startup incorrectly succeeded")
 
 
 def test_bad_instructions_fail_startup(settings):
     (settings.instructions_dir / "ai-ml.md").write_text("")
-    with pytest.raises(InstructionError):
-        with TestClient(create_app(settings)):
-            pytest.fail("startup incorrectly succeeded")
+    with (
+        pytest.raises(newsletter_collection_instructions.InstructionError),
+        testclient.TestClient(app.create_app(settings)),
+    ):
+        pytest.fail("startup incorrectly succeeded")
 
 
 @pytest.mark.parametrize(
@@ -265,8 +269,8 @@ def test_instruction_loader_rejects_unsafe_files(tmp_path, kind):
         path.mkdir()
     else:
         (folder / "Invalid Name.md").write_text("valid")
-    with pytest.raises(InstructionError):
-        load_instructions(folder)
+    with pytest.raises(newsletter_collection_instructions.InstructionError):
+        newsletter_collection_instructions.load_instructions(folder)
 
 
 def test_instruction_readme_is_not_executed_and_limit_is_bounded(tmp_path):
@@ -274,10 +278,12 @@ def test_instruction_readme_is_not_executed_and_limit_is_bounded(tmp_path):
     (tmp_path / "_notes.md").write_text("not a direction")
     for number in range(8):
         (tmp_path / f"{number}.md").write_text("evidence")
-    assert len(load_instructions(tmp_path)) == 8
+    assert (
+        len(newsletter_collection_instructions.load_instructions(tmp_path)) == 8
+    )
     (tmp_path / "9.md").write_text("too many")
-    with pytest.raises(InstructionError):
-        load_instructions(tmp_path)
+    with pytest.raises(newsletter_collection_instructions.InstructionError):
+        newsletter_collection_instructions.load_instructions(tmp_path)
 
 
 def research_payload():
@@ -307,7 +313,9 @@ def test_research_requires_exact_opened_source_and_search():
     text = json.dumps(research_payload())
     assert (
         len(
-            parse_research(text, {"https://example.com/original"}, True).packets
+            newsletter_collection_collector.parse_research(
+                text, {"https://example.com/original"}, True
+            ).packets
         )
         == 1
     )
@@ -316,8 +324,8 @@ def test_research_requires_exact_opened_source_and_search():
         (set(), True),
         ({"https://example.com/original"}, False),
     ]:
-        with pytest.raises(EditorError):
-            parse_research(text, urls, searched)
+        with pytest.raises(newsletter_errors.EditorError):
+            newsletter_collection_collector.parse_research(text, urls, searched)
     empty = json.dumps(
         {
             "state": "no_findings",
@@ -325,13 +333,18 @@ def test_research_requires_exact_opened_source_and_search():
             "packets": [],
         }
     )
-    assert parse_research(empty, set(), True).packets == []
-    with pytest.raises(EditorError):
-        parse_research(empty, set(), False)
+    assert (
+        newsletter_collection_collector.parse_research(
+            empty, set(), True
+        ).packets
+        == []
+    )
+    with pytest.raises(newsletter_errors.EditorError):
+        newsletter_collection_collector.parse_research(empty, set(), False)
 
 
 def test_research_schema_uses_public_packet_and_source_enum():
-    schema = research_schema()
+    schema = model_schema.research_schema()
     packet = schema["properties"]["packets"]["items"]
     assert set(packet["properties"]) == {"title", "body", "sources", "tags"}
     assert packet["properties"]["sources"]["items"]["properties"][
@@ -345,8 +358,11 @@ def test_research_schema_uses_public_packet_and_source_enum():
 
 
 def test_queue_capacity_and_no_implicit_job_on_startup(settings):
-    with TestClient(
-        create_app(replace(settings, max_pending_jobs=1), start_worker=False)
+    with testclient.TestClient(
+        app.create_app(
+            dataclasses.replace(settings, max_pending_jobs=1),
+            start_worker=False,
+        )
     ) as client:
         assert client.app.state.runs.claim() is None
         assert (

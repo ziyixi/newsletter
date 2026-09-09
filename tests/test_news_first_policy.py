@@ -1,45 +1,26 @@
 """Deterministic news/research budgets, not a claim of perfect LLM judgement."""
 
+import dataclasses
 import json
-from dataclasses import asdict
-from pathlib import Path
+import pathlib
 
 import pytest
-from test_publication import result as publication_result
-from test_publication import task as publication_task
-from test_workflow_content import (
-    DAY,
-    Engine,
-    candidate,
-    discovered,
-    planned,
-    task,
-)
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from newsletter.collection.instructions import Instruction
-from newsletter.content_config import build_snapshot, packaged_snapshot
-from newsletter.contracts import parse_message
-from newsletter.errors import EditorError
-from newsletter.store import Store
-from newsletter.workflow.content import (
-    _DISCOVERY,
-    _SAFETY,
-    _SELECTION,
-    DEFAULT_DISCOVERY_POLICY,
-    DEFAULT_SELECTION_POLICY,
-    ContentPreparation,
-    candidate_budget,
-    candidate_classification,
-    editorial_limits,
-    parse_classified_plan,
-    parse_discovery,
-)
-from newsletter.workflow.definition import load_definition
-from newsletter.workflow.engine import NodeContext
-from newsletter.workflow.publication import PublicationRepository
-from newsletter.workflow.schema import discovery_schema, planning_schema
-from newsletter.workflow.story_nodes import StoryNodes, freeze_publication
+import newsletter.collection.instructions as newsletter_collection_instructions
+import newsletter.content_config as content_config
+import newsletter.contracts as contracts
+import newsletter.errors as errors
+import newsletter.store as newsletter_store
+import newsletter.workflow.content as content
+import newsletter.workflow.definition as newsletter_workflow_definition
+import newsletter.workflow.engine as newsletter_workflow_engine
+import newsletter.workflow.publication as newsletter_workflow_publication
+import newsletter.workflow.schema as newsletter_workflow_schema
+import newsletter.workflow.story_nodes as story_nodes
+import tests.support.news_first_policy as news_first_policy
+import tests.support.publication as publication
+import tests.support.workflow_content as workflow_content
 
 
 def config(**limits):
@@ -58,40 +39,21 @@ def config(**limits):
     }
 
 
-def news(number=1, **changes):
-    result = candidate(
-        id=f"news-{number}",
-        direction="03-world",
-        doi="",
-        version="",
-        title=f"A concrete real-world development {number}",
-        url=f"https://example.org/developments/{number}",
-    )
-    result.update(changes)
-    return result
-
-
-def paper(number=1, **changes):
-    return candidate(
-        id=f"paper-{number}",
-        title=f"Synthetic research candidate {number}",
-        url=f"https://arxiv.org/abs/2609.{number:05d}",
-        **changes,
-    )
-
-
 def classifications(*candidates):
     return {
         c["id"]: {
             "kind": "news",
-            "basis": "Previously unavailable treatment is now approved for a defined population.",
+            "basis": (
+                "Previously unavailable treatment is now approved for a "
+                "defined population."
+            ),
         }
         for c in candidates
     }
 
 
 def topic(c, number=1, **changes):
-    return task(
+    return workflow_content.task(
         id=f"topic-{number}",
         candidate_ids=[c["id"]],
         source_urls=[c["url"]],
@@ -102,91 +64,95 @@ def topic(c, number=1, **changes):
 
 
 def selected(candidates, tasks, **limits):
-    return parse_classified_plan(
-        planned(*tasks),
+    return content.parse_classified_plan(
+        workflow_content.planned(*tasks),
         candidates,
         classifications(*candidates),
         8,
-        editorial_limits(config(**limits)),
+        content.editorial_limits(config(**limits)),
     )
 
 
 def test_internal_classifications_do_not_expand_shared_proto_contract():
-    c = news()
-    output = json.loads(discovered(c))
+    c = news_first_policy.news()
+    output = json.loads(workflow_content.discovered(c))
     output["candidates"][0].update(
         editorial_kind="news", change_basis="A new rule has entered force."
     )
-    parsed = parse_discovery(
+    parsed = content.parse_discovery(
         json.dumps(output),
         {c["url"]},
         True,
         c["direction"],
-        DAY,
+        workflow_content.DAY,
         classified=True,
     )
-    parse_message(parsed.candidates[0], pb.Candidate)
+    contracts.parse_message(parsed.candidates[0], editorial_pb2.Candidate)
     assert parsed.classifications[parsed.candidates[0]["id"]]["kind"] == "news"
     plan = selected([c], [topic(c)])
-    parse_message(plan.research_tasks[0], pb.ResearchTask)
+    contracts.parse_message(plan.research_tasks[0], editorial_pb2.ResearchTask)
     assert plan.task_classifications == {"topic-1": "news"}
     assert "editorial_kind" not in plan.research_tasks[0]
     assert (
         "editorial_kind"
-        in discovery_schema(classified=True)["properties"]["candidates"][
-            "items"
-        ]["properties"]
+        in newsletter_workflow_schema.discovery_schema(classified=True)[
+            "properties"
+        ]["candidates"]["items"]["properties"]
     )
     assert (
         "editorial_kind"
-        in planning_schema([c["id"]], [c["url"]], 6, classified=True)[
-            "properties"
-        ]["research_tasks"]["items"]["properties"]
+        in newsletter_workflow_schema.planning_schema(
+            [c["id"]], [c["url"]], 6, classified=True
+        )["properties"]["research_tasks"]["items"]["properties"]
     )
 
 
 @pytest.mark.parametrize(
     "c",
     [
-        paper(),
-        news(doi="10.1234/test"),
-        news(publication_status="preprint"),
-        news(url="https://doi.org/10.1234/test", doi=""),
-        news(url="https://dx.doi.org/10.1234/test", doi=""),
+        news_first_policy.paper(),
+        news_first_policy.news(doi="10.1234/test"),
+        news_first_policy.news(publication_status="preprint"),
+        news_first_policy.news(url="https://doi.org/10.1234/test", doi=""),
+        news_first_policy.news(url="https://dx.doi.org/10.1234/test", doi=""),
     ],
 )
-def test_paper_candidate_cannot_become_news_by_changing_its_title_or_declared_kind(
+def test_title_or_kind_change_cannot_turn_paper_into_news(
     c,
 ):
     c["title"] = "Game-changing industry news"
     assert (
-        candidate_classification(c, classifications(c)[c["id"]])["kind"]
+        content.candidate_classification(c, classifications(c)[c["id"]])["kind"]
         == "research"
     )
 
 
 def test_news_can_cite_a_background_paper_without_becoming_a_paper_topic():
-    c = news(evidence_urls=["https://arxiv.org/abs/2609.00001"])
+    c = news_first_policy.news(
+        evidence_urls=["https://arxiv.org/abs/2609.00001"]
+    )
     assert (
-        candidate_classification(c, classifications(c)[c["id"]])["kind"]
+        content.candidate_classification(c, classifications(c)[c["id"]])["kind"]
         == "news"
     )
 
 
 def test_missing_classification_or_change_basis_is_not_assumed_to_be_news():
-    c = news()
-    assert candidate_classification(c)["kind"] == "unknown"
+    c = news_first_policy.news()
+    assert content.candidate_classification(c)["kind"] == "unknown"
     assert (
-        candidate_classification(c, {"kind": "news", "basis": " "})["kind"]
+        content.candidate_classification(c, {"kind": "news", "basis": " "})[
+            "kind"
+        ]
         == "unknown"
     )
-    output = json.loads(discovered(c))
-    parsed = parse_discovery(
+    output = json.loads(workflow_content.discovered(c))
+    parsed = content.parse_discovery(
         json.dumps(output),
         {c["url"]},
         True,
         c["direction"],
-        DAY,
+        workflow_content.DAY,
         classified=True,
     )
     assert (
@@ -196,10 +162,10 @@ def test_missing_classification_or_change_basis_is_not_assumed_to_be_news():
 
 def test_large_research_pool_cannot_crowd_actual_news_out_of_candidate_budget():
     papers, events = (
-        [paper(n) for n in range(1, 31)],
-        [news(n) for n in range(1, 21)],
+        [news_first_policy.paper(n) for n in range(1, 31)],
+        [news_first_policy.news(n) for n in range(1, 21)],
     )
-    retained, kinds = candidate_budget(
+    retained, kinds = content.candidate_budget(
         papers + events,
         classifications(*events),
         maximum=30,
@@ -210,7 +176,12 @@ def test_large_research_pool_cannot_crowd_actual_news_out_of_candidate_budget():
 
 
 def test_news_short_edition_does_not_fill_its_empty_slots_with_weak_papers():
-    candidates = [paper(1), paper(2), news(1), news(2)]
+    candidates = [
+        news_first_policy.paper(1),
+        news_first_policy.paper(2),
+        news_first_policy.news(1),
+        news_first_policy.news(2),
+    ]
     result = selected(
         candidates, [topic(c, n) for n, c in enumerate(candidates, 1)]
     )
@@ -227,7 +198,11 @@ def test_news_short_edition_does_not_fill_its_empty_slots_with_weak_papers():
 
 
 def test_mixed_task_cannot_hide_multiple_papers_in_one_news_slot():
-    a, b, event = paper(1), paper(2), news()
+    a, b, event = (
+        news_first_policy.paper(1),
+        news_first_policy.paper(2),
+        news_first_policy.news(),
+    )
     mixed = topic(a)
     mixed["candidate_ids"] = [a["id"], b["id"]]
     mixed["source_urls"] = [a["url"], b["url"]]
@@ -237,7 +212,11 @@ def test_mixed_task_cannot_hide_multiple_papers_in_one_news_slot():
 
 
 def test_reference_only_paper_cannot_evade_task_subject_budget():
-    a, b, event = paper(1), paper(2), news()
+    a, b, event = (
+        news_first_policy.paper(1),
+        news_first_policy.paper(2),
+        news_first_policy.news(),
+    )
     mixed = topic(event)
     mixed["source_urls"] = [a["url"], b["url"]]
     result = selected([a, b, event], [mixed])
@@ -245,17 +224,21 @@ def test_reference_only_paper_cannot_evade_task_subject_budget():
     assert result.omitted_tasks[0]["reason"] == "mixed_research_topics"
 
 
-def test_unknown_candidates_cannot_bundle_themselves_into_an_unmetered_news_task():
-    a, b, known = news(1), news(2), news(3)
+def test_unknown_candidates_cannot_bundle_past_research_quota():
+    a, b, known = (
+        news_first_policy.news(1),
+        news_first_policy.news(2),
+        news_first_policy.news(3),
+    )
     mixed = topic(a)
     mixed["candidate_ids"] = [a["id"], b["id"]]
     mixed["source_urls"] = [a["url"], b["url"]]
-    result = parse_classified_plan(
-        planned(mixed, topic(known, 2)),
+    result = content.parse_classified_plan(
+        workflow_content.planned(mixed, topic(known, 2)),
         [a, b, known],
         classifications(known),
         6,
-        editorial_limits(config()),
+        content.editorial_limits(config()),
     )
     assert [task["id"] for task in result.research_tasks] == ["topic-2"]
     assert result.omitted_tasks[0]["reason"] == "mixed_research_topics"
@@ -263,7 +246,12 @@ def test_unknown_candidates_cannot_bundle_themselves_into_an_unmetered_news_task
 
 
 def test_public_and_research_caps_are_configuration_not_fixed_constants():
-    candidates = [paper(1), paper(2), news(1), news(2)]
+    candidates = [
+        news_first_policy.paper(1),
+        news_first_policy.paper(2),
+        news_first_policy.news(1),
+        news_first_policy.news(2),
+    ]
     tasks = [topic(c, n) for n, c in enumerate(candidates, 1)]
     result = selected(
         candidates, tasks, max_public_items=3, max_research_items=2
@@ -282,15 +270,19 @@ def test_public_and_research_caps_are_configuration_not_fixed_constants():
 async def test_configured_prompts_and_budgets_reach_only_new_run_models(
     tmp_path,
 ):
-    c = news()
+    c = news_first_policy.news()
     cfg = config(max_public_items=3, max_research_candidates=0)
     cfg["files"] = {
-        "prompts/selection.md": "Frozen editorial marker; real-world changes first."
+        "prompts/selection.md": (
+            "Frozen editorial marker; real-world changes first."
+        )
     }
-    engine = Engine((planned(topic(c)), set(), False))
-    result = await ContentPreparation(engine).shortlist(
-        [paper(), c],
-        DAY,
+    engine = workflow_content.Engine(
+        (workflow_content.planned(topic(c)), set(), False)
+    )
+    result = await content.ContentPreparation(engine).shortlist(
+        [news_first_policy.paper(), c],
+        workflow_content.DAY,
         tmp_path.resolve() / "new",
         content_config=cfg,
         classifications=classifications(c),
@@ -303,7 +295,7 @@ async def test_configured_prompts_and_budgets_reach_only_new_run_models(
         and schema["properties"]["research_tasks"]["maxItems"] == 3
     )
     assert (
-        instructions.startswith(_SAFETY)
+        instructions.startswith(content._SAFETY)
         and "Frozen editorial marker" in instructions
     )
     assert "只比较给定候选" in instructions
@@ -313,25 +305,29 @@ async def test_configured_prompts_and_budgets_reach_only_new_run_models(
 async def test_configured_discovery_policy_and_classifications_reach_the_run(
     tmp_path,
 ):
-    c = news()
+    c = news_first_policy.news()
     cfg = config()
     cfg["files"] = {
-        "prompts/discovery.md": "Frozen discovery marker: transport access and real deployment."
+        "prompts/discovery.md": (
+            "Frozen discovery marker: transport access and real deployment."
+        )
     }
-    output = json.loads(discovered(c))
+    output = json.loads(workflow_content.discovered(c))
     output["candidates"][0].update(
         editorial_kind="news",
         change_basis="A new transport route is now operating.",
     )
-    engine = Engine((json.dumps(output), {c["url"]}, True))
-    result = await ContentPreparation(engine).discover(
-        Instruction("03-world", "Frozen direction", "fixture"),
-        DAY,
+    engine = workflow_content.Engine((json.dumps(output), {c["url"]}, True))
+    result = await content.ContentPreparation(engine).discover(
+        newsletter_collection_instructions.Instruction(
+            "03-world", "Frozen direction", "fixture"
+        ),
+        workflow_content.DAY,
         tmp_path.resolve() / "discover",
         content_config=cfg,
     )
     assert result.classifications[result.candidates[0]["id"]]["kind"] == "news"
-    assert engine.calls[0][2].startswith(_SAFETY)
+    assert engine.calls[0][2].startswith(content._SAFETY)
     assert "Frozen discovery marker" in engine.calls[0][2]
     assert (
         "evidence_urls" in engine.calls[0][2]
@@ -339,10 +335,10 @@ async def test_configured_discovery_policy_and_classifications_reach_the_run(
     )
 
 
-async def test_valid_larger_configured_pool_has_the_same_core_and_runtime_limits(
+async def test_valid_larger_configured_pool_has_same_core_runtime_limits(
     tmp_path,
 ):
-    frozen = packaged_snapshot()
+    frozen = content_config.packaged_snapshot()
     files = dict(frozen["files"])
     files["workflow.yaml"] = files["workflow.yaml"].replace(
         "max_candidates: 30", "max_candidates: 60"
@@ -350,15 +346,17 @@ async def test_valid_larger_configured_pool_has_the_same_core_and_runtime_limits
     files["editorial.yaml"] = files["editorial.yaml"].replace(
         "max_research_candidates: 10", "max_research_candidates: 50"
     )
-    cfg = build_snapshot(files, "c" * 40)
-    assert editorial_limits(cfg).max_research_candidates == 50
-    candidates = [paper(number) for number in range(1, 46)] + [
-        news(number) for number in range(1, 6)
-    ]
-    engine = Engine((planned(topic(candidates[-1])), set(), False))
-    result = await ContentPreparation(engine).shortlist(
+    cfg = content_config.build_snapshot(files, "c" * 40)
+    assert content.editorial_limits(cfg).max_research_candidates == 50
+    candidates = [
+        news_first_policy.paper(number) for number in range(1, 46)
+    ] + [news_first_policy.news(number) for number in range(1, 6)]
+    engine = workflow_content.Engine(
+        (workflow_content.planned(topic(candidates[-1])), set(), False)
+    )
+    result = await content.ContentPreparation(engine).shortlist(
         candidates,
-        DAY,
+        workflow_content.DAY,
         tmp_path.resolve() / "large-pool",
         content_config=cfg,
         classifications=classifications(*candidates[-5:]),
@@ -368,35 +366,41 @@ async def test_valid_larger_configured_pool_has_the_same_core_and_runtime_limits
 
 
 def test_malformed_internal_task_identifier_is_a_finite_output_error():
-    c = news()
+    c = news_first_policy.news()
     malformed = topic(c)
     malformed["id"] = []
-    with pytest.raises(EditorError) as error:
+    with pytest.raises(errors.EditorError) as error:
         selected([c], [malformed])
     assert error.value.code == "invalid_output"
 
 
-async def test_legacy_selection_and_discovery_keep_exact_old_envelopes_and_instructions(
+async def test_legacy_jobs_keep_exact_envelopes_and_instructions(
     tmp_path,
 ):
-    c = paper()
+    c = news_first_policy.paper()
     t = topic(c)
     t.pop("editorial_kind")
-    engine = Engine(
-        (planned(t), set(), False), (discovered(c), {c["url"]}, True)
+    engine = workflow_content.Engine(
+        (workflow_content.planned(t), set(), False),
+        (workflow_content.discovered(c), {c["url"]}, True),
     )
-    service = ContentPreparation(engine)
+    service = content.ContentPreparation(engine)
     selection = await service.shortlist(
-        [c], DAY, tmp_path.resolve() / "legacy-selection"
+        [c], workflow_content.DAY, tmp_path.resolve() / "legacy-selection"
     )
     discovery = await service.discover(
-        Instruction("01-ai-ml", "Frozen old instruction", "digest"),
-        DAY,
+        newsletter_collection_instructions.Instruction(
+            "01-ai-ml", "Frozen old instruction", "digest"
+        ),
+        workflow_content.DAY,
         tmp_path.resolve() / "legacy-discovery",
     )
-    assert set(asdict(selection)) == {"research_tasks", "note"}
-    assert set(asdict(discovery)) == {"candidates", "note"}
-    assert engine.calls[0][2] == _SELECTION and engine.calls[1][2] == _DISCOVERY
+    assert set(dataclasses.asdict(selection)) == {"research_tasks", "note"}
+    assert set(dataclasses.asdict(discovery)) == {"candidates", "note"}
+    assert (
+        engine.calls[0][2] == content._SELECTION
+        and engine.calls[1][2] == content._DISCOVERY
+    )
     assert (
         "editorial_kind"
         not in engine.calls[0][1]["properties"]["research_tasks"]["items"][
@@ -408,28 +412,30 @@ async def test_legacy_selection_and_discovery_keep_exact_old_envelopes_and_instr
 async def test_story_plan_uses_frozen_depth_and_old_runs_keep_original_depth(
     tmp_path,
 ):
-    directory = Path(__file__).resolve().parents[1]
-    definition = load_definition(
+    directory = pathlib.Path(__file__).resolve().parents[1]
+    definition = newsletter_workflow_definition.load_definition(
         directory / "src/newsletter/workflows/daily.yaml"
     )
     ids = {node.type: node.id for node in definition.nodes}
-    store = Store(tmp_path / "plan.sqlite3", "mock")
+    store = newsletter_store.Store(tmp_path / "plan.sqlite3", "mock")
     try:
-        nodes = StoryNodes(store, definition, Engine(), tmp_path)
-        tasks = [publication_task(n) for n in range(1, 5)]
+        nodes = story_nodes.StoryNodes(
+            store, definition, workflow_content.Engine(), tmp_path
+        )
+        tasks = [publication.task(n) for n in range(1, 5)]
         for run_id, frozen, expected in [
             ("new", config(), 1),
             ("no-depth", config(max_deep=0), 0),
             ("old", None, 4),
         ]:
-            ctx = NodeContext(
+            ctx = newsletter_workflow_engine.NodeContext(
                 run_id=run_id,
                 node_id=ids["story_plan"],
                 item_id="",
                 params={"max_deep": 4},
                 inputs={ids["selection"]: {"research_tasks": tasks}},
                 run_inputs={
-                    "issue_date": DAY,
+                    "issue_date": workflow_content.DAY,
                     **({"content_config": frozen} if frozen else {}),
                 },
             )
@@ -445,19 +451,21 @@ async def test_story_plan_uses_frozen_depth_and_old_runs_keep_original_depth(
 async def test_deduplicate_node_applies_budget_before_remembering_candidates(
     tmp_path,
 ):
-    directory = Path(__file__).resolve().parents[1]
-    definition = load_definition(
+    directory = pathlib.Path(__file__).resolve().parents[1]
+    definition = newsletter_workflow_definition.load_definition(
         directory / "src/newsletter/workflows/daily.yaml"
     )
     ids = {node.type: node.id for node in definition.nodes}
-    store = Store(tmp_path / "pool.sqlite3", "mock")
+    store = newsletter_store.Store(tmp_path / "pool.sqlite3", "mock")
     try:
-        nodes = StoryNodes(store, definition, Engine(), tmp_path)
-        papers, events = (
-            [paper(n) for n in range(1, 36)],
-            [news(n) for n in range(1, 6)],
+        nodes = story_nodes.StoryNodes(
+            store, definition, workflow_content.Engine(), tmp_path
         )
-        ctx = NodeContext(
+        papers, events = (
+            [news_first_policy.paper(n) for n in range(1, 36)],
+            [news_first_policy.news(n) for n in range(1, 6)],
+        )
+        ctx = newsletter_workflow_engine.NodeContext(
             run_id="pool",
             node_id=ids["deduplicate"],
             item_id="",
@@ -475,7 +483,10 @@ async def test_deduplicate_node_applies_budget_before_remembering_candidates(
                     }
                 ],
             },
-            run_inputs={"issue_date": DAY, "content_config": config()},
+            run_inputs={
+                "issue_date": workflow_content.DAY,
+                "content_config": config(),
+            },
         )
         result = await nodes.execute("deduplicate", ctx, tmp_path)
         assert [c["id"] for c in result["candidates"]] == [
@@ -484,38 +495,48 @@ async def test_deduplicate_node_applies_budget_before_remembering_candidates(
         assert len(result["classifications"]) == 15
         assert "classifications" not in result["candidates"][0]
         for c in result["candidates"]:
-            parse_message(c, pb.Candidate)
+            contracts.parse_message(c, editorial_pb2.Candidate)
     finally:
         store.close()
 
 
-def test_one_deep_publication_receipt_roundtrips_and_old_freeze_remains_authoritative(
+def test_deep_receipt_roundtrips_without_changing_frozen_issue(
     tmp_path,
 ):
-    store = Store(tmp_path / "publication.sqlite3", "mock")
+    store = newsletter_store.Store(tmp_path / "publication.sqlite3", "mock")
     try:
-        repository = PublicationRepository(store)
-        tasks = [publication_task(n) for n in (1, 2)]
-        repository.save_plan("run", DAY, tasks)
+        repository = newsletter_workflow_publication.PublicationRepository(
+            store
+        )
+        tasks = [publication.task(n) for n in (1, 2)]
+        repository.save_plan("run", workflow_content.DAY, tasks)
         for number, task_ in enumerate(tasks, 1):
             for mode in ("brief", "deep"):
                 repository.save(
                     "run",
                     task_,
                     mode,
-                    publication_result(number, mode=mode),
-                    issue_date=DAY,
+                    publication.result(number, mode=mode),
+                    issue_date=workflow_content.DAY,
                 )
-        frozen = freeze_publication(
-            repository, "run", DAY, reason="completed", max_features=1
+        frozen = story_nodes.freeze_publication(
+            repository,
+            "run",
+            workflow_content.DAY,
+            reason="completed",
+            max_features=1,
         )
         assert [s["disposition"] for s in frozen["coverage"]["stories"]] == [
             "deep",
             "brief",
         ]
         assert (
-            freeze_publication(
-                repository, "run", DAY, reason="restart", max_features=0
+            story_nodes.freeze_publication(
+                repository,
+                "run",
+                workflow_content.DAY,
+                reason="restart",
+                max_features=0,
             )
             == frozen
         )
@@ -523,12 +544,18 @@ def test_one_deep_publication_receipt_roundtrips_and_old_freeze_remains_authorit
         store.close()
 
 
-def test_default_editorial_rules_prioritize_real_change_without_exaggeration_or_filler():
-    for text in (DEFAULT_DISCOVERY_POLICY, DEFAULT_SELECTION_POLICY):
+def test_default_rules_prioritize_change_without_filler():
+    for text in (
+        content.DEFAULT_DISCOVERY_POLICY,
+        content.DEFAULT_SELECTION_POLICY,
+    ):
         assert "论文" in text and "现实" in text
-    assert "强公共事件和产业变化应挤掉弱增量论文" in DEFAULT_SELECTION_POLICY
-    assert "新闻不足就短刊" in DEFAULT_SELECTION_POLICY
     assert (
-        "早期" in DEFAULT_SELECTION_POLICY
-        and "不硬限大机构" in DEFAULT_SELECTION_POLICY
+        "强公共事件和产业变化应挤掉弱增量论文"
+        in content.DEFAULT_SELECTION_POLICY
+    )
+    assert "新闻不足就短刊" in content.DEFAULT_SELECTION_POLICY
+    assert (
+        "早期" in content.DEFAULT_SELECTION_POLICY
+        and "不硬限大机构" in content.DEFAULT_SELECTION_POLICY
     )

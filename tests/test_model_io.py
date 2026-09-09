@@ -5,16 +5,15 @@ import stat
 
 import pytest
 
-from newsletter import model_io
-from newsletter.errors import EditorError
-from newsletter.model_io import MAX_JSON_BYTES, load_json, prepare_workspace
+import newsletter.errors as errors
+import newsletter.model_io as model_io
 
 
 @pytest.mark.parametrize(
     "value", [{"中文": [True, 3, None]}, [], "text", 2, False, None]
 )
 def test_load_json_preserves_values_without_imposing_output_shape(value):
-    assert load_json(json.dumps(value, ensure_ascii=False)) == value
+    assert model_io.load_json(json.dumps(value, ensure_ascii=False)) == value
 
 
 @pytest.mark.parametrize(
@@ -33,18 +32,18 @@ def test_load_json_preserves_values_without_imposing_output_shape(value):
     ],
 )
 def test_invalid_json_has_the_existing_safe_error(raw):
-    with pytest.raises(EditorError) as error:
-        load_json(raw)
+    with pytest.raises(errors.EditorError) as error:
+        model_io.load_json(raw)
     assert error.value.code == "invalid_output"
 
 
 def test_json_budget_counts_utf8_bytes_and_accepts_the_exact_limit():
     raw = '"中"'
-    exact = raw + " " * (MAX_JSON_BYTES - len(raw.encode("utf-8")))
-    assert len(exact.encode("utf-8")) == MAX_JSON_BYTES
-    assert load_json(exact) == "中"
-    with pytest.raises(EditorError) as error:
-        load_json(exact + " ")
+    exact = raw + " " * (model_io.MAX_JSON_BYTES - len(raw.encode("utf-8")))
+    assert len(exact.encode("utf-8")) == model_io.MAX_JSON_BYTES
+    assert model_io.load_json(exact) == "中"
+    with pytest.raises(errors.EditorError) as error:
+        model_io.load_json(exact + " ")
     assert error.value.code == "invalid_output"
 
 
@@ -54,8 +53,8 @@ def test_parser_recursion_failure_keeps_the_safe_error(monkeypatch):
 
     # Python decoder recursion limits vary; test the existing mapping directly.
     monkeypatch.setattr(model_io.json, "loads", recursion_failure)
-    with pytest.raises(EditorError) as error:
-        load_json("[]")
+    with pytest.raises(errors.EditorError) as error:
+        model_io.load_json("[]")
     assert error.value.code == "invalid_output"
     assert error.value.__cause__ is None
 
@@ -64,14 +63,14 @@ def test_workspace_creates_a_private_canonical_directory_and_retains_history(
     tmp_path,
 ):
     requested = tmp_path / "jobs" / "edition"
-    workspace = prepare_workspace(requested, "2026-09-05")
+    workspace = model_io.prepare_workspace(requested, "2026-09-05")
     assert workspace == requested.absolute()
     assert (
         workspace.is_dir() and stat.S_IMODE(workspace.stat().st_mode) == 0o700
     )
     history = workspace / "recent-history.json"
     history.write_text("[]")
-    assert prepare_workspace(requested, "2026-09-05") == workspace
+    assert model_io.prepare_workspace(requested, "2026-09-05") == workspace
     assert history.read_text() == "[]"
 
 
@@ -79,7 +78,7 @@ def test_existing_workspace_permissions_are_not_changed(tmp_path):
     workspace = tmp_path / "existing"
     workspace.mkdir(mode=0o755)
     before = stat.S_IMODE(workspace.stat().st_mode)
-    assert prepare_workspace(workspace, "2026-09-05") == workspace
+    assert model_io.prepare_workspace(workspace, "2026-09-05") == workspace
     assert stat.S_IMODE(workspace.stat().st_mode) == before
 
 
@@ -89,8 +88,8 @@ def test_existing_workspace_permissions_are_not_changed(tmp_path):
 )
 def test_invalid_date_fails_before_creating_workspace(tmp_path, issue_date):
     workspace = tmp_path / "must-not-exist"
-    with pytest.raises(EditorError) as error:
-        prepare_workspace(workspace, issue_date)
+    with pytest.raises(errors.EditorError) as error:
+        model_io.prepare_workspace(workspace, issue_date)
     assert error.value.code == "invalid_input"
     assert not workspace.exists()
 
@@ -109,8 +108,8 @@ def test_stale_artifacts_are_rejected_without_overwrite(tmp_path, name, kind):
         artifact.mkdir()
     else:
         artifact.symlink_to(tmp_path / "missing-target")
-    with pytest.raises(EditorError) as error:
-        prepare_workspace(workspace, "2026-09-05")
+    with pytest.raises(errors.EditorError) as error:
+        model_io.prepare_workspace(workspace, "2026-09-05")
     assert error.value.code == "invalid_input"
     if kind == "file":
         assert artifact.read_text() == "existing fixture data"
@@ -129,8 +128,8 @@ def test_workspace_rejects_final_or_ancestor_symlinks(
     linked = tmp_path / "linked"
     linked.symlink_to(target, target_is_directory=True)
     workspace = linked if symlink_is_final else linked / "job"
-    with pytest.raises(EditorError) as error:
-        prepare_workspace(workspace, "2026-09-05")
+    with pytest.raises(errors.EditorError) as error:
+        model_io.prepare_workspace(workspace, "2026-09-05")
     assert error.value.code == "invalid_input"
     assert list(target.iterdir()) == []
 
@@ -138,7 +137,7 @@ def test_workspace_rejects_final_or_ancestor_symlinks(
 def test_workspace_file_is_not_replaced_with_directory(tmp_path):
     workspace = tmp_path / "not-a-directory"
     workspace.write_text("existing fixture data")
-    with pytest.raises(EditorError) as error:
-        prepare_workspace(workspace, "2026-09-05")
+    with pytest.raises(errors.EditorError) as error:
+        model_io.prepare_workspace(workspace, "2026-09-05")
     assert error.value.code == "invalid_input"
     assert workspace.read_text() == "existing fixture data"

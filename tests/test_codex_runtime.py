@@ -1,15 +1,15 @@
 """Offline launch-boundary tests: no runtime, credentials, model, or network."""
 
 import os
+import pathlib
 import sys
-from pathlib import Path
-from types import ModuleType
+import types
 
 import pytest
 
-from newsletter import _codex_runtime
-from newsletter import codex_runtime as runtime
-from newsletter.errors import EditorError
+import newsletter._codex_runtime as _codex_runtime
+import newsletter.codex_runtime as codex_runtime
+import newsletter.errors as errors
 
 
 @pytest.fixture
@@ -82,9 +82,9 @@ def test_sdk_overlay_then_final_environment_does_not_mutate_parent(
 ):
     before = parent_environment.copy()
     monkeypatch.setattr(os, "environ", parent_environment)
-    dedicated_home = Path("/synthetic/other-dedicated-codex")
+    dedicated_home = pathlib.Path("/synthetic/other-dedicated-codex")
 
-    overlay = runtime.runtime_env(dedicated_home)
+    overlay = codex_runtime.runtime_env(dedicated_home)
     assert overlay["CODEX_HOME"] == str(dedicated_home)
     for key in (
         "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
@@ -107,7 +107,7 @@ def test_sdk_overlay_then_final_environment_does_not_mutate_parent(
 
 
 @pytest.mark.parametrize(
-    "bundled_tools", [None, Path("/synthetic/bundled tools")]
+    "bundled_tools", [None, pathlib.Path("/synthetic/bundled tools")]
 )
 @pytest.mark.parametrize("has_path", [False, True])
 def test_helper_execs_only_bundled_runtime_with_exact_environment_and_argv(
@@ -116,8 +116,8 @@ def test_helper_execs_only_bundled_runtime_with_exact_environment_and_argv(
     if not has_path:
         parent_environment.pop("PATH")
     before = parent_environment.copy()
-    executable = Path("/synthetic/bundled runtime/codex")
-    fake_bin = ModuleType("codex_cli_bin")
+    executable = pathlib.Path("/synthetic/bundled runtime/codex")
+    fake_bin = types.ModuleType("codex_cli_bin")
     fake_bin.bundled_codex_path = lambda: executable
     fake_bin.bundled_path_dir = lambda: bundled_tools
     monkeypatch.setitem(sys.modules, "codex_cli_bin", fake_bin)
@@ -136,15 +136,15 @@ def test_helper_execs_only_bundled_runtime_with_exact_environment_and_argv(
     monkeypatch.setattr(sys, "argv", argv.copy())
     calls = []
 
-    class ExecIntercepted(Exception):
+    class ExecInterceptedError(Exception):
         pass
 
     def capture_execve(path, args, env):
         calls.append((path, args, env))
-        raise ExecIntercepted
+        raise ExecInterceptedError
 
     monkeypatch.setattr(os, "execve", capture_execve)
-    with pytest.raises(ExecIntercepted):
+    with pytest.raises(ExecInterceptedError):
         _codex_runtime.main()
 
     expected = expected_environment(parent_environment)
@@ -164,7 +164,7 @@ def test_helper_execs_only_bundled_runtime_with_exact_environment_and_argv(
     "overrides",
     [
         (),
-        runtime.CONFIG_OVERRIDES,
+        codex_runtime.CONFIG_OVERRIDES,
         ('test_value="$(never-execute); literal text"',),
     ],
 )
@@ -172,9 +172,9 @@ def test_launch_args_use_isolated_python_and_forward_each_override(overrides):
     expected_configs = tuple(
         part for item in overrides for part in ("--config", item)
     )
-    helper = Path(runtime.__file__).with_name("_codex_runtime.py")
+    helper = pathlib.Path(codex_runtime.__file__).with_name("_codex_runtime.py")
 
-    assert runtime.launch_args(overrides) == (
+    assert codex_runtime.launch_args(overrides) == (
         sys.executable,
         "-I",
         str(helper),
@@ -189,7 +189,9 @@ def test_launch_args_use_isolated_python_and_forward_each_override(overrides):
 def test_launch_args_reject_missing_or_unsafe_helper(
     monkeypatch, tmp_path, helper_kind
 ):
-    monkeypatch.setattr(runtime, "__file__", str(tmp_path / "codex_runtime.py"))
+    monkeypatch.setattr(
+        codex_runtime, "__file__", str(tmp_path / "codex_runtime.py")
+    )
     helper = tmp_path / "_codex_runtime.py"
     if helper_kind == "directory":
         helper.mkdir()
@@ -200,6 +202,6 @@ def test_launch_args_reject_missing_or_unsafe_helper(
         )
         helper.symlink_to(target)
 
-    with pytest.raises(EditorError) as error:
-        runtime.launch_args(runtime.CONFIG_OVERRIDES)
+    with pytest.raises(errors.EditorError) as error:
+        codex_runtime.launch_args(codex_runtime.CONFIG_OVERRIDES)
     assert error.value.code == "configuration"

@@ -1,38 +1,43 @@
-"""SQLite is the authority. External side effects are never retried implicitly."""
+"""Authoritative SQLite state without implicit external side-effect retries."""
 
 import base64
+from collections.abc import Iterator
+import contextlib
+import datetime
 import json
+import pathlib
 import sqlite3
 import threading
+from typing import cast, Unpack
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Unpack, cast
 
-from newsletter.contracts import canonical_json, content_hash, validate_draft
-from newsletter.types import (
-    EditionPatch,
-    EditionRecord,
-    Payload,
-    ProjectionState,
-)
+import newsletter.contracts as contracts
+import newsletter.types as types
 
 
 class StoreError(Exception):
+    """A safe domain code and explanation for a rejected state transition."""
+
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         super().__init__(message)
 
 
 def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    """Return a timezone-aware UTC timestamp for durable local records."""
+    return datetime.datetime.now(datetime.UTC).isoformat()
 
 
 class Store:
+    """Own packet, edition, and send receipts in a mode-bound SQLite database.
+
+    Mutations use an immediate transaction and a reentrant process lock. A
+    claimed external effect remains durable until explicitly resolved; startup
+    recovery never treats an ambiguous send as permission to dispatch again.
+    """
+
     def __init__(
-        self, path: Path, mode: str, max_pending_jobs: int = 8
+        self, path: pathlib.Path, mode: str, max_pending_jobs: int = 8
     ) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(
@@ -41,31 +46,46 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.lock = threading.RLock()
         self.max_pending_jobs = max_pending_jobs
-        self.db.executescript("""
-            PRAGMA journal_mode=WAL;
-            PRAGMA foreign_keys=ON;
-            PRAGMA busy_timeout=5000;
-            CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS packets (
-                seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
-                principal TEXT NOT NULL, request_key TEXT NOT NULL, digest TEXT NOT NULL,
-                body TEXT NOT NULL, projection TEXT NOT NULL DEFAULT 'pending',
-                UNIQUE(principal, request_key));
-            CREATE TABLE IF NOT EXISTS editions (
-                id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL, digest TEXT NOT NULL,
-                state TEXT NOT NULL, body TEXT NOT NULL, snapshot TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS sends (
-                issue_date TEXT PRIMARY KEY, edition_id TEXT UNIQUE NOT NULL,
-                request_key TEXT UNIQUE NOT NULL, render_hash TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS verification_sends (
-                issue_date TEXT NOT NULL, edition_id TEXT PRIMARY KEY NOT NULL,
-                request_key TEXT UNIQUE NOT NULL, render_hash TEXT NOT NULL,
-                previous_edition_id TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS workflow_editions (
-                edition_id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL,
-                editor_result TEXT NOT NULL, required_packets TEXT NOT NULL,
-                projection_required INTEGER NOT NULL DEFAULT 1);
-        """)
+        self.db.executescript(
+            "\n"
+            "            PRAGMA journal_mode=WAL;\n"
+            "            PRAGMA foreign_keys=ON;\n"
+            "            PRAGMA busy_timeout=5000;\n"
+            "            CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY "
+            "KEY, value TEXT NOT NULL);\n"
+            "            CREATE TABLE IF NOT EXISTS packets (\n"
+            "                seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT "
+            "UNIQUE NOT NULL,\n"
+            "                principal TEXT NOT NULL, request_key TEXT NOT "
+            "NULL, digest TEXT NOT NULL,\n"
+            "                body TEXT NOT NULL, projection TEXT NOT NULL "
+            "DEFAULT 'pending',\n"
+            "                UNIQUE(principal, request_key));\n"
+            "            CREATE TABLE IF NOT EXISTS editions (\n"
+            "                id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT "
+            "NULL, digest TEXT NOT NULL,\n"
+            "                state TEXT NOT NULL, body TEXT NOT NULL, snapshot "
+            "TEXT NOT NULL);\n"
+            "            CREATE TABLE IF NOT EXISTS sends (\n"
+            "                issue_date TEXT PRIMARY KEY, edition_id TEXT "
+            "UNIQUE NOT NULL,\n"
+            "                request_key TEXT UNIQUE NOT NULL, render_hash "
+            "TEXT NOT NULL);\n"
+            "            CREATE TABLE IF NOT EXISTS verification_sends (\n"
+            "                issue_date TEXT NOT NULL, edition_id TEXT PRIMARY "
+            "KEY NOT NULL,\n"
+            "                request_key TEXT UNIQUE NOT NULL, render_hash "
+            "TEXT NOT NULL,\n"
+            "                previous_edition_id TEXT UNIQUE NOT NULL, "
+            "created_at TEXT NOT NULL);\n"
+            "            CREATE TABLE IF NOT EXISTS workflow_editions (\n"
+            "                edition_id TEXT PRIMARY KEY, run_id TEXT UNIQUE "
+            "NOT NULL,\n"
+            "                editor_result TEXT NOT NULL, required_packets "
+            "TEXT NOT NULL,\n"
+            "                projection_required INTEGER NOT NULL DEFAULT 1);\n"
+            "        "
+        )
         with self.transaction():
             verification_columns = {
                 row["name"]: row
@@ -79,22 +99,29 @@ class Store:
                 # across concurrent app processes. DDL/copy are one transaction.
                 self.db.execute(
                     "CREATE TABLE verification_sends_migrated ("
-                    "issue_date TEXT NOT NULL, edition_id TEXT PRIMARY KEY NOT NULL, "
-                    "request_key TEXT UNIQUE NOT NULL, render_hash TEXT NOT NULL, "
-                    "previous_edition_id TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL)"
+                    "issue_date TEXT NOT NULL, edition_id TEXT PRIMARY KEY "
+                    "NOT NULL, "
+                    "request_key TEXT UNIQUE NOT NULL, render_hash TEXT "
+                    "NOT NULL, "
+                    "previous_edition_id TEXT UNIQUE NOT NULL, created_at "
+                    "TEXT NOT NULL)"
                 )
                 self.db.execute(
                     "INSERT INTO verification_sends_migrated "
-                    "(issue_date,edition_id,request_key,render_hash,previous_edition_id,created_at) "
-                    "SELECT issue_date,edition_id,request_key,render_hash,previous_edition_id,"
+                    "(issue_date,edition_id,request_key,render_hash,previou"
+                    "s_edition_id,created_at) "
+                    "SELECT issue_date,edition_id,request_key,render_hash,p"
+                    "revious_edition_id,"
                     "created_at FROM verification_sends"
                 )
                 self.db.execute("DROP TABLE verification_sends")
                 self.db.execute(
-                    "ALTER TABLE verification_sends_migrated RENAME TO verification_sends"
+                    "ALTER TABLE verification_sends_migrated RENAME TO "
+                    "verification_sends"
                 )
             self.db.execute(
-                "CREATE INDEX IF NOT EXISTS verification_sends_date ON verification_sends(issue_date)"
+                "CREATE INDEX IF NOT EXISTS verification_sends_date ON "
+                "verification_sends(issue_date)"
             )
             columns = {
                 row["name"]
@@ -119,8 +146,13 @@ class Store:
             )
         self.mode = mode
 
-    @contextmanager
+    @contextlib.contextmanager
     def transaction(self) -> Iterator[None]:
+        """Lock and commit one transaction, rolling back on any interruption.
+
+        Callers must not nest this context; use an in-transaction method when
+        a larger operation already owns the transaction and process lock.
+        """
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
             try:
@@ -131,11 +163,12 @@ class Store:
                 raise
 
     def close(self) -> None:
+        """Close the database after its workers have stopped using it."""
         self.db.close()
 
     def bind_delivery_target(self, target: dict[str, str]) -> None:
-        """A database cannot silently change the audience or delivery provider."""
-        digest = content_hash(target)
+        """Bind a database to one immutable audience and delivery provider."""
+        digest = contracts.content_hash(target)
         with self.transaction():
             row = self.db.execute(
                 "SELECT value FROM metadata WHERE key='delivery_target'"
@@ -149,8 +182,10 @@ class Store:
                 (digest,),
             )
 
-    def save_supplements(self, edition_id: str, packets: list[Payload]) -> None:
-        """Only the trusted worker calls this, after validating editor research."""
+    def save_supplements(
+        self, edition_id: str, packets: list[types.Payload]
+    ) -> None:
+        """Save research already validated by the trusted worker."""
         with self.transaction():
             row = self.db.execute(
                 "SELECT snapshot FROM editions WHERE id=?", (edition_id,)
@@ -165,39 +200,41 @@ class Store:
                         "conflict", "Supplemental packet ID is already in use"
                     )
                 self.db.execute(
-                    "INSERT INTO packets(id,principal,request_key,digest,body) VALUES(?,?,?,?,?)",
+                    "INSERT INTO packets(id,principal,request_key,digest,bo"
+                    "dy) VALUES(?,?,?,?,?)",
                     (
                         packet["id"],
                         "editor",
                         edition_id + ":" + packet["id"],
-                        content_hash(packet["content"]),
-                        canonical_json(packet),
+                        contracts.content_hash(packet["content"]),
+                        contracts.canonical_json(packet),
                     ),
                 )
                 snapshot.append(packet)
                 edition["packet_ids"].append(packet["id"])
             self.db.execute(
                 "UPDATE editions SET snapshot=? WHERE id=?",
-                (canonical_json(snapshot), edition_id),
+                (contracts.canonical_json(snapshot), edition_id),
             )
             self._write(edition)
 
     def put_packet(
-        self, request: Payload, principal: str = "producer"
-    ) -> Payload:
+        self, request: types.Payload, principal: str = "producer"
+    ) -> types.Payload:
+        """Atomically insert material or return its identical prior receipt."""
         with self.transaction():
-            return self._put_packet(request, principal)
+            return self.put_packet_in_transaction(request, principal)
 
     def save_workflow_supplements(
-        self, run_id: str, packets: list[Payload]
+        self, run_id: str, packets: list[types.Payload]
     ) -> None:
-        """Preserve validated editor citation IDs before the DAG artifact is finalized."""
+        """Preserve validated citation IDs before the DAG artifact is final."""
         with self.transaction():
             for packet in packets:
                 previous = self.db.execute(
                     "SELECT body FROM packets WHERE id=?", (packet["id"],)
                 ).fetchone()
-                body = canonical_json(packet)
+                body = contracts.canonical_json(packet)
                 if previous is not None:
                     if previous[0] != body:
                         raise StoreError(
@@ -205,21 +242,30 @@ class Store:
                         )
                     continue
                 self.db.execute(
-                    "INSERT INTO packets(id,principal,request_key,digest,body) VALUES(?,?,?,?,?)",
+                    "INSERT INTO packets(id,principal,request_key,digest,bo"
+                    "dy) VALUES(?,?,?,?,?)",
                     (
                         packet["id"],
                         "workflow-editor",
                         run_id + ":" + packet["id"],
-                        content_hash(packet["content"]),
+                        contracts.content_hash(packet["content"]),
                         body,
                     ),
                 )
 
-    def _put_packet(self, request: Payload, principal: str) -> Payload:
-        """Insert within the caller's transaction; used for atomic collection batches."""
-        digest = content_hash(request)
+    def put_packet_in_transaction(
+        self, request: types.Payload, principal: str
+    ) -> types.Payload:
+        """Insert material inside a transaction already owned by the caller.
+
+        The caller must hold ``transaction()`` so packet insertion and the
+        surrounding collection receipt commit together. Conflicting reuse of
+        a principal's request key raises StoreError without replacing data.
+        """
+        digest = contracts.content_hash(request)
         row = self.db.execute(
-            "SELECT digest, body FROM packets WHERE principal=? AND request_key=?",
+            "SELECT digest, body FROM packets WHERE principal=? AND "
+            "request_key=?",
             (principal, request["request_key"]),
         ).fetchone()
         if row:
@@ -227,29 +273,31 @@ class Store:
                 raise StoreError(
                     "conflict", "request_key was used for different material"
                 )
-            return json.loads(row["body"])
+            return cast(types.Payload, json.loads(row["body"]))
         packet = {
             "id": str(uuid.uuid4()),
             "workflow_id": request["workflow_id"],
             "producer_id": principal,
             "content": request["content"],
-            "content_hash": content_hash(request["content"]),
+            "content_hash": contracts.content_hash(request["content"]),
             "created_at": now(),
             "is_fixture": self.mode == "mock",
         }
         self.db.execute(
-            "INSERT INTO packets(id,principal,request_key,digest,body) VALUES(?,?,?,?,?)",
+            "INSERT INTO packets(id,principal,request_key,digest,body) "
+            "VALUES(?,?,?,?,?)",
             (
                 packet["id"],
                 principal,
                 request["request_key"],
                 digest,
-                canonical_json(packet),
+                contracts.canonical_json(packet),
             ),
         )
         return packet
 
-    def read_inbox(self, limit: int = 20, cursor: str = "") -> Payload:
+    def read_inbox(self, limit: int = 20, cursor: str = "") -> types.Payload:
+        """Return a descending packet page and an opaque continuation cursor."""
         with self.lock:
             top = self.db.execute(
                 "SELECT COALESCE(MAX(seq),0) FROM packets"
@@ -268,7 +316,8 @@ class Store:
                         "invalid_argument", "Invalid inbox cursor"
                     ) from None
             rows = self.db.execute(
-                "SELECT seq,body FROM packets WHERE seq<=? AND seq<? ORDER BY seq DESC LIMIT ?",
+                "SELECT seq,body FROM packets WHERE seq<=? AND seq<? ORDER "
+                "BY seq DESC LIMIT ?",
                 (top, before, limit + 1),
             ).fetchall()
             selected = rows[:limit]
@@ -283,9 +332,18 @@ class Store:
             }
 
     def prepare(
-        self, request: Payload, *, workflow_binding: Payload | None = None
-    ) -> EditionRecord:
-        digest = content_hash(request)
+        self,
+        request: types.Payload,
+        *,
+        workflow_binding: types.Payload | None = None,
+    ) -> types.EditionRecord:
+        """Queue an edition with immutable packet and workflow input bindings.
+
+        Reusing an identical request returns its prior edition. Invalid packet
+        selection, queue exhaustion, or conflicting request keys fail before
+        any partial snapshot becomes visible.
+        """
+        digest = contracts.content_hash(request)
         if (
             workflow_binding is not None
             and type(workflow_binding.get("projection_required", True))
@@ -305,17 +363,18 @@ class Store:
                     raise StoreError(
                         "conflict", "request_key was used for another edition"
                     )
-                existing = cast(EditionRecord, json.loads(row["body"]))
+                existing = cast(types.EditionRecord, json.loads(row["body"]))
                 if workflow_binding is not None:
                     binding = self.db.execute(
-                        "SELECT run_id,editor_result,required_packets,projection_required "
+                        "SELECT run_id,editor_result,required_packets,proje"
+                        "ction_required "
                         "FROM workflow_editions WHERE edition_id=?",
                         (existing["id"],),
                     ).fetchone()
                     expected = (
                         workflow_binding["run_id"],
-                        canonical_json(workflow_binding["result"]),
-                        canonical_json(
+                        contracts.canonical_json(workflow_binding["result"]),
+                        contracts.canonical_json(
                             sorted(set(workflow_binding["required_packets"]))
                         ),
                         int(workflow_binding.get("projection_required", True)),
@@ -327,7 +386,8 @@ class Store:
                 return existing
             if (
                 self.db.execute(
-                    "SELECT COUNT(*) FROM editions WHERE state IN ('queued','running')"
+                    "SELECT COUNT(*) FROM editions WHERE state IN "
+                    "('queued','running')"
                 ).fetchone()[0]
                 >= self.max_pending_jobs
             ):
@@ -343,7 +403,7 @@ class Store:
                     )
                 packets.append(json.loads(row[0]))
             at = now()
-            edition: EditionRecord = {
+            edition: types.EditionRecord = {
                 "id": str(uuid.uuid4()),
                 "issue_date": request["issue_date"],
                 "state": "queued",
@@ -360,20 +420,21 @@ class Store:
                     request["request_key"],
                     digest,
                     "queued",
-                    canonical_json(edition),
-                    canonical_json(packets),
+                    contracts.canonical_json(edition),
+                    contracts.canonical_json(packets),
                 ),
             )
             if workflow_binding is not None:
                 self.db.execute(
                     "INSERT INTO workflow_editions "
-                    "(edition_id,run_id,editor_result,required_packets,projection_required) "
+                    "(edition_id,run_id,editor_result,required_packets,proj"
+                    "ection_required) "
                     "VALUES(?,?,?,?,?)",
                     (
                         edition["id"],
                         workflow_binding["run_id"],
-                        canonical_json(workflow_binding["result"]),
-                        canonical_json(
+                        contracts.canonical_json(workflow_binding["result"]),
+                        contracts.canonical_json(
                             sorted(set(workflow_binding["required_packets"]))
                         ),
                         int(workflow_binding.get("projection_required", True)),
@@ -381,7 +442,8 @@ class Store:
                 )
             return edition
 
-    def get(self, edition_id: str) -> EditionRecord:
+    def get(self, edition_id: str) -> types.EditionRecord:
+        """Return a saved edition or raise StoreError when its ID is absent."""
         with self.lock:
             row = self.db.execute(
                 "SELECT body FROM editions WHERE id=?", (edition_id,)
@@ -389,34 +451,37 @@ class Store:
             if not row:
                 raise StoreError("not_found", "Edition not found")
             # Only this store writes edition records, after boundary validation.
-            return cast(EditionRecord, json.loads(row[0]))
+            return cast(types.EditionRecord, json.loads(row[0]))
 
-    def _write(self, edition: EditionRecord) -> None:
+    def _write(self, edition: types.EditionRecord) -> None:
         edition["updated_at"] = now()
         self.db.execute(
             "UPDATE editions SET state=?,body=? WHERE id=?",
             (
                 edition["state"],
-                canonical_json(edition),
+                contracts.canonical_json(edition),
                 edition["id"],
             ),
         )
 
-    def claim(self) -> tuple[EditionRecord, list[Payload]] | None:
+    def claim(self) -> tuple[types.EditionRecord, list[types.Payload]] | None:
+        """Claim the next queued edition with its frozen input packet list."""
         with self.transaction():
             row = self.db.execute(
-                "SELECT body,snapshot FROM editions WHERE state='queued' ORDER BY rowid LIMIT 1"
+                "SELECT body,snapshot FROM editions WHERE state='queued' "
+                "ORDER BY rowid LIMIT 1"
             ).fetchone()
             if not row:
                 return None
-            edition = cast(EditionRecord, json.loads(row["body"]))
+            edition = cast(types.EditionRecord, json.loads(row["body"]))
             edition["state"] = "running"
             self._write(edition)
             return edition, json.loads(row["snapshot"])
 
     def finish(
-        self, edition_id: str, **fields: Unpack[EditionPatch]
-    ) -> EditionRecord:
+        self, edition_id: str, **fields: Unpack[types.EditionPatch]
+    ) -> types.EditionRecord:
+        """Atomically apply worker result fields to an existing edition."""
         with self.transaction():
             edition = self.get(edition_id)
             edition.update(fields)
@@ -424,12 +489,12 @@ class Store:
             return edition
 
     def recover(self) -> None:
-        """Interrupted research is reported; ambiguous mail is never auto-resubmitted."""
+        """Recover interrupted work without resubmitting ambiguous mail."""
         with self.transaction():
             for row in self.db.execute(
                 "SELECT body,snapshot FROM editions"
             ).fetchall():
-                edition = cast(EditionRecord, json.loads(row["body"]))
+                edition = cast(types.EditionRecord, json.loads(row["body"]))
                 changed = False
                 if edition["state"] == "running":
                     if self._recoverable_local_render(edition, row["snapshot"]):
@@ -450,11 +515,12 @@ class Store:
                 if changed:
                     self._write(edition)
             self.db.execute(
-                "UPDATE packets SET projection='unknown' WHERE projection='submitting'"
+                "UPDATE packets SET projection='unknown' WHERE "
+                "projection='submitting'"
             )
 
     def interrupt_preparation(self, edition_id: str) -> None:
-        """Graceful cancellation uses the same narrow local-only recovery policy.
+        """Apply the narrow local-only recovery policy on cancellation.
 
         Never retry an editor call, an arbitrary failed edition, a frozen render
         or a delivery attempt. Only assembling an already approved publication
@@ -466,7 +532,7 @@ class Store:
             ).fetchone()
             if row is None:
                 return
-            edition = cast(EditionRecord, json.loads(row["body"]))
+            edition = cast(types.EditionRecord, json.loads(row["body"]))
             if edition["state"] != "running":
                 return
             if self._recoverable_local_render(edition, row["snapshot"]):
@@ -476,9 +542,9 @@ class Store:
             self._write(edition)
 
     def _recoverable_local_render(
-        self, edition: EditionRecord, snapshot_json: str
+        self, edition: types.EditionRecord, snapshot_json: str
     ) -> bool:
-        """Read-only checks inside the caller's transaction, fail closed on drift."""
+        """Check for drift inside the caller's transaction without writing."""
         if (
             edition["delivery_state"] != "not_requested"
             or "rendered" in edition
@@ -489,20 +555,23 @@ class Store:
         ):
             return False
         binding = self.db.execute(
-            "SELECT run_id,editor_result,required_packets FROM workflow_editions "
+            "SELECT run_id,editor_result,required_packets FROM "
+            "workflow_editions "
             "WHERE edition_id=? AND projection_required=0",
             (edition["id"],),
         ).fetchone()
         if (
             binding is None
             or self.db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='publication_snapshots'"
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                "name='publication_snapshots'"
             ).fetchone()
             is None
         ):
             return False
         publication = self.db.execute(
-            "SELECT issue_date,tasks,body,digest FROM publication_snapshots WHERE run_id=?",
+            "SELECT issue_date,tasks,body,digest FROM "
+            "publication_snapshots WHERE run_id=?",
             (binding["run_id"],),
         ).fetchone()
         if (
@@ -517,12 +586,13 @@ class Store:
             if (
                 frozen["notion_required"] is not False
                 or frozen["review"]["passed"] is not True
-                or canonical_json(expected) != binding["editor_result"]
-                or canonical_json(packets)
-                != canonical_json(json.loads(snapshot_json))
+                or contracts.canonical_json(expected)
+                != binding["editor_result"]
+                or contracts.canonical_json(packets)
+                != contracts.canonical_json(json.loads(snapshot_json))
                 or [packet["id"] for packet in packets] != edition["packet_ids"]
                 or publication["digest"]
-                != content_hash(
+                != contracts.content_hash(
                     {
                         "issue_date": edition["issue_date"],
                         "tasks": json.loads(publication["tasks"]),
@@ -541,18 +611,27 @@ class Store:
                 ).fetchone()
                 if (
                     saved is None
-                    or canonical_json(json.loads(saved["body"]))
-                    != canonical_json(by_id[key])
+                    or contracts.canonical_json(json.loads(saved["body"]))
+                    != contracts.canonical_json(by_id[key])
                     or by_id[key]["content_hash"]
-                    != content_hash(by_id[key]["content"])
+                    != contracts.content_hash(by_id[key]["content"])
                 ):
                     return False
-            validate_draft(frozen["draft"], [by_id[key] for key in required])
+            contracts.validate_draft(
+                frozen["draft"], [by_id[key] for key in required]
+            )
             return True
         except (KeyError, TypeError, ValueError):
             return False
 
-    def reserve_send(self, request: Payload) -> tuple[EditionRecord, bool]:
+    def reserve_send(
+        self, request: types.Payload
+    ) -> tuple[types.EditionRecord, bool]:
+        """Reserve one publication per date, preserving ambiguous prior sends.
+
+        Returns the durable edition and whether this call created a dispatch
+        reservation. An existing identical request is a receipt, not a retry.
+        """
         with self.transaction():
             edition = self.get(request["id"])
             if edition["state"] != "ready":
@@ -601,8 +680,11 @@ class Store:
             return edition, True
 
     def reserve_verification_send(
-        self, request: Payload, *, previous_verification_id: str | None = None
-    ) -> tuple[EditionRecord, bool]:
+        self,
+        request: types.Payload,
+        *,
+        previous_verification_id: str | None = None,
+    ) -> tuple[types.EditionRecord, bool]:
         """Reserve an explicit verification, separate from daily delivery.
 
         Default: one extra attempt per date. A further manual approval must name
@@ -624,7 +706,8 @@ class Store:
                     "conflict", "Approval does not match the frozen preview"
                 )
             reused = self.db.execute(
-                "SELECT edition_id,render_hash FROM verification_sends WHERE request_key=?",
+                "SELECT edition_id,render_hash FROM verification_sends "
+                "WHERE request_key=?",
                 (request["request_key"],),
             ).fetchone()
             if reused and tuple(reused) != (
@@ -635,7 +718,8 @@ class Store:
                     "conflict", "Verification key belongs to another approval"
                 )
             existing = self.db.execute(
-                "SELECT render_hash,previous_edition_id FROM verification_sends WHERE edition_id=?",
+                "SELECT render_hash,previous_edition_id FROM "
+                "verification_sends WHERE edition_id=?",
                 (edition["id"],),
             ).fetchone()
             if existing:
@@ -669,7 +753,8 @@ class Store:
                     "Original delivery must have confirmed acceptance",
                 )
             rows = self.db.execute(
-                "SELECT edition_id,render_hash,previous_edition_id FROM verification_sends "
+                "SELECT edition_id,render_hash,previous_edition_id FROM "
+                "verification_sends "
                 "WHERE issue_date=?",
                 (edition["issue_date"],),
             ).fetchall()
@@ -695,7 +780,8 @@ class Store:
             self.assert_workflow_research(edition["id"])
             self.db.execute(
                 "INSERT INTO verification_sends "
-                "(issue_date,edition_id,request_key,render_hash,previous_edition_id,created_at) "
+                "(issue_date,edition_id,request_key,render_hash,previous_ed"
+                "ition_id,created_at) "
                 "VALUES(?,?,?,?,?,?)",
                 (
                     edition["issue_date"],
@@ -718,7 +804,7 @@ class Store:
         issue_date: str,
         accepted_state: str,
     ) -> str:
-        """Require an intact, fully accepted chain ending at this exact approval."""
+        """Require an intact, fully accepted chain ending at this approval."""
         successors = {row["previous_edition_id"]: row for row in rows}
         cursor = original_id
         visited: set[str] = set()
@@ -760,7 +846,8 @@ class Store:
         """
         with self.lock:
             binding = self.db.execute(
-                "SELECT required_packets,projection_required FROM workflow_editions "
+                "SELECT required_packets,projection_required FROM "
+                "workflow_editions "
                 "WHERE edition_id=?",
                 (edition_id,),
             ).fetchone()
@@ -781,7 +868,8 @@ class Store:
                 ):
                     raise StoreError(
                         "conflict",
-                        "Adopted research must be confirmed in Notion before sending",
+                        "Adopted research must be confirmed in Notion "
+                        "before sending",
                     )
                 return
             frozen = self.db.execute(
@@ -792,10 +880,10 @@ class Store:
             if not required or any(
                 row is None
                 or packet_id not in packets
-                or canonical_json(json.loads(row["body"]))
-                != canonical_json(packets[packet_id])
+                or contracts.canonical_json(json.loads(row["body"]))
+                != contracts.canonical_json(packets[packet_id])
                 or packets[packet_id]["content_hash"]
-                != content_hash(packets[packet_id]["content"])
+                != contracts.content_hash(packets[packet_id]["content"])
                 for packet_id, row in rows.items()
             ):
                 raise StoreError(
@@ -803,7 +891,7 @@ class Store:
                     "Publication requires intact frozen local research",
                 )
             try:
-                validate_draft(
+                contracts.validate_draft(
                     self.get(edition_id)["draft"],
                     [packets[key] for key in required],
                 )
@@ -813,10 +901,12 @@ class Store:
                     "Publication references do not match frozen research",
                 ) from None
 
-    def claim_projection(self) -> Payload | None:
+    def claim_projection(self) -> types.Payload | None:
+        """Claim one pending packet for a single external projection attempt."""
         with self.transaction():
             row = self.db.execute(
-                "SELECT id,body FROM packets WHERE projection='pending' ORDER BY seq LIMIT 1"
+                "SELECT id,body FROM packets WHERE projection='pending' "
+                "ORDER BY seq LIMIT 1"
             ).fetchone()
             if not row:
                 return None
@@ -824,15 +914,19 @@ class Store:
                 "UPDATE packets SET projection='submitting' WHERE id=?",
                 (row["id"],),
             )
-            return json.loads(row["body"])
+            return cast(types.Payload, json.loads(row["body"]))
 
-    def projection_result(self, packet_id: str, state: ProjectionState) -> None:
+    def projection_result(
+        self, packet_id: str, state: types.ProjectionState
+    ) -> None:
+        """Persist the known or explicitly unknown projection outcome."""
         with self.transaction():
             self.db.execute(
                 "UPDATE packets SET projection=? WHERE id=?", (state, packet_id)
             )
 
-    def recent_history(self) -> list[EditionRecord]:
+    def recent_history(self) -> list[types.EditionRecord]:
+        """Filter the newest 60 editions to accepted or unknown deliveries."""
         with self.lock:
             rows = self.db.execute(
                 "SELECT body FROM editions ORDER BY rowid DESC LIMIT 60"
@@ -840,6 +934,8 @@ class Store:
         return [
             e
             for row in rows
-            if (e := cast(EditionRecord, json.loads(row[0])))["delivery_state"]
+            if (e := cast(types.EditionRecord, json.loads(row[0])))[
+                "delivery_state"
+            ]
             in {"provider_accepted", "unknown"}
         ][:7]
