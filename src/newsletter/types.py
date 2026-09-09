@@ -8,7 +8,7 @@ and results our own code constructs; they perform no additional serialization.
 
 from typing import Any, Literal, NotRequired, TypedDict
 
-from .usage import UsageSummary
+import newsletter.usage as newsletter_usage
 
 Payload = dict[str, Any]
 EditionState = Literal["queued", "running", "ready", "blocked", "failed"]
@@ -22,15 +22,19 @@ DeliveryState = Literal[
 ]
 ProjectionState = Literal["pending", "submitting", "done", "failed", "unknown"]
 DigestState = Literal["current", "empty", "unavailable", "disabled"]
-Role = Literal["ingest", "editor", "send"]
+Role = Literal["editor", "send"]
 
 
 class ReviewResult(TypedDict):
+    """The frozen editorial approval and its explicit findings."""
+
     passed: bool
     findings: list[str]
 
 
 class RenderResult(TypedDict):
+    """Email variants and a digest binding their exact rendered bytes."""
+
     html: str
     text: str
     chart_png: str
@@ -38,17 +42,23 @@ class RenderResult(TypedDict):
 
 
 class DeliveryResult(TypedDict):
+    """Confirmed adapter acceptance, not proof of inbox delivery."""
+
     delivery_state: Literal["simulated", "provider_accepted"]
     provider_message_id: str
 
 
 class PersonalItem(TypedDict):
+    """A selected private task summary, ordered within the personal digest."""
+
     rank: int
     title: str
     detail: str
 
 
 class EditionPatch(TypedDict, total=False):
+    """Fields a workflow stage may add to the durable edition record."""
+
     state: EditionState
     delivery_state: DeliveryState
     draft: Payload
@@ -57,11 +67,13 @@ class EditionPatch(TypedDict, total=False):
     personal_digest: Payload
     error_code: str
     provider_message_id: str
-    usage: UsageSummary
+    usage: newsletter_usage.UsageSummary
     publication: Payload
 
 
 class EditionRecord(TypedDict):
+    """The persisted edition and its accumulated production/delivery state."""
+
     id: str
     issue_date: str
     state: EditionState
@@ -76,5 +88,5 @@ class EditionRecord(TypedDict):
     personal_digest: NotRequired[Payload]
     error_code: NotRequired[str]
     provider_message_id: NotRequired[str]
-    usage: NotRequired[UsageSummary]
+    usage: NotRequired[newsletter_usage.UsageSummary]
     publication: NotRequired[Payload]

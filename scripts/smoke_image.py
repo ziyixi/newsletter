@@ -1,4 +1,4 @@
-"""Verify a fixed local image in a disposable, credential-free, no-network container.
+"""Verify a fixed image in a disposable, credential-free offline container.
 
 Never builds, pulls, pushes, mounts host files, reads .env/auth, or sends mail.
 The container runs the existing real SDK startup probe and mock loopback HTTP.
@@ -10,12 +10,12 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import pathlib
 import re
 import subprocess
-from pathlib import Path
-from uuid import uuid4
+import uuid
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 PRIVATE_NAMES = (
     ".env*",
     ".codex-auth",
@@ -40,7 +40,8 @@ IMAGE_FORMAT = (
 )
 
 
-def source_hashes(root: Path) -> dict[str, str]:
+def source_hashes(root: pathlib.Path) -> dict[str, str]:
+    """Audit package inputs and hash each regular file expected in the image."""
     package = root / "src" / "newsletter"
     result = {}
     for path in sorted(package.rglob("*")):
@@ -78,8 +79,13 @@ def source_hashes(root: Path) -> dict[str, str]:
 
 
 def verify(
-    image: str, platform: str, docker: str = "docker", *, root: Path = ROOT
+    image: str,
+    platform: str,
+    docker: str = "docker",
+    *,
+    root: pathlib.Path = ROOT,
 ) -> str:
+    """Run offline probes against an immutable image and clean up that probe."""
     inspected = subprocess.run(
         [docker, "image", "inspect", "--format", IMAGE_FORMAT, "--", image],
         check=True,
@@ -87,9 +93,13 @@ def verify(
         text=True,
         timeout=15,
     )
-    metadata = json.loads(inspected.stdout)
+    metadata: object = json.loads(inspected.stdout)
+    if not isinstance(metadata, dict):
+        raise ValueError("Docker did not return an image metadata object")
     image_id = metadata["id"]
-    if not re.fullmatch(r"sha256:[a-f0-9]{64}", image_id):
+    if not isinstance(image_id, str) or not re.fullmatch(
+        r"sha256:[a-f0-9]{64}", image_id
+    ):
         raise ValueError("Docker did not return a fixed image ID")
     if f"{metadata['os']}/{metadata['architecture']}" != platform:
         raise ValueError(
@@ -104,7 +114,7 @@ def verify(
         ).read_text(),
     }
     probe = (root / "scripts" / "smoke_image_probe.py").read_text()
-    name = "newsletter-image-smoke-" + uuid4().hex
+    name = "newsletter-image-smoke-" + uuid.uuid4().hex
     command = [
         docker,
         "run",
@@ -134,7 +144,8 @@ def verify(
         "--tmpfs",
         "/tmp:rw,nosuid,nodev,noexec,size=128m,mode=1777",
         "--tmpfs",
-        "/var/lib/newsletter:rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001,mode=0700",
+        "/var/lib/newsletter:rw,nosuid,nodev,noexec,size=64m,uid=10001,gid="
+        "10001,mode=0700",
         "--entrypoint",
         "/opt/newsletter/.venv/bin/python",
         "-i",
@@ -153,7 +164,8 @@ def verify(
         )
     finally:
         # Killing a timed-out Docker client does not itself stop its container.
-        # Target only this unique, self-created probe; tolerate --rm already removing it.
+        # Target only this unique, self-created probe; tolerate --rm already
+        # removing it.
         subprocess.run(
             [docker, "rm", "--force", name],
             stdout=subprocess.DEVNULL,
@@ -162,12 +174,14 @@ def verify(
             timeout=15,
         )
     print(
-        f"Image smoke passed for {image_id} ({platform}); no provider calls or mail."
+        f"Image smoke passed for {image_id} ({platform}); "
+        "no provider calls or mail."
     )
     return image_id
 
 
 def main() -> None:
+    """Choose a source audit or a no-network, immutable-image smoke test."""
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--image")
@@ -185,7 +199,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.audit_source:
         print(
-            f"Source input audit passed: {len(source_hashes(ROOT))} package files."
+            "Source input audit passed: "
+            f"{len(source_hashes(ROOT))} package files."
         )
         return
     verify(args.image, args.platform, args.docker)

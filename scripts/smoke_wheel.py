@@ -7,40 +7,45 @@ The exported requirements file is disposable, never a second maintained lock.
 
 import argparse
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import zipfile
-from pathlib import Path
 
 
 def main() -> None:
+    """Install locked artifacts outside the repo and run an offline demo."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--uv", default="uv", help="uv executable (default: PATH)"
     )
-    parser.add_argument("--dist", type=Path, default=Path(".artifacts/dist"))
+    parser.add_argument(
+        "--dist", type=pathlib.Path, default=pathlib.Path(".artifacts/dist")
+    )
     args = parser.parse_args()
     uv = shutil.which(args.uv)
     if not uv:
         parser.error("uv is required")
-    root = Path(__file__).resolve().parents[1]
+    root = pathlib.Path(__file__).resolve().parents[1]
     dist = args.dist.resolve()
     wheels = sorted(dist.glob("personal_newsletter-*.whl"))
     if len(wheels) != 1:
         parser.error(
             "Build exactly one current wheel in --dist before this check"
         )
-    # Fail on stale artifacts as well as missing package data. Nothing is extracted.
+    # Fail on stale artifacts as well as missing package data. Nothing is
+    # extracted.
     with zipfile.ZipFile(wheels[0]) as wheel:
         if any(
             name.startswith(("newsletter/generated/", "ziyixi_protos/"))
             for name in wheel.namelist()
         ):
             parser.error(
-                "Newsletter wheel must depend on, not vendor, the public proto package"
+                "Newsletter wheel must depend on, not vendor, the public "
+                "proto package"
             )
         for source in (root / "src" / "newsletter").rglob("*"):
             if source.is_file() and source.suffix in {
@@ -90,13 +95,13 @@ def main() -> None:
     }
     env["UV_PYTHON_DOWNLOADS"] = "never"
 
-    def run(*command: str, cwd: Path) -> None:
+    def run(*command: str, cwd: pathlib.Path) -> None:
         subprocess.run(command, cwd=cwd, env=env, check=True, timeout=180)
 
     with tempfile.TemporaryDirectory(
         prefix="newsletter-wheel-smoke-"
     ) as directory:
-        temporary = Path(directory).resolve()
+        temporary = pathlib.Path(directory).resolve()
         requirements = temporary / "requirements.txt"
         run(
             uv,
@@ -148,9 +153,11 @@ def main() -> None:
             "-c",
             "from importlib.resources import files; import newsletter; "
             "from pathlib import Path; import sys; "
-            "assert Path(newsletter.__file__).resolve().is_relative_to(Path(sys.prefix)); "
+            "assert Path(newsletter.__file__).resolve().is_relative_to(Path"
+            "(sys.prefix)); "
             "assert all(files('newsletter').joinpath(p).is_file() for p in "
-            "('templates/edition.html.j2', 'policy/editorial.md', 'fixtures/packets.json', "
+            "('templates/edition.html.j2', 'policy/editorial.md', "
+            "'fixtures/packets.json', "
             "'instructions/01-ai-ml.md', 'workflows/daily.yaml', "
             "'instructions/discovery/_sources/ai-ml.md', "
             "'instructions/discovery/07-search-ads-recs.md', "
@@ -158,15 +165,22 @@ def main() -> None:
             "'workflows/legacy-daily.yaml', 'policy/story-editorial.md')); "
             "from newsletter.workflow.definition import load_definition; "
             "from newsletter.workflow.nodes import validate_recipe; "
-            "validate_recipe(load_definition(Path(str(files('newsletter').joinpath('workflows/daily.yaml'))))); "
-            "from newsletter.collection.source_guides import load_discovery_instructions; "
-            "directions = load_discovery_instructions(Path(str(files('newsletter').joinpath('instructions/discovery')))); "
-            "assert len(directions) == 8 and 'https://proceedings.mlr.press/' in directions[0].text; "
+            "validate_recipe(load_definition(Path(str(files('newsletter').j"
+            "oinpath('workflows/daily.yaml'))))); "
+            "from newsletter.collection.source_guides import "
+            "load_discovery_instructions; "
+            "directions = load_discovery_instructions(Path(str(files('newsl"
+            "etter').joinpath('instructions/discovery')))); "
+            "assert len(directions) == 8 and "
+            "'https://proceedings.mlr.press/' in directions[0].text; "
             "from ziyixi_protos.newsletter import editorial_pb2 as pb; "
-            "assert Path(pb.__file__).resolve().is_relative_to(Path(sys.prefix)); "
-            "assert all(files('ziyixi_protos.newsletter').joinpath(p).is_file() for p in "
+            "assert Path(pb.__file__).resolve().is_relative_to(Path(sys.pre"
+            "fix)); "
+            "assert all(files('ziyixi_protos.newsletter').joinpath(p).is_fi"
+            "le() for p in "
             "('editorial_pb2.py', 'editorial_pb2.pyi', 'provenance.json')); "
-            "from newsletter.preflight import check_proto_dependency; check_proto_dependency(); "
+            "from newsletter.preflight import check_proto_dependency; "
+            "check_proto_dependency(); "
             "from codex_cli_bin import bundled_codex_path; "
             "assert Path(bundled_codex_path()).is_file()",
             cwd=temporary,
@@ -183,7 +197,8 @@ def main() -> None:
         assert (temporary / "preview" / "preview.html").is_file()
         assert len(list((temporary / "preview" / "outbox").glob("*.eml"))) == 1
         print(
-            "Wheel smoke passed: locked dependencies, packaged resources/runtime, fake-only demo."
+            "Wheel smoke passed: locked dependencies, packaged "
+            "resources/runtime, fake-only demo."
         )
 
 

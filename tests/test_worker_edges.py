@@ -1,23 +1,23 @@
 """Independent offline safety checks for the durable worker/store boundary."""
 
 import asyncio
+import concurrent.futures as futures
 import copy
 import json
+import pathlib
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
+import fastapi.testclient as testclient
 import pytest
-from fastapi.testclient import TestClient
 
-from newsletter.adapters import AdapterError, DisabledNotion
-from newsletter.app import create_app
-from newsletter.contracts import content_hash, validate_draft
-from newsletter.editor import EditorResult, MockEditor
-from newsletter.settings import Settings
-from newsletter.store import Store, StoreError
-from newsletter.worker import Worker
+import newsletter.adapters as adapters
+import newsletter.app as app
+import newsletter.contracts as contracts
+import newsletter.editor as editor
+import newsletter.settings as newsletter_settings
+import newsletter.store as newsletter_store
+import newsletter.worker as newsletter_worker
 
 
 @pytest.fixture
@@ -44,7 +44,7 @@ def packet_request():
 
 @pytest.fixture
 def store(tmp_path):
-    value = Store(tmp_path / "newsletter.sqlite3", "mock")
+    value = newsletter_store.Store(tmp_path / "newsletter.sqlite3", "mock")
     try:
         yield value
     finally:
@@ -77,8 +77,12 @@ async def test_same_date_different_ready_edition_cannot_take_send_slot(
 ):
     first, _ = _queue(store, packet_request, "edition-one")
     second, _ = _queue(store, packet_request, "edition-two")
-    worker = Worker(
-        store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10
+    worker = newsletter_worker.Worker(
+        store,
+        editor.MockEditor(),
+        adapters.DisabledNotion(),
+        tmp_path / "jobs",
+        10,
     )
     assert await worker.step()
     assert await worker.step()
@@ -86,7 +90,7 @@ async def test_same_date_different_ready_edition_cannot_take_send_slot(
     assert first["state"] == second["state"] == "ready"
     assert store.reserve_send(_approval(first, "send-one"))[1] is True
 
-    with pytest.raises(StoreError) as rejected:
+    with pytest.raises(newsletter_store.StoreError) as rejected:
         store.reserve_send(_approval(second, "send-two"))
     assert rejected.value.code == "conflict"
     assert store.get(first["id"])["delivery_state"] == "submitting"
@@ -95,12 +99,16 @@ async def test_same_date_different_ready_edition_cannot_take_send_slot(
 
 
 @pytest.mark.asyncio
-async def test_concurrent_send_reservations_have_one_winner_across_sqlite_connections(
+async def test_cross_connection_send_reservation_has_one_winner(
     store, packet_request, tmp_path
 ):
     edition, _ = _queue(store, packet_request, "concurrent-edition")
-    worker = Worker(
-        store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10
+    worker = newsletter_worker.Worker(
+        store,
+        editor.MockEditor(),
+        adapters.DisabledNotion(),
+        tmp_path / "jobs",
+        10,
     )
     assert await worker.step()
     edition = store.get(edition["id"])
@@ -110,7 +118,7 @@ async def test_concurrent_send_reservations_have_one_winner_across_sqlite_connec
     def reserve(index):
         # Independent connections exercise SQLite transactions/constraints, not
         # merely the RLock around one Store object.
-        peer = Store(tmp_path / "newsletter.sqlite3", "mock")
+        peer = newsletter_store.Store(tmp_path / "newsletter.sqlite3", "mock")
         try:
             barrier.wait(timeout=5)
             reserved, won = peer.reserve_send(
@@ -121,7 +129,7 @@ async def test_concurrent_send_reservations_have_one_winner_across_sqlite_connec
             peer.close()
 
     def race():
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        with futures.ThreadPoolExecutor(max_workers=workers) as executor:
             return list(executor.map(reserve, range(workers)))
 
     results = await asyncio.to_thread(race)
@@ -132,7 +140,7 @@ async def test_concurrent_send_reservations_have_one_winner_across_sqlite_connec
 
 
 @pytest.mark.asyncio
-async def test_supplements_persist_with_authoritative_metadata_and_resolved_citations(
+async def test_supplements_keep_authority_and_resolved_citations(
     store, packet_request, tmp_path
 ):
     supplement = {
@@ -159,7 +167,7 @@ async def test_supplements_persist_with_authoritative_metadata_and_resolved_cita
 
     class SupplementalEditor:
         async def prepare(self, packets, issue_date, workspace):
-            return EditorResult(
+            return editor.EditorResult(
                 draft={
                     "subject": "补充材料测试",
                     "title": "补充材料不会变成悬空引用",
@@ -170,7 +178,9 @@ async def test_supplements_persist_with_authoritative_metadata_and_resolved_cita
                             "heading": "两项模拟来源",
                             "paragraphs": [
                                 {
-                                    "text": "这一段同时引用原始材料和补充材料。",
+                                    "text": (
+                                        "这一段同时引用原始材料和补充材料。"
+                                    ),
                                     "citations": [
                                         f"{packets[0]['id']}/source",
                                         "supplement-edge/extra",
@@ -187,8 +197,12 @@ async def test_supplements_persist_with_authoritative_metadata_and_resolved_cita
             )
 
     edition, original = _queue(store, packet_request, "supplement-edition")
-    worker = Worker(
-        store, SupplementalEditor(), DisabledNotion(), tmp_path / "jobs", 10
+    worker = newsletter_worker.Worker(
+        store,
+        SupplementalEditor(),
+        adapters.DisabledNotion(),
+        tmp_path / "jobs",
+        10,
     )
     assert await worker.step()
     finished = store.get(edition["id"])
@@ -200,7 +214,7 @@ async def test_supplements_persist_with_authoritative_metadata_and_resolved_cita
     assert saved["producer_id"] == "editor"
     assert saved["workflow_id"] == "editor-research"
     assert saved["is_fixture"] is True
-    assert saved["content_hash"] == content_hash(saved["content"])
+    assert saved["content_hash"] == contracts.content_hash(saved["content"])
     assert saved["created_at"]
     assert finished["packet_ids"] == [original["id"], supplement["id"]]
     snapshot = json.loads(
@@ -209,7 +223,7 @@ async def test_supplements_persist_with_authoritative_metadata_and_resolved_cita
         ).fetchone()[0]
     )
     assert snapshot == [original, saved]
-    validate_draft(finished["draft"], snapshot)
+    contracts.validate_draft(finished["draft"], snapshot)
     assert "[2] 补充模拟来源" in finished["rendered"]["text"]
     assert (
         "https://example.org/supplemental-fixture"
@@ -222,7 +236,7 @@ async def test_supplements_persist_with_authoritative_metadata_and_resolved_cita
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("crash_before_result_saved", [False, True])
-async def test_ambiguous_notion_projection_is_not_retried_after_reopen_and_recovery(
+async def test_ambiguous_notion_projection_not_retried_after_reopen_recovery(
     packet_request, tmp_path, crash_before_result_saved
 ):
     class AmbiguousNotion:
@@ -230,32 +244,36 @@ async def test_ambiguous_notion_projection_is_not_retried_after_reopen_and_recov
 
         async def project(self, packet):
             self.calls += 1
-            raise AdapterError("NOTION_UNKNOWN", ambiguous=True)
+            raise adapters.AdapterError("NOTION_UNKNOWN", ambiguous=True)
 
     notion = AmbiguousNotion()
     database = tmp_path / "recovery.sqlite3"
-    first = Store(database, "mock")
+    first = newsletter_store.Store(database, "mock")
     packet = first.put_packet(packet_request)
     try:
         if crash_before_result_saved:
             claimed = first.claim_projection()
-            with pytest.raises(AdapterError):
+            with pytest.raises(adapters.AdapterError):
                 await notion.project(claimed)
             # Simulate termination before projection_result writes UNKNOWN.
         else:
-            worker = Worker(first, MockEditor(), notion, tmp_path / "jobs", 10)
+            worker = newsletter_worker.Worker(
+                first, editor.MockEditor(), notion, tmp_path / "jobs", 10
+            )
             assert await worker.step()
     finally:
         first.close()
 
-    reopened = Store(database, "mock")
+    reopened = newsletter_store.Store(database, "mock")
     try:
         reopened.recover()
         state = reopened.db.execute(
             "SELECT projection FROM packets WHERE id=?", (packet["id"],)
         ).fetchone()[0]
         assert state == "unknown"
-        worker = Worker(reopened, MockEditor(), notion, tmp_path / "jobs", 10)
+        worker = newsletter_worker.Worker(
+            reopened, editor.MockEditor(), notion, tmp_path / "jobs", 10
+        )
         assert await worker.step() is False
         reopened.recover()
         assert await worker.step() is False
@@ -265,47 +283,40 @@ async def test_ambiguous_notion_projection_is_not_retried_after_reopen_and_recov
         reopened.close()
 
 
-def test_default_background_worker_finishes_without_manual_step_and_health_is_live(
+def test_background_worker_finishes_without_manual_steps(
     packet_request, tmp_path
 ):
-    settings = Settings(
+    settings = newsletter_settings.Settings(
         data_dir=tmp_path / "background",
-        ingest_token="i" * 32,
         editor_token="e" * 32,
         send_token="s" * 32,
     )
-    with TestClient(create_app(settings)) as client:
-        health = client.get("/healthz")
-        assert health.status_code == 200 and health.json()["status"] == "ok"
-        packet = client.post(
-            "/v1/packets",
-            json=packet_request,
-            headers={"Authorization": "Bearer " + settings.ingest_token},
-        )
-        assert packet.status_code == 200, packet.text
-        prepared = client.post(
-            "/v1/editions",
+    with testclient.TestClient(app.create_app(settings)) as client:
+        assert client.get("/healthz").status_code == 200
+        headers = {"Authorization": "Bearer " + settings.editor_token}
+        started = client.post(
+            "/v1/runs",
             json={
-                "request_key": "background-edition",
+                "request_key": "background-run",
                 "issue_date": "2026-09-05",
-                "packet_ids": [packet.json()["id"]],
             },
-            headers={"Authorization": "Bearer " + settings.editor_token},
+            headers=headers,
         )
-        assert prepared.status_code == 202, prepared.text
+        assert started.status_code == 202, started.text
         deadline = time.monotonic() + 5
         while True:
-            response = client.get(
-                f"/v1/editions/{prepared.json()['id']}",
-                headers={"Authorization": "Bearer " + settings.editor_token},
-            )
-            assert response.status_code == 200, response.text
-            edition = response.json()
-            if edition["state"] not in {"queued", "running"}:
+            receipt = client.get(
+                "/v1/runs/" + started.json()["id"], headers=headers
+            ).json()
+            if receipt["state"] in {"ready", "blocked", "failed"}:
                 break
-            assert time.monotonic() < deadline, edition
+            assert time.monotonic() < deadline, receipt
             time.sleep(0.01)
-        assert edition["state"] == "ready", edition
+        assert receipt["state"] == "ready", receipt
+        edition = client.get(
+            "/v1/editions/" + receipt["edition_id"], headers=headers
+        ).json()
+        assert edition["state"] == "ready"
         assert edition["delivery_state"] == "not_requested"
         assert not list(settings.data_dir.glob("outbox/*.eml"))
         assert client.get("/healthz").status_code == 200
@@ -313,21 +324,25 @@ def test_default_background_worker_finishes_without_manual_step_and_health_is_li
 
 
 @pytest.mark.asyncio
-async def test_workspace_write_error_fails_only_that_edition_and_worker_can_continue(
+async def test_workspace_failure_isolated_to_one_edition(
     store, packet_request, tmp_path, monkeypatch
 ):
     edition, _ = _queue(store, packet_request, "disk-error-edition")
-    worker = Worker(
-        store, MockEditor(), DisabledNotion(), tmp_path / "jobs", 10
+    worker = newsletter_worker.Worker(
+        store,
+        editor.MockEditor(),
+        adapters.DisabledNotion(),
+        tmp_path / "jobs",
+        10,
     )
-    original_write = Path.write_text
+    original_write = pathlib.Path.write_text
 
     def fail_history(path, *args, **kwargs):
         if path.name == "recent-history.json":
             raise OSError("private filesystem details must not leak")
         return original_write(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "write_text", fail_history)
+    monkeypatch.setattr(pathlib.Path, "write_text", fail_history)
     assert await worker.step() is True
     failed = store.get(edition["id"])
     assert failed["state"] == "failed"
@@ -335,7 +350,7 @@ async def test_workspace_write_error_fails_only_that_edition_and_worker_can_cont
     assert failed["delivery_state"] == "not_requested"
     assert "private filesystem" not in json.dumps(failed)
 
-    monkeypatch.setattr(Path, "write_text", original_write)
+    monkeypatch.setattr(pathlib.Path, "write_text", original_write)
     next_edition, _ = _queue(
         store, packet_request, "after-disk-error", "2026-09-06"
     )

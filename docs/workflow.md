@@ -243,12 +243,24 @@ account/login or model transcript is persisted for accounting.
 ## Release checks
 
 After correcting a shared story-writer startup configuration failure, an
-operator may explicitly call `POST /v1/runs/{parent_id}/retry-stories` with the
-editor-role token and the existing `StartRunRequest` shape:
-`{"request_key":"one-explicit-story-restart","issue_date":"YYYY-MM-DD"}`.
+operator may explicitly run the local maintenance command:
+
+```sh
+newsletter admin retry-stories \
+  --parent-run-id '<parent-run-UUID>' \
+  --request-key '<stable-explicit-restart-key>' \
+  --issue-date '<original-YYYY-MM-DD>'
+```
+
+Stop the external trigger, wait for active work to finish, and stop the service
+first. The command takes the same nonblocking `service.lock`, rejects active
+work receipts, and offers no `--force`. It neither starts workers nor runs
+global recovery. Only normal service startup can execute the queued child.
 This creates at most **one new child per parent**, not a reset of the failed run.
 The same key retrieves that child, including after restart; another key or a
-retry of the child is rejected. The endpoint never sends mail.
+retry of the child is rejected. The command never sends mail. Online
+`newsletter admin status` is a separate read-only count check and does not take
+ownership or mutate state. See [maintenance](maintenance.md) for sequencing.
 
 Eligibility is deliberately narrow: the parent must be terminal
 `no_publishable_content`, have no edition, frozen publication, approved body or
@@ -269,23 +281,35 @@ child gets its own bounded start time. Parent attempts remain unchanged.
 The child's token footer includes parent and child invocation records exactly
 once, including missing/partial parent usage, so reused research cost is visible.
 The ordinary daily-send guard is unchanged; an explicitly authorized corrected
-test still uses the separate verification route below.
+test still uses the separate stopped-service verification command below.
 
-An explicitly requested corrected-email test uses
-`POST /v1/editions/{id}/send-verification` with the same public
-`SendEditionRequest` body and send-role authentication. It requires a distinct
-ready edition, its exact frozen render hash and a confirmed original delivery
-for that date. Without any extra header, the separate `verification_sends`
-ledger still allows only one such attempt per date. If the user explicitly
-requests another new test edition, an operator must add
-`X-Newsletter-Verification-After: <latest accepted verification edition UUID>`
+An explicitly requested corrected-email test uses:
+
+```sh
+newsletter admin send-verification \
+  --edition-id '<new-ready-edition-UUID>' \
+  --request-key '<stable-approval-key>' \
+  --expected-render-hash '<exact-frozen-render-hash>'
+```
+
+It requires the stopped-service lock, validated private service configuration,
+a distinct ready edition, and a confirmed original delivery for that date.
+Without `--after-verification`, the separate `verification_sends` ledger allows
+only one such attempt per date. If the user explicitly requests another new
+test edition, add `--after-verification '<latest-accepted-verification-UUID>'`
 alongside the new edition's exact render hash and stable request key. The entire
 same-date chain must have confirmed acceptance; a predecessor permits only one
 successor. Stale approvals and any failed/unknown ancestor block a new send.
 A repeated frozen approval never calls the provider again, including after an
 unknown outcome or a later successor. Original daily receipts remain unchanged.
-Cron and the standard trigger never use this endpoint; it is not an automatic
+Cron and the standard trigger never use this command; it is not an automatic
 retry or a way to bypass a failed/unknown daily send.
+No new real test email is part of this refactor or its deployment checks.
+
+The public `ziyixi-protos==0.1.0.dev7` service exposes only `StartRun`, `GetRun`,
+`GetEdition`, and `SendEdition`. HTTP health and frozen preview remain separate
+read-only conveniences. Maintenance does not add a remote admin role or reuse
+the retired verification header on the normal daily-send route.
 
 The ledger migration copies existing receipts in one SQLite transaction. Do not
 downgrade to the old one-row-per-date schema after creating successors, or

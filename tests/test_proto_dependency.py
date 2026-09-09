@@ -1,24 +1,24 @@
-"""Consumer checks use only the installed public wheel, never sibling source/protoc."""
+"""Consumer checks use the installed public wheel, not sibling source/protoc."""
 
 import hashlib
+import importlib.metadata as metadata
+import importlib.resources as resources
 import json
+import pathlib
 import pickle
 import re
-from importlib.metadata import distribution, version
-from importlib.resources import files
-from pathlib import Path
 
 import pytest
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from newsletter import preflight as startup
+import newsletter.preflight as preflight
 
 
 def test_public_wheel_contains_generated_code_types_and_traceable_provenance():
-    package = files("ziyixi_protos.newsletter")
+    package = resources.files("ziyixi_protos.newsletter")
     manifest = json.loads(package.joinpath("provenance.json").read_text())
     for key, content in (
-        ("descriptor_sha256", pb.DESCRIPTOR.serialized_pb),
+        ("descriptor_sha256", editorial_pb2.DESCRIPTOR.serialized_pb),
         ("generated_sha256", package.joinpath("editorial_pb2.py").read_bytes()),
         ("stubs_sha256", package.joinpath("editorial_pb2.pyi").read_bytes()),
     ):
@@ -28,37 +28,40 @@ def test_public_wheel_contains_generated_code_types_and_traceable_provenance():
     assert re.fullmatch(r"[a-f0-9]{40}", manifest["source_commit"])
     assert re.fullmatch(r"[a-f0-9]{64}", manifest["source_sha256"])
     assert manifest["protoc_version"].startswith("libprotoc ")
-    assert manifest["package_version"] == version("ziyixi-protos")
-    installed = distribution("ziyixi-protos")
+    assert manifest["package_version"] == metadata.version("ziyixi-protos")
+    installed = metadata.distribution("ziyixi-protos")
     member = "ziyixi_protos/newsletter/editorial_pb2.py"
     assert (
-        Path(pb.__file__).resolve()
-        == Path(installed.locate_file(member)).resolve()
+        pathlib.Path(editorial_pb2.__file__).resolve()
+        == pathlib.Path(installed.locate_file(member)).resolve()
     )
-    startup.check_proto_dependency()
+    preflight.check_proto_dependency()
 
 
 def test_generated_module_identity_supports_normal_python_serialization():
     assert (
-        pb.StartRunRequest.__module__
+        editorial_pb2.StartRunRequest.__module__
         == "ziyixi_protos.newsletter.editorial_pb2"
     )
-    value = pb.StartRunRequest(
+    value = editorial_pb2.StartRunRequest(
         request_key="synthetic-job", issue_date="2026-09-05"
     )
     assert pickle.loads(pickle.dumps(value)) == value
-    assert pb.DESCRIPTOR.name == "ziyixi_protos/newsletter/editorial.proto"
-    assert pb.DESCRIPTOR.package == "newsletter.v1"
+    assert (
+        editorial_pb2.DESCRIPTOR.name
+        == "ziyixi_protos/newsletter/editorial.proto"
+    )
+    assert editorial_pb2.DESCRIPTOR.package == "newsletter.v1"
 
 
 @pytest.fixture
 def copied_package(tmp_path, monkeypatch):
-    original = files("ziyixi_protos.newsletter")
+    original = resources.files("ziyixi_protos.newsletter")
     for name in ("editorial_pb2.py", "editorial_pb2.pyi", "provenance.json"):
         (tmp_path / name).write_bytes(original.joinpath(name).read_bytes())
-    actual_files = startup.files
+    actual_files = resources.files
     monkeypatch.setattr(
-        startup,
+        resources,
         "files",
         lambda package: (
             tmp_path
@@ -74,9 +77,9 @@ def test_tampered_dependency_resources_are_rejected(copied_package, name):
     path = copied_package / name
     path.write_bytes(path.read_bytes() + b"\n# synthetic tampering\n")
     with pytest.raises(
-        startup.PreflightError, match="^PROTO_INTEGRITY_FAILED$"
+        preflight.PreflightError, match=r"^PROTO_INTEGRITY_FAILED$"
     ):
-        startup.check_proto_dependency()
+        preflight.check_proto_dependency()
 
 
 @pytest.mark.parametrize(
@@ -103,20 +106,26 @@ def test_dependency_metadata_mismatch_fails_closed(
     manifest = json.loads(path.read_text())
     manifest[field] = bad
     path.write_text(json.dumps(manifest))
-    with pytest.raises(startup.PreflightError) as error:
-        startup.check_proto_dependency()
+    with pytest.raises(preflight.PreflightError) as error:
+        preflight.check_proto_dependency()
     assert error.value.code == code
 
 
 def test_non_object_manifest_is_not_accepted(copied_package):
     (copied_package / "provenance.json").write_text("[]")
-    with pytest.raises(startup.PreflightError, match="^PROTO_SOURCE_INVALID$"):
-        startup.check_proto_dependency()
+    with pytest.raises(
+        preflight.PreflightError, match=r"^PROTO_SOURCE_INVALID$"
+    ):
+        preflight.check_proto_dependency()
 
 
 def test_shadow_module_is_not_mistaken_for_installed_distribution(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(pb, "__file__", str(tmp_path / "editorial_pb2.py"))
-    with pytest.raises(startup.PreflightError, match="^PROTO_SOURCE_INVALID$"):
-        startup.check_proto_dependency()
+    monkeypatch.setattr(
+        editorial_pb2, "__file__", str(tmp_path / "editorial_pb2.py")
+    )
+    with pytest.raises(
+        preflight.PreflightError, match=r"^PROTO_SOURCE_INVALID$"
+    ):
+        preflight.check_proto_dependency()

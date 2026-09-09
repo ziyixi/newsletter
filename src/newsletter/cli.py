@@ -3,42 +3,45 @@
 import argparse
 import asyncio
 import base64
+import importlib.resources as resources
 import json
+import pathlib
 import secrets
-from importlib.resources import files
-from pathlib import Path
+import sys
 
-from ziyixi_protos.newsletter import editorial_pb2 as pb
+import uvicorn
+import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2
 
-from newsletter.adapters import FakeMail, FakeNotion
-from newsletter.contracts import (
-    canonical_json,
-    parse_message,
-    to_dict,
-    validate_request,
-)
-from newsletter.editor import MockEditor
-from newsletter.rendering import preview_html
-from newsletter.store import Store
-from newsletter.todofy import FakeTodofy
-from newsletter.worker import Worker
+import newsletter.adapters as adapters
+import newsletter.admin as admin
+import newsletter.contracts as contracts
+import newsletter.editor as editor
+import newsletter.rendering as rendering
+import newsletter.store as newsletter_store
+import newsletter.todofy as todofy
+import newsletter.worker as newsletter_worker
 
 
-async def demo(output: Path) -> Path:
+async def demo(output: pathlib.Path) -> pathlib.Path:
     """Never read environment credentials, call providers, or send real mail."""
     output = output.resolve()
-    # Exclusive directory: a demo cannot overwrite a service database or prior issue.
+    # Exclusive directory: a demo cannot overwrite a service database or prior
+    # issue.
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
-    store = Store(output / "newsletter.sqlite3", "mock")
+    store = newsletter_store.Store(output / "newsletter.sqlite3", "mock")
     try:
         fixtures = json.loads(
-            files("newsletter").joinpath("fixtures/packets.json").read_text()
+            resources.files("newsletter")
+            .joinpath("fixtures/packets.json")
+            .read_text()
         )
         packets = []
         for request in fixtures:
-            message = parse_message(request, pb.PutPacketRequest)
-            validate_request(message)
-            packets.append(store.put_packet(to_dict(message)))
+            message = contracts.parse_message(
+                request, editorial_pb2.PutPacketRequest
+            )
+            contracts.validate_request(message)
+            packets.append(store.put_packet(contracts.to_dict(message)))
         edition = store.prepare(
             {
                 "request_key": "demo-v1",
@@ -46,13 +49,13 @@ async def demo(output: Path) -> Path:
                 "packet_ids": [p["id"] for p in packets],
             }
         )
-        worker = Worker(
+        worker = newsletter_worker.Worker(
             store,
-            MockEditor(),
-            FakeNotion(output / "notion"),
+            editor.MockEditor(),
+            adapters.FakeNotion(output / "notion"),
             output / "jobs",
             30,
-            todofy=FakeTodofy(),
+            todofy=todofy.FakeTodofy(),
         )
         while await worker.step():
             pass
@@ -60,7 +63,8 @@ async def demo(output: Path) -> Path:
         if edition["state"] != "ready":
             raise RuntimeError("Offline demo did not produce a ready preview")
         (output / "preview.html").write_text(
-            preview_html(edition["rendered"]), encoding="utf-8"
+            rendering.preview_html(edition["rendered"]),
+            encoding="utf-8",
         )
         (output / "preview.txt").write_text(
             edition["rendered"]["text"], encoding="utf-8"
@@ -75,12 +79,12 @@ async def demo(output: Path) -> Path:
             "expected_render_hash": edition["rendered"]["render_hash"],
         }
         reserved, _ = store.reserve_send(request)
-        result = await FakeMail(output / "outbox").send(
+        result = await adapters.FakeMail(output / "outbox").send(
             reserved, "demo-" + edition["id"]
         )
         edition = store.finish(edition["id"], **result)
         (output / "edition.json").write_text(
-            canonical_json(edition), encoding="utf-8"
+            contracts.canonical_json(edition), encoding="utf-8"
         )
     finally:
         store.close()
@@ -88,6 +92,7 @@ async def demo(output: Path) -> Path:
 
 
 def main() -> None:
+    """Dispatch server, offline demo, token generation or locked maintenance."""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     server = commands.add_parser("serve", help="Start one private HTTP service")
@@ -96,15 +101,14 @@ def main() -> None:
     sample = commands.add_parser(
         "demo", help="Offline fixtures, local preview and simulated .eml only"
     )
-    sample.add_argument("--output", type=Path)
+    sample.add_argument("--output", type=pathlib.Path)
     commands.add_parser(
         "token",
-        help="Print one new random service token; run three times for roles",
+        help="Print one service token; use distinct editor/send values",
     )
+    admin.configure(commands.add_parser("admin", help="Explicit maintenance"))
     args = parser.parse_args()
     if args.command == "serve":
-        import uvicorn
-
         uvicorn.run(
             "newsletter.app:create_app",
             factory=True,
@@ -117,11 +121,13 @@ def main() -> None:
             timeout_graceful_shutdown=40,
         )
     elif args.command == "demo":
-        output = args.output or Path(".artifacts") / (
+        output = args.output or pathlib.Path(".artifacts") / (
             "demo-" + secrets.token_hex(4)
         )
         print(asyncio.run(demo(output)))
         print("MOCK only: no model, Notion, or email network calls.")
+    elif args.command == "admin":
+        sys.exit(admin.main(args))
     else:
         print(secrets.token_urlsafe(32))
 

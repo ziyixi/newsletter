@@ -1,12 +1,12 @@
-"""Checkout-only compatibility wrapper; the production entrypoint is newsletter-trigger."""
+"""Run the installed trigger directly from a source checkout."""
 
+import pathlib
 import runpy
-from pathlib import Path
 
 if __name__ == "__main__":
     runpy.run_path(
         str(
-            Path(__file__).resolve().parents[1]
+            pathlib.Path(__file__).resolve().parents[1]
             / "src"
             / "newsletter"
             / "trigger.py"

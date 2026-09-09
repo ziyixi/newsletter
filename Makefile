@@ -2,7 +2,7 @@ UV ?= uv
 RUN := $(UV) run --locked --extra codex
 ARTIFACT_DIR ?= .artifacts
 
-.PHONY: setup lock-check test lint typecheck check build smoke smoke-codex demo serve proto-check
+.PHONY: setup lock-check test lint format typecheck check build smoke smoke-codex demo serve proto-check
 
 setup:
 	$(UV) sync --locked --extra codex
@@ -16,6 +16,10 @@ test:
 lint:
 	$(RUN) ruff check src tests scripts
 	$(RUN) ruff format --check src tests scripts
+	$(RUN) python scripts/check_python_structure.py
+
+format:
+	$(RUN) ruff format src tests scripts
 
 typecheck:
 	$(RUN) mypy

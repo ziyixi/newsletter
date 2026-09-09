@@ -1,23 +1,23 @@
 """App factories are inert; each lifespan owns only its own resources."""
 
 import asyncio
+import dataclasses
 import sqlite3
-from dataclasses import replace
 
+import fastapi.testclient as testclient
 import pytest
-from fastapi.testclient import TestClient
 
-from newsletter import lifecycle
-from newsletter.app import create_app
-from newsletter.preflight import PreflightError
-from newsletter.settings import Settings
+import newsletter.app as newsletter_app
+import newsletter.preflight as preflight
+import newsletter.settings as newsletter_settings
+import newsletter.store as newsletter_store
+import newsletter.worker as newsletter_worker
 
 
 @pytest.fixture
 def settings(tmp_path):
-    return Settings(
+    return newsletter_settings.Settings(
         data_dir=tmp_path / "first",
-        ingest_token="i" * 32,
         editor_token="e" * 32,
         send_token="s" * 32,
     )
@@ -29,38 +29,38 @@ def test_factory_does_not_open_storage_or_start_dependencies(
     def unexpected(*args, **kwargs):
         pytest.fail("Factory performed startup work")
 
-    monkeypatch.setattr(lifecycle, "Store", unexpected)
-    monkeypatch.setattr(lifecycle, "preflight", unexpected)
-    app = create_app(settings)
+    monkeypatch.setattr(newsletter_store, "Store", unexpected)
+    monkeypatch.setattr(preflight, "preflight", unexpected)
+    app = newsletter_app.create_app(settings)
     assert app.openapi()["info"]["title"] == "Personal Newsletter"
     assert not settings.data_dir.exists()
 
 
 def test_two_apps_do_not_share_authentication_or_storage(settings):
-    second = replace(
+    second = dataclasses.replace(
         settings,
         data_dir=settings.data_dir.with_name("second"),
-        ingest_token="a" * 32,
         editor_token="b" * 32,
         send_token="c" * 32,
     )
     with (
-        TestClient(create_app(settings)) as first,
-        TestClient(create_app(second)) as other,
+        testclient.TestClient(newsletter_app.create_app(settings)) as first,
+        testclient.TestClient(newsletter_app.create_app(second)) as other,
     ):
         for client, own, foreign in (
             (first, settings, second),
             (other, second, settings),
         ):
-            assert client.post(
-                "/v1/inbox/query",
-                json={},
-                headers={"Authorization": "Bearer " + own.editor_token},
-            ).json() == {"packets": [], "next_cursor": ""}
             assert (
-                client.post(
-                    "/v1/inbox/query",
-                    json={},
+                client.get(
+                    "/v1/runs/00000000-0000-4000-8000-000000000000",
+                    headers={"Authorization": "Bearer " + own.editor_token},
+                ).status_code
+                == 404
+            )
+            assert (
+                client.get(
+                    "/v1/runs/00000000-0000-4000-8000-000000000000",
                     headers={"Authorization": "Bearer " + foreign.editor_token},
                 ).status_code
                 == 401
@@ -70,39 +70,43 @@ def test_two_apps_do_not_share_authentication_or_storage(settings):
 
 
 def test_data_directory_lock_is_exclusive_and_released(settings):
-    with TestClient(create_app(settings)) as first:
-        with pytest.raises(RuntimeError, match="Only one service process"):
-            with TestClient(create_app(settings)):
-                pytest.fail("A second owner was allowed")
+    with testclient.TestClient(newsletter_app.create_app(settings)) as first:
+        with (
+            pytest.raises(RuntimeError, match="data is busy"),
+            testclient.TestClient(newsletter_app.create_app(settings)),
+        ):
+            pytest.fail("A second owner was allowed")
         assert first.get("/healthz").status_code == 200
-    with TestClient(create_app(settings)) as reopened:
+    with testclient.TestClient(newsletter_app.create_app(settings)) as reopened:
         assert reopened.get("/healthz").status_code == 200
 
 
 def test_preflight_failure_closes_storage_and_releases_lock(
     settings, monkeypatch
 ):
-    original = lifecycle.preflight
+    original = preflight.preflight
     captured = []
 
     async def unavailable(settings, *, store):
         captured.append(store)
-        raise PreflightError("CODEX_CHECK_FAILED")
+        raise preflight.PreflightError("CODEX_CHECK_FAILED")
 
-    monkeypatch.setattr(lifecycle, "preflight", unavailable)
-    with pytest.raises(PreflightError):
-        with TestClient(create_app(settings)):
-            pytest.fail("Startup failure was ignored")
+    monkeypatch.setattr(preflight, "preflight", unavailable)
+    with (
+        pytest.raises(preflight.PreflightError),
+        testclient.TestClient(newsletter_app.create_app(settings)),
+    ):
+        pytest.fail("Startup failure was ignored")
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         captured[0].db.execute("SELECT 1")
-    monkeypatch.setattr(lifecycle, "preflight", original)
-    with TestClient(create_app(settings)) as reopened:
+    monkeypatch.setattr(preflight, "preflight", original)
+    with testclient.TestClient(newsletter_app.create_app(settings)) as reopened:
         assert reopened.get("/healthz").status_code == 200
 
 
 def test_shutdown_stops_worker_before_closing_its_store(settings, monkeypatch):
     events = []
-    original_close = lifecycle.Store.close
+    original_close = newsletter_store.Store.close
 
     async def idle(worker):
         events.append("worker_started")
@@ -116,9 +120,9 @@ def test_shutdown_stops_worker_before_closing_its_store(settings, monkeypatch):
         events.append("store_closed")
         original_close(store)
 
-    monkeypatch.setattr(lifecycle.Worker, "run", idle)
-    monkeypatch.setattr(lifecycle.Store, "close", close)
-    with TestClient(create_app(settings)) as client:
+    monkeypatch.setattr(newsletter_worker.Worker, "run", idle)
+    monkeypatch.setattr(newsletter_store.Store, "close", close)
+    with testclient.TestClient(newsletter_app.create_app(settings)) as client:
         assert client.get("/healthz").status_code == 200
         assert events == ["worker_started"]
     assert events == ["worker_started", "worker_stopped", "store_closed"]

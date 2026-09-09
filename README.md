@@ -45,12 +45,18 @@ SQLite证据/已审版本 → Notion后台镜像        已审完整版本确定
 
 ```sh
 make setup
+make format
 make check
 make build
 make smoke-codex
 ```
 
 uv.lock 是唯一依赖锁；安装用 --locked，构建不重新生成 protobuf，启动不下载依赖。make demo 是显式假稿演示，会生成本地模拟 EML；不访问任何供应商。产物统一放在 .artifacts/（缓存、dist、demo），真实数据与凭据必须使用仓库/同步盘之外的目录。
+
+`make format` 只格式化手写 Python；`make check` 检查依赖锁、Ruff 80列格式与
+Google 风格公开文档、模块导入/结构边界、严格 mypy 和离线 pytest。
+复杂度上限为15；共享测试构件放在 `tests/support/`，不跨测试文件导入。
+规则与有理由的例外见 [开发说明](docs/development.md)。
 
 | 位置 | 职责 |
 | --- | --- |
@@ -64,6 +70,7 @@ uv.lock 是唯一依赖锁；安装用 --locked，构建不重新生成 protobuf
 | src/newsletter/codex_runtime.py、model_schema.py | 隔离 SDK 启动与 proto 派生的结构化输出约束 |
 | src/newsletter/model_io.py | 研究员与总编共用的严格JSON解析和工作目录校验 |
 | src/newsletter/store.py、worker.py | SQLite事务、串行工作队列、崩溃恢复 |
+| src/newsletter/admin.py、ownership.py、delivery.py | 同锁维护命令与共用的持久化投递操作 |
 | src/newsletter/todofy.py、adapters.py | 私人事件、Notion、邮件供应商边界 |
 | src/newsletter/notion_*.py | 双库字段、材料与刊期投影、独立同步账本、恢复与操作员工具 |
 | src/newsletter/rendering.py、templates/、charts.py | 邮件正文与预览；独立的PNG绘图 |
@@ -96,20 +103,27 @@ Content-Type: application/json
 
 公网调用必须使用固定 HTTPS origin。私有 Docker 网络可显式设置 NEWSLETTER_ALLOW_INTERNAL_HTTP=1，仅放行 `http://newsletter:8080`；不开宿主机端口，不跟随跳转。日期默认按 America/Los_Angeles 生成，同一天使用稳定的 daily 幂等键。失败或结果不明不会换键重投；先查运行与刊期状态。切换部署必须检查旧 GitHub scheduled workflow 已停用且无遗留发送运行。
 
-| 操作 | HTTP | 权限 |
+| 业务 RPC | HTTP | 权限 |
 | --- | --- | --- |
-| 用户明确要求的修订验证邮件（默认每日期额外至多一次，保留原投递记录） | POST /v1/editions/{id}/send-verification | send |
-| 启动/查询整期 | POST /v1/runs；GET /v1/runs/{id} | editor |
-| 可选外部材料补充 | POST /v1/packets | ingest |
-| 查材料 | POST /v1/inbox/query | editor |
-| 用已有材料直接编稿 | POST /v1/editions | editor |
-| 刊期/冻结预览 | GET /v1/editions/{id}；GET /v1/editions/{id}/preview | editor / send |
-| 纯渲染 | POST /v1/render | editor |
-| 单独批准发送 | POST /v1/editions/{id}/send | send |
+| StartRun：启动整期 | POST /v1/runs | editor |
+| GetRun：查询整期 | GET /v1/runs/{id} | editor |
+| GetEdition：查询冻结刊期 | GET /v1/editions/{id} | editor / send |
+| SendEdition：单独批准普通每日发送 | POST /v1/editions/{id}/send | send |
 
-所有消息是公共 protobuf 的 snake_case ProtoJSON。旧材料接口保留作为可选入口，不再需要外部 routine。collection: 前缀是内部幂等键空间，外部直接编稿不能占用。
+公共 `NewsletterService` 仅保留这4个业务 RPC，HTTP 使用对应消息的 snake_case
+ProtoJSON，并不启动 gRPC 服务器。另外保留无需鉴权的 `GET /healthz` 和
+editor/send 可读的 `GET /v1/editions/{id}/preview`，共6个 HTTP 方法/路径。
+外部投稿、材料查询、直接编稿、纯渲染及特殊维护不再是远程业务入口；内部材料模型、
+冻结记录与离线渲染函数仍保留。服务只需两个不同的 editor/send token，均至少24字符；
+ingest 角色已退休，其旧环境变量不再读取。
 
-同一天已成功发过验证邮件后，只有用户再次明确要求，操作员才能对**新的 ready 刊期**调用 `send-verification`：请求体仍为 `id`、稳定的 `request_key` 和该刊期的 `expected_render_hash`，另加 `X-Newsletter-Verification-After: <上一封已确认接受的验证刊期 UUID>`。该 UUID 必须是同日期验证链的最新末端；每个末端只允许一个后继，旧 UUID、未确认/失败投递都不能授权新邮件。调用仍需要 send token，发送目标仍绑定原数据库；不自动启用此能力，不改 cron 或普通每日发送。重复请求只返回既有投递结果，结果未知时不会重投。
+逐题重启与用户明确要求的修订验证邮件改用本机 `newsletter admin`，不经 HTTP。
+`admin status` 可在线只读检查；`retry-stories` 和 `send-verification` 必须先停服务，
+获取同一个 `service.lock` 且确认没有在途工作。没有 `--force`，不启动 worker，
+不运行全局恢复。验证邮件仍要求新的 ready 刊期、精确冻结 hash 和已确认的原投递；
+同日后续验证还需 `--after-verification` 指向最新已接受的验证刊期，不允许分叉或
+未知结果重投。完整参数及备份/恢复顺序见 [维护说明](docs/maintenance.md)。
+这次代码与部署验收不会新增真实测试邮件，既有用户批准的每日调度保持不变。
 
 升级时 SQLite 在单一事务内迁移验证台账，保留旧记录并改用唯一刊期、请求键和前序刊期约束；普通 `sends` 每日唯一约束不变。部署前备份数据库；一旦存在同日多条验证记录，**不要回退到旧的一日一行数据库结构**，它无法表示完整台账。回退代码也须保留新台账及幂等检查，不能删除投递记录来重试。已有新投递后也不能恢复投递前的数据库备份，否则会丢失幂等凭据、造成重复发送风险。
 
@@ -156,7 +170,7 @@ GitHub Actions 在原生 Linux/amd64 runner 上先跑回归，再构建、验证
 
 公共源：[protos 仓库](https://github.com/ziyixi/protos) protobuf 分支的 `proto/newsletter/editorial.proto`。公共仓库生成并验证 Python 代码、类型 stub 和 provenance，作为 **GitHub Release wheel** 发布 `ziyixi-protos`，不发布到 PyPI。newsletter 不再维护生成副本，不需要 sibling checkout 或 protoc。
 
-导入使用 `from ziyixi_protos.newsletter import editorial_pb2`。`pyproject.toml` 固定版本并通过 `tool.uv.sources` 指向对应 release wheel，`uv.lock` 固定 URL 和 SHA-256；不会从本地路径或 `latest` 浮动下载。`make proto-check` 只检查已安装包的 descriptor/code/stub hash、来源仓库/路径/commit 与发行版本，不重新生成。新增字段须先在公共仓库发布，再更新 newsletter 的版本、wheel URL 和锁并运行回归。
+当前固定 `ziyixi-protos==0.1.0.dev7`，其服务描述只保留上述4个RPC；旧消息类型仍可用于内部状态和兼容冻结数据。导入使用 `import ziyixi_protos.newsletter.editorial_pb2 as editorial_pb2`。`pyproject.toml` 通过 `tool.uv.sources` 指向对应 release wheel，`uv.lock` 固定 URL 和 SHA-256；不会从本地路径或 `latest` 浮动下载。`make proto-check` 只检查已安装包的 descriptor/code/stub hash、来源仓库/路径/commit 与发行版本，不重新生成。新增字段须先在公共仓库发布，再更新 newsletter 的版本、wheel URL 和锁并运行回归。
 
 离线测试显式模拟供应商与故障；真实试验单独记录，不混称“全部线上通过”。[首次真实联调](docs/history/real-e2e-2026-09-05.md)曾发现模型自审漏过统计口径误述；本轮准则已补强，但任何结构检查都不能保证事实正确。Gmail/Apple Mail/Outlook真实收件尚需用户批准后验收。
 

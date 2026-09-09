@@ -1,17 +1,21 @@
-"""Explicit corrected-issue tests cannot erase or bypass normal delivery receipts."""
+"""Test corrected-issue sends without erasing normal delivery receipts."""
 
+import concurrent.futures as concurrent_futures
+import functools
+import pathlib
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-from threading import Barrier
+import threading
 
+import fastapi.testclient as testclient
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
-from newsletter.app import create_app
-from newsletter.editor import MockEditor
-from newsletter.settings import Settings
-from newsletter.store import Store, StoreError
+import newsletter.app as app
+import newsletter.contracts as contracts
+import newsletter.delivery as delivery
+import newsletter.editor as editor
+import newsletter.settings as newsletter_settings
+import newsletter.store as newsletter_store
 
 
 def auth(role="send"):
@@ -23,23 +27,20 @@ def auth(role="send"):
 
 @pytest.fixture
 def client(tmp_path):
-    settings = Settings(
+    settings = newsletter_settings.Settings(
         data_dir=tmp_path / "data",
-        ingest_token="i" * 32,
         editor_token="e" * 32,
         send_token="s" * 32,
     )
-    with TestClient(
-        create_app(settings, editor=MockEditor(), start_worker=False)
+    with testclient.TestClient(
+        app.create_app(settings, editor=editor.MockEditor(), start_worker=False)
     ) as value:
         yield value
 
 
 def issue(client, key, *, issue_date="2026-09-06"):
-    packet = client.post(
-        "/v1/packets",
-        headers=auth("ingest"),
-        json={
+    packet = client.app.state.store.put_packet(
+        {
             "request_key": "packet",
             "workflow_id": "verification-offline-test",
             "content": {
@@ -55,19 +56,17 @@ def issue(client, key, *, issue_date="2026-09-06"):
                     }
                 ],
             },
-        },
-    ).json()
-    queued = client.post(
-        "/v1/editions",
-        headers=auth("editor"),
-        json={
+        }
+    )
+    queued = client.app.state.store.prepare(
+        {
             "request_key": key,
             "issue_date": issue_date,
             "packet_ids": [packet["id"]],
-        },
-    ).json()
+        }
+    )
     client.portal.call(client.app.state.worker.step)
-    result = client.get(f"/v1/editions/{queued['id']}", headers=auth()).json()
+    result = client.app.state.store.get(queued["id"])
     assert result["state"] == "ready"
     return result
 
@@ -82,20 +81,37 @@ def send(
     digest=None,
     after=None,
 ):
-    suffix = "send-verification" if verification else "send"
-    headers = auth(role)
-    if after is not None:
-        headers["X-Newsletter-Verification-After"] = after
-    return client.post(
-        f"/v1/editions/{edition['id']}/{suffix}",
-        headers=headers,
-        json={
-            "id": edition["id"],
-            "request_key": key,
-            "expected_render_hash": digest
-            or edition["rendered"]["render_hash"],
-        },
-    )
+    """Exercise the shared operation, not a verification HTTP route."""
+    request = {
+        "id": edition["id"],
+        "request_key": key,
+        "expected_render_hash": digest or edition["rendered"]["render_hash"],
+    }
+    if not verification:
+        headers = auth(role)
+        if after is not None:
+            headers["X-Newsletter-Verification-After"] = after
+        return client.post(
+            f"/v1/editions/{edition['id']}/send",
+            headers=headers,
+            json=request,
+        )
+    try:
+        value = client.portal.call(
+            functools.partial(
+                delivery.send_edition,
+                client.app.state.store,
+                client.app.state.mail,
+                request,
+                real_delivery=False,
+                verification=True,
+                predecessor=after,
+            )
+        )
+        return httpx.Response(200, json=value)
+    except (newsletter_store.StoreError, contracts.ContractError) as error:
+        status = 409 if error.code == "conflict" else 400
+        return httpx.Response(status, json={"error": {"code": error.code}})
 
 
 def test_verification_is_separate_idempotent_and_preserves_daily_guard(client):
@@ -106,10 +122,6 @@ def test_verification_is_separate_idempotent_and_preserves_daily_guard(client):
     )
     corrected = issue(client, "corrected")
     assert send(client, corrected, key="normal-again").status_code == 409
-    assert (
-        send(client, corrected, verification=True, role="editor").status_code
-        == 401
-    )
     assert (
         send(client, corrected, verification=True, digest="0" * 64).status_code
         == 409
@@ -228,7 +240,7 @@ def test_verification_checks_path_and_key_binding(client):
                 "expected_render_hash": corrected["rendered"]["render_hash"],
             },
         ).status_code
-        == 409
+        == 404
     )
 
 
@@ -253,13 +265,16 @@ def test_simultaneous_verification_reservations_use_one_durable_receipt(
     rival = corrected if same_edition else issue(client, "competing-correction")
     store = client.app.state.store
     original_receipt = tuple(store.db.execute("SELECT * FROM sends").fetchone())
-    database = Path(store.db.execute("PRAGMA database_list").fetchone()[2])
-    barrier = Barrier(2, timeout=5)
+    database = pathlib.Path(
+        store.db.execute("PRAGMA database_list").fetchone()[2]
+    )
+    barrier = threading.Barrier(2, timeout=5)
 
     def reserve(edition, key):
         # Separate connections exercise SQLite's transaction boundary, not just
-        # one app instance's Python lock. No mail provider is called in this test.
-        connection = Store(database, "mock")
+        # one app instance's Python lock. No mail provider is called in this
+        # test.
+        connection = newsletter_store.Store(database, "mock")
         try:
             barrier.wait()
             try:
@@ -274,12 +289,12 @@ def test_simultaneous_verification_reservations_use_one_durable_receipt(
                     previous_verification_id=predecessor,
                 )
                 return value, first
-            except StoreError as exc:
+            except newsletter_store.StoreError as exc:
                 return None, exc.code
         finally:
             connection.close()
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with concurrent_futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
             executor.submit(reserve, corrected, "verification-a"),
             executor.submit(reserve, rival, "verification-b"),
@@ -300,7 +315,7 @@ def test_simultaneous_verification_reservations_use_one_durable_receipt(
 
     # A crash after reservation has an unknown outcome, even with a fresh
     # connection and a different key. It cannot authorize another provider call.
-    reopened = Store(database, "mock")
+    reopened = newsletter_store.Store(database, "mock")
     try:
         reopened.recover()
         recovered, first = reopened.reserve_verification_send(
@@ -369,17 +384,6 @@ def test_explicit_successor_keeps_receipts_and_default_cap_and_provider_keys(
             digest="0" * 64,
         ).status_code
         == 409
-    )
-    assert (
-        send(
-            client,
-            new,
-            verification=True,
-            key="new-test",
-            after=prior["id"],
-            role="editor",
-        ).status_code
-        == 401
     )
     result = send(
         client, new, verification=True, key="new-test", after=prior["id"]
@@ -590,7 +594,7 @@ def test_duplicate_predecessor_header_and_header_on_daily_send_are_rejected(
                 "expected_render_hash": edition["rendered"]["render_hash"],
             },
         ).status_code
-        == 400
+        == 404
     )
     assert send(client, edition, after=edition["id"]).status_code == 400
     assert (
@@ -653,7 +657,9 @@ def test_successor_still_requires_frozen_research_evidence(client, monkeypatch):
 
     def reject(edition_id):
         checked.append(edition_id)
-        raise StoreError("conflict", "Research receipt is missing")
+        raise newsletter_store.StoreError(
+            "conflict", "Research receipt is missing"
+        )
 
     monkeypatch.setattr(
         client.app.state.store, "assert_workflow_research", reject
@@ -680,8 +686,11 @@ def test_successor_still_requires_frozen_research_evidence(client, monkeypatch):
 def legacy_receipts(path, *, duplicate_predecessor=False):
     database = sqlite3.connect(path)
     database.execute(
-        "CREATE TABLE verification_sends (issue_date TEXT PRIMARY KEY, edition_id TEXT UNIQUE NOT NULL, "
-        "request_key TEXT UNIQUE NOT NULL, render_hash TEXT NOT NULL, previous_edition_id TEXT NOT NULL, created_at TEXT NOT NULL)"
+        "CREATE TABLE verification_sends (issue_date TEXT PRIMARY "
+        "KEY, edition_id TEXT UNIQUE NOT NULL, request_key TEXT "
+        "UNIQUE NOT NULL, render_hash TEXT NOT NULL, "
+        "previous_edition_id TEXT NOT NULL, created_at TEXT NOT "
+        "NULL)"
     )
     rows = [
         (
@@ -715,7 +724,7 @@ def test_legacy_ledger_migration_preserves_every_receipt_and_is_idempotent(
     path = tmp_path / "state.sqlite"
     rows = legacy_receipts(path)
     for _ in range(2):
-        store = Store(path, "mock")
+        store = newsletter_store.Store(path, "mock")
         try:
             assert [
                 tuple(row)
@@ -750,7 +759,7 @@ def test_inconsistent_legacy_ledger_fails_migration_atomically(tmp_path):
     path = tmp_path / "state.sqlite"
     rows = legacy_receipts(path, duplicate_predecessor=True)
     with pytest.raises(sqlite3.IntegrityError):
-        Store(path, "mock")
+        newsletter_store.Store(path, "mock")
     database = sqlite3.connect(path)
     try:
         assert (
@@ -761,7 +770,8 @@ def test_inconsistent_legacy_ledger_fails_migration_atomically(tmp_path):
         )
         assert (
             database.execute(
-                "SELECT name FROM sqlite_master WHERE name='verification_sends_migrated'"
+                "SELECT name FROM sqlite_master WHERE "
+                "name='verification_sends_migrated'"
             ).fetchone()
             is None
         )

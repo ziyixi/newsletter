@@ -1,23 +1,24 @@
-"""Offline publication tests: synthetic API/Docker, no GitHub writes or containers."""
+"""Offline publication tests using synthetic API and Docker responses."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
-import importlib.util
+import importlib.util as util
 import io
 import json
 import os
+import pathlib
 import subprocess
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock
-from urllib.error import HTTPError, URLError
+import types
+import unittest.mock as mock
+import urllib.error as urllib_error
 
 import pytest
-import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
+import tests.support.workflows as workflows
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 OLD = "a" * 40
 NEW = "b" * 40
 PR = "c" * 40
@@ -31,10 +32,10 @@ SECRET = "synthetic-private-token-never-print"
 
 @pytest.fixture
 def release():
-    spec = importlib.util.spec_from_file_location(
+    spec = util.spec_from_file_location(
         "offline_content_release", ROOT / "scripts/publish_content_config.py"
     )
-    module = importlib.util.module_from_spec(spec)
+    module = util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
@@ -74,9 +75,9 @@ def api_fixture(
             )
         raise AssertionError("unexpected API request")
 
-    return SimpleNamespace(
-        main=Mock(return_value=current),
-        request=Mock(side_effect=request),
+    return types.SimpleNamespace(
+        main=mock.Mock(return_value=current),
+        request=mock.Mock(side_effect=request),
         calls=calls,
     )
 
@@ -295,9 +296,9 @@ def publisher(*, parent: str | None = PARENT, mains: list | None = None):
             return {}
         raise AssertionError("unexpected publication path")
 
-    return SimpleNamespace(
-        main=Mock(side_effect=mains or [NEW, NEW]),
-        request=Mock(side_effect=request),
+    return types.SimpleNamespace(
+        main=mock.Mock(side_effect=mains or [NEW, NEW]),
+        request=mock.Mock(side_effect=request),
         calls=calls,
     )
 
@@ -413,14 +414,14 @@ def test_validation_uses_exact_image_id_host_owned_output_and_no_network(
     def run(arguments, **options):
         calls.append((arguments, options))
         if arguments[1:3] == ["image", "inspect"]:
-            return SimpleNamespace(
+            return types.SimpleNamespace(
                 stdout=json.dumps(
                     {"id": IMAGE, "os": "linux", "architecture": "amd64"}
                 )
             )
         if arguments[1] == "run" and "build" in arguments:
             (output / "bundle.json").write_text(json.dumps({"revision": NEW}))
-        return SimpleNamespace(stdout="")
+        return types.SimpleNamespace(stdout="")
 
     monkeypatch.setattr(release.subprocess, "run", run)
     monkeypatch.setenv("GITHUB_REPOSITORY", "ziyixi/newsletter")
@@ -476,7 +477,7 @@ def test_wrong_architecture_or_mutable_image_stops_before_container(
 
     def run(arguments, **kwargs):
         calls.append(arguments)
-        return SimpleNamespace(
+        return types.SimpleNamespace(
             stdout=json.dumps(
                 {"id": image_id, "os": "linux", "architecture": architecture}
             )
@@ -499,7 +500,7 @@ def test_validation_timeout_cleans_only_its_unique_container(
         calls.append((arguments, kwargs))
         if arguments[1] == "run":
             raise subprocess.TimeoutExpired(SECRET, 180)
-        return SimpleNamespace(stdout="")
+        return types.SimpleNamespace(stdout="")
 
     monkeypatch.setattr(release.subprocess, "run", run)
     with pytest.raises(release.ReleaseError) as caught:
@@ -517,14 +518,14 @@ def test_api_credentials_have_fixed_origin_no_redirect_or_environment_proxy(
     release, monkeypatch
 ):
     handlers = []
-    opener = Mock()
+    opener = mock.Mock()
     opener.open.return_value = io.BytesIO(b'{"synthetic":true}')
 
     def build(*values):
         handlers.extend(values)
         return opener
 
-    monkeypatch.setattr(release, "build_opener", build)
+    monkeypatch.setattr(release.urllib_request, "build_opener", build)
     api = release.GitHub("ziyixi/newsletter", SECRET)
     assert api.request("GET", "/git/ref/heads/main") == {"synthetic": True}
     request = opener.open.call_args.args[0]
@@ -536,7 +537,8 @@ def test_api_credentials_have_fixed_origin_no_redirect_or_environment_proxy(
     assert opener.open.call_args.kwargs["timeout"] == 30
     assert any(isinstance(handler, release.NoRedirect) for handler in handlers)
     assert any(
-        isinstance(handler, release.ProxyHandler) and handler.proxies == {}
+        isinstance(handler, release.urllib_request.ProxyHandler)
+        and handler.proxies == {}
         for handler in handlers
     )
     assert (
@@ -550,21 +552,21 @@ def test_api_credentials_have_fixed_origin_no_redirect_or_environment_proxy(
 @pytest.mark.parametrize(
     "error",
     [
-        HTTPError("https://example.org", 403, SECRET, {}, None),
-        HTTPError(
+        urllib_error.HTTPError("https://example.org", 403, SECRET, {}, None),
+        urllib_error.HTTPError(
             "https://example.org",
             302,
             SECRET,
             {"Location": "https://evil.invalid"},
             None,
         ),
-        URLError(SECRET),
+        urllib_error.URLError(SECRET),
         TimeoutError(SECRET),
     ],
 )
 def test_api_failures_never_echo_credentials_or_remote_text(release, error):
     api = release.GitHub("ziyixi/newsletter", SECRET)
-    api.opener = Mock()
+    api.opener = mock.Mock()
     api.opener.open.side_effect = error
     with pytest.raises(release.ReleaseError) as caught:
         api.request("GET", "/git/ref/heads/main")
@@ -572,13 +574,8 @@ def test_api_failures_never_echo_credentials_or_remote_text(release, error):
 
 
 def test_workflow_permissions_and_event_isolation_are_least_privilege():
-    config = yaml.load(
-        (ROOT / ".github/workflows/content-config.yml").read_text(),
-        Loader=yaml.BaseLoader,
-    )
-    service = yaml.load(
-        (ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader
-    )
+    config = workflows.load("content-config.yml")
+    service = workflows.load("ci.yml")
     assert config["permissions"] == {"contents": "read"}
     assert config["jobs"]["validate"]["permissions"] == {
         "contents": "read",
@@ -599,18 +596,23 @@ def test_workflow_permissions_and_event_isolation_are_least_privilege():
     assert "pull_request_target" not in config["on"]
     for event in ("push", "pull_request"):
         assert service["on"][event]["paths-ignore"] == ["content-config/**"]
-    all_config = (ROOT / ".github/workflows/content-config.yml").read_text()
-    assert (
-        "docker build" not in all_config and "packages: write" not in all_config
-    )
-    assert "secrets.GITHUB_TOKEN" in all_config
-    assert (
-        "NEWSLETTER_SEND_TOKEN" not in all_config and "RESEND" not in all_config
-    )
+    configured_environments = []
     for job in config["jobs"].values():
+        assert job.get("permissions", {}).get("packages") != "write"
+        configured_environments.append(job.get("env", {}))
         for step in job["steps"]:
+            assert "docker build" not in step.get("run", "")
+            configured_environments.append(step.get("env", {}))
             if str(step.get("uses", "")).startswith("actions/checkout"):
                 assert step["with"]["persist-credentials"] == "false"
+    assert any(
+        environment.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}"
+        for environment in configured_environments
+    )
+    assert all(
+        not {"NEWSLETTER_SEND_TOKEN", "RESEND_API_KEY"} & environment.keys()
+        for environment in configured_environments
+    )
     image_steps = service["jobs"]["image"]["steps"]
     validation = next(
         index

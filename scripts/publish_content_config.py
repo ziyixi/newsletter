@@ -10,21 +10,17 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import http.client as http_client
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
+from typing import Any, IO
+import urllib.error as error
+import urllib.request as urllib_request
 import uuid
-from pathlib import Path
-from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import (
-    HTTPRedirectHandler,
-    ProxyHandler,
-    Request,
-    build_opener,
-)
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -34,24 +30,35 @@ PUBLISHED_BRANCH = "published"
 
 
 class ReleaseError(RuntimeError):
-    pass
+    """A safe failure that excludes credentials and candidate content."""
 
 
-class NoRedirect(HTTPRedirectHandler):
+class NoRedirect(urllib_request.HTTPRedirectHandler):
+    """Keep repository-scoped credentials on the requested GitHub endpoint."""
+
     def redirect_request(
-        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+        self,
+        req: urllib_request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http_client.HTTPMessage,
+        newurl: str,
     ) -> None:
-        # Repository-scoped credentials must never follow a redirected URL.
-        return None
+        """Refuse all redirects instead of forwarding authorization headers."""
+        return
 
 
 def sha(value: object) -> str:
+    """Require an exact full Git commit identity from an untrusted response."""
     if not isinstance(value, str) or not SHA.fullmatch(value):
         raise ReleaseError("Invalid commit identity")
     return value
 
 
 class GitHub:
+    """Bound repository API requests without redirects or inherited proxies."""
+
     def __init__(self, repository: str, token: str) -> None:
         if (
             not re.fullmatch(
@@ -65,28 +72,34 @@ class GitHub:
             )
         self.prefix = "https://api.github.com/repos/" + repository
         self.token = token
-        self.opener = build_opener(ProxyHandler({}), NoRedirect())
+        self.opener = urllib_request.build_opener(
+            urllib_request.ProxyHandler({}), NoRedirect()
+        )
 
     def request(
         self,
         method: str,
         path: str,
-        value: Any = None,
+        value: object = None,
         *,
         missing: bool = False,
     ) -> Any:
+        """Read bounded GitHub JSON or return None for an allowed missing ref.
+
+        JSON shapes vary by endpoint and remain untrusted until callers check
+        the required fields. HTTP errors never include response text or tokens.
+        """
         if (
             method not in {"GET", "POST", "PATCH"}
             or not path.startswith("/")
             or path.startswith("//")
             or "#" in path
             or "\\" in path
-            or "?" in path
-            and method != "GET"
+            or ("?" in path and method != "GET")
         ):
             raise ReleaseError("Unsupported GitHub request")
         body = json.dumps(value).encode() if value is not None else None
-        request = Request(
+        request = urllib_request.Request(
             self.prefix + path,
             data=body,
             method=method,
@@ -104,22 +117,24 @@ class GitHub:
             if len(raw) > MAX_RESPONSE:
                 raise ReleaseError("GitHub response exceeds the release limit")
             return json.loads(raw)
-        except HTTPError as exc:
+        except error.HTTPError as exc:
             if missing and exc.code == 404:
                 return None
             raise ReleaseError(
                 f"GitHub release request failed (HTTP {exc.code})"
             ) from None
-        except (URLError, TimeoutError, ValueError, RecursionError):
+        except (error.URLError, TimeoutError, ValueError, RecursionError):
             raise ReleaseError("GitHub release request failed") from None
 
     def main(self) -> str:
+        """Return the current full main-branch commit identity."""
         return sha(self.request("GET", "/git/ref/heads/main")["object"]["sha"])
 
 
 def config_only_difference(
     api: GitHub, base: str, head: str, *, pull_request: bool = False
 ) -> bool:
+    """Check that a complete comparison changes only authored configuration."""
     if base == head:
         return True
     compared = api.request("GET", f"/compare/{sha(base)}...{sha(head)}")
@@ -127,7 +142,7 @@ def config_only_difference(
     # whether that PR changes only configuration. Engine reuse is stricter:
     # a tested engine must be the same commit or an ancestor of the revision.
     # GitHub caps a compare response at 300 changed files. Treat that boundary
-    # conservatively; a truncated file list must not certify engine compatibility.
+    # conservatively; a truncated list cannot certify engine compatibility.
     files = compared.get("files")
     return bool(
         compared.get("status")
@@ -151,6 +166,7 @@ def config_only_difference(
 
 
 def compatible_engine(api: GitHub, revision: str) -> str | None:
+    """Find a successful main-branch image compatible with the revision."""
     for page in range(1, 4):
         result = api.request(
             "GET",
@@ -174,6 +190,7 @@ def compatible_engine(api: GitHub, revision: str) -> str | None:
 
 
 def plan(api: GitHub, event_name: str, event: dict[str, Any]) -> dict[str, str]:
+    """Choose a tested engine and reject untested mixed-code releases."""
     current = api.main()
     if event_name == "pull_request":
         revision = sha(event["pull_request"]["head"]["sha"])
@@ -213,18 +230,20 @@ def plan(api: GitHub, event_name: str, event: dict[str, Any]) -> dict[str, str]:
 
 
 def command(args: list[str], *, timeout: int = 180) -> str:
+    """Run one bounded command without exposing tool output on failure."""
     try:
         return subprocess.run(
             args, check=True, capture_output=True, text=True, timeout=timeout
         ).stdout
     except (subprocess.SubprocessError, OSError):
-        # Tool output could quote template content; do not print it into public CI.
+        # Tool output could quote template content; exclude it from public CI.
         raise ReleaseError(
             "Configuration image validation command failed"
         ) from None
 
 
 def docker_base(image_id: str) -> list[str]:
+    """Build immutable, unprivileged, network-disabled container arguments."""
     if not DIGEST.fullmatch(image_id):
         raise ReleaseError("Validation requires an immutable local image ID")
     return [
@@ -259,6 +278,7 @@ def docker_base(image_id: str) -> list[str]:
 
 
 def run_container(arguments: list[str]) -> None:
+    """Run a unique validator and remove it even if its client times out."""
     name = "newsletter-content-validation-" + uuid.uuid4().hex
     try:
         command(arguments[:2] + ["--name", name] + arguments[2:])
@@ -281,11 +301,12 @@ def validate(
     image: str,
     engine_sha: str,
     revision: str,
-    source: Path,
-    output: Path,
+    source: pathlib.Path,
+    output: pathlib.Path,
     *,
     pull: bool,
 ) -> None:
+    """Validate twice in the tested image and write a bundle-hash receipt."""
     sha(engine_sha)
     sha(revision)
     if not source.is_dir() or source.is_symlink():
@@ -309,7 +330,8 @@ def validate(
                 "image",
                 "inspect",
                 "--format",
-                '{"id":{{json .Id}},"os":{{json .Os}},"architecture":{{json .Architecture}}}',
+                '{"id":{{json .Id}},"os":{{json .Os}},'
+                '"architecture":{{json .Architecture}}}',
                 "--",
                 image,
             ]
@@ -375,11 +397,13 @@ def validate(
         json.dumps(receipt, sort_keys=True) + "\n"
     )
     print(
-        "Validated content bundle in a network-disabled, immutable linux/amd64 image."
+        "Validated content bundle in a network-disabled, "
+        "immutable linux/amd64 image."
     )
 
 
-def publish(api: GitHub, revision: str, directory: Path) -> bool:
+def publish(api: GitHub, revision: str, directory: pathlib.Path) -> bool:
+    """Publish a receipted bundle using stale-main checks and non-force CAS."""
     sha(revision)
     receipt = json.loads((directory / "validation.json").read_bytes())
     bundle = directory / "bundle.json"
@@ -437,7 +461,8 @@ def publish(api: GitHub, revision: str, directory: Path) -> bool:
     # also rejects concurrent publication from the same old parent.
     if api.main() != revision:
         print(
-            "Skipped stale configuration publication; main advanced during validation."
+            "Skipped stale configuration publication; "
+            "main advanced during validation."
         )
         return False
     if parent:
@@ -456,12 +481,14 @@ def publish(api: GitHub, revision: str, directory: Path) -> bool:
             },
         )
     print(
-        "Published validated bundle.json; no deployment, collection, or email triggered."
+        "Published validated bundle.json; "
+        "no deployment, collection, or email triggered."
     )
     return True
 
 
 def main() -> int:
+    """Run one explicit CI phase and emit only safe release diagnostics."""
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="phase", required=True)
     sub.add_parser("plan")
@@ -469,12 +496,12 @@ def main() -> int:
     validation.add_argument("--image", required=True)
     validation.add_argument("--engine-sha", required=True)
     validation.add_argument("--revision", required=True)
-    validation.add_argument("--source", required=True, type=Path)
-    validation.add_argument("--output", required=True, type=Path)
+    validation.add_argument("--source", required=True, type=pathlib.Path)
+    validation.add_argument("--output", required=True, type=pathlib.Path)
     validation.add_argument("--pull", action="store_true")
     publication = sub.add_parser("publish")
     publication.add_argument("--revision", required=True)
-    publication.add_argument("--directory", required=True, type=Path)
+    publication.add_argument("--directory", required=True, type=pathlib.Path)
     args = parser.parse_args()
     try:
         if args.phase == "validate":
@@ -493,10 +520,12 @@ def main() -> int:
             )
             if args.phase == "plan":
                 event = json.loads(
-                    Path(os.environ["GITHUB_EVENT_PATH"]).read_bytes()
+                    pathlib.Path(os.environ["GITHUB_EVENT_PATH"]).read_bytes()
                 )
                 result = plan(api, os.environ["GITHUB_EVENT_NAME"], event)
-                with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+                with pathlib.Path(os.environ["GITHUB_OUTPUT"]).open(
+                    "a"
+                ) as output:
                     for key, value in result.items():
                         output.write(f"{key}={value}\n")
             else:
@@ -510,7 +539,8 @@ def main() -> int:
         RecursionError,
     ):
         print(
-            "Configuration release failed; inspect the configuration and CI engine status.",
+            "Configuration release failed; "
+            "inspect the configuration and CI engine status.",
             file=sys.stderr,
         )
         return 1

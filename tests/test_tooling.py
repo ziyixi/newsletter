@@ -1,19 +1,21 @@
 """Offline regression checks for the shared dependency and build boundaries.
 
 These inspect tracked configuration, not a developer's environment, credentials,
-Docker daemon, or installed package cache. Actual lock/install/build execution is
-an additional CI check; matching configuration alone does not prove a build works.
+Docker daemon, or installed package cache. CI separately installs and builds;
+matching configuration alone does not prove a build works.
 """
 
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import tomllib
-from pathlib import Path
-from urllib.parse import urlsplit
+import urllib.parse as parse
 
-ROOT = Path(__file__).resolve().parents[1]
+import tests.support.workflows as workflows
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def read_config(name: str) -> dict:
@@ -69,11 +71,19 @@ def test_python_and_uv_versions_are_shared_by_local_ci_and_docker():
         image.startswith(python_version + "-") for image in python_images
     )
     assert f"ghcr.io/astral-sh/uv:{uv_version}" in dockerfile
-    ci = (ROOT / ".github/workflows/ci.yml").read_text()
-    assert re.search(r"python-version-file:\s*['\"]?\.python-version", ci)
-    assert re.search(
-        r"version:\s*['\"]?" + re.escape(uv_version) + r"(?:['\"]|\s)", ci
+    steps = workflows.load("ci.yml")["jobs"]["test"]["steps"]
+    python = next(
+        step
+        for step in steps
+        if step.get("uses", "").startswith("actions/setup-python@")
     )
+    uv = next(
+        step
+        for step in steps
+        if step.get("uses", "").startswith("astral-sh/setup-uv@")
+    )
+    assert python["with"]["python-version-file"] == ".python-version"
+    assert uv["with"]["version"] == uv_version
 
 
 def test_mypy_checks_service_without_vendoring_proto_artifacts():
@@ -100,7 +110,7 @@ def test_public_proto_uses_a_hash_locked_github_release_not_local_source():
     package_version = declaration.split("==", 1)[1]
     source = project["tool"]["uv"]["sources"]["ziyixi-protos"]
     assert set(source) == {"url"}
-    url = urlsplit(source["url"])
+    url = parse.urlsplit(source["url"])
     assert url.scheme == "https" and url.netloc == "github.com"
     assert url.path.startswith("/ziyixi/protos/releases/download/")
     assert url.path.endswith(
@@ -176,7 +186,7 @@ def test_docker_installs_locked_production_environment_and_starts_directly():
     assert re.search(r"(?m)^USER (?!root\b|0\b)\S+", runtime)
     entrypoint = re.search(r"(?m)^ENTRYPOINT (\[.*\])$", runtime)
     assert entrypoint is not None
-    assert Path(json.loads(entrypoint[1])[0]).name == "newsletter"
+    assert pathlib.Path(json.loads(entrypoint[1])[0]).name == "newsletter"
     startup = "\n".join(
         line
         for line in runtime.splitlines()
@@ -186,10 +196,14 @@ def test_docker_installs_locked_production_environment_and_starts_directly():
 
 
 def test_ci_uses_the_same_quality_gate_before_image_build():
-    ci = (ROOT / ".github/workflows/ci.yml").read_text()
-    assert "requirements.lock" not in ci
-    assert "pip install" not in ci
-    assert "make check" in ci
-    assert "make smoke" in ci
-    assert "make build" in ci
-    assert re.search(r"(?m)^\s+needs:\s*test\s*$", ci)
+    jobs = workflows.load("ci.yml")["jobs"]
+    commands = [step.get("run", "") for step in jobs["test"]["steps"]]
+    assert {"make check", "make smoke", "make build"} <= set(commands)
+    assert all(
+        "requirements.lock" not in command and "pip install" not in command
+        for job in jobs.values()
+        for step in job["steps"]
+        for command in [step.get("run", "")]
+    )
+    needs = jobs["image"]["needs"]
+    assert "test" in ([needs] if isinstance(needs, str) else needs)

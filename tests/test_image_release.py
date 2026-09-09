@@ -1,26 +1,106 @@
-"""Offline image-publication boundaries: fake Docker, synthetic files, no containers."""
+"""Image-publication boundaries using fake Docker and synthetic files."""
 
-import importlib.util
+import importlib.util as util
 import json
 import os
+import pathlib
+import shlex
 import subprocess
-from pathlib import Path
-from types import SimpleNamespace
+import types
+import unittest.mock as mock
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+import tests.support.workflows as workflows
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 IMAGE_ID = "sha256:" + "a" * 64
 
 
 @pytest.fixture
 def smoke():
-    spec = importlib.util.spec_from_file_location(
+    spec = util.spec_from_file_location(
         "offline_image_smoke", ROOT / "scripts/smoke_image.py"
     )
-    module = importlib.util.module_from_spec(spec)
+    module = util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture
+def probe():
+    spec = util.spec_from_file_location(
+        "offline_image_probe", ROOT / "scripts/smoke_image_probe.py"
+    )
+    module = util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("generated_kind", ["missing", "file", "directory"])
+def test_probe_uses_traversable_interface_for_absent_generated_package(
+    probe, monkeypatch, generated_kind
+):
+    class Resource:
+        # Traversable has no exists(), even when backed by a real directory.
+        def is_file(self):
+            return generated_kind == "file"
+
+        def is_dir(self):
+            return generated_kind == "directory"
+
+    class Package:
+        def __str__(self):
+            return "/installed/site-packages/newsletter"
+
+        def joinpath(self, relative):
+            assert relative == "generated"
+            return Resource()
+
+    monkeypatch.setattr(
+        probe, "resources", types.SimpleNamespace(files=lambda _: Package())
+    )
+    monkeypatch.setattr(
+        probe,
+        "os",
+        types.SimpleNamespace(
+            getuid=lambda: 10001,
+            getgid=lambda: 10001,
+            ST_RDONLY=os.ST_RDONLY,
+            statvfs=lambda _: types.SimpleNamespace(f_flag=os.ST_RDONLY),
+        ),
+    )
+    monkeypatch.setattr(
+        probe,
+        "pathlib",
+        types.SimpleNamespace(
+            Path=lambda _: types.SimpleNamespace(
+                read_text=lambda: "routing table header\n", exists=lambda: False
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        probe, "socket", types.SimpleNamespace(if_nameindex=lambda: [(1, "lo")])
+    )
+    monkeypatch.setattr(
+        probe, "util", types.SimpleNamespace(find_spec=lambda _: None)
+    )
+    monkeypatch.setattr(
+        probe, "shutil", types.SimpleNamespace(which=lambda _: None)
+    )
+    checked = mock.Mock()
+    monkeypatch.setattr(
+        probe,
+        "preflight",
+        types.SimpleNamespace(check_proto_dependency=checked),
+    )
+    if generated_kind == "missing":
+        probe.check_package({})
+        checked.assert_called_once_with()
+    else:
+        with pytest.raises(AssertionError, match="generated package contents"):
+            probe.check_package({})
+        checked.assert_not_called()
 
 
 @pytest.fixture
@@ -41,7 +121,7 @@ def source_root(tmp_path):
 
 @pytest.fixture
 def docker(smoke, monkeypatch):
-    state = SimpleNamespace(
+    state = types.SimpleNamespace(
         calls=[],
         failure=None,
         metadata={
@@ -55,10 +135,10 @@ def docker(smoke, monkeypatch):
     def run(command, **kwargs):
         state.calls.append((command, kwargs))
         if command[1:3] == ["image", "inspect"]:
-            return SimpleNamespace(stdout=json.dumps(state.metadata))
+            return types.SimpleNamespace(stdout=json.dumps(state.metadata))
         if command[1] == "run" and state.failure:
             raise state.failure
-        return SimpleNamespace(returncode=0)
+        return types.SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(smoke.subprocess, "run", run)
     return state
@@ -117,7 +197,10 @@ def test_wrong_image_metadata_is_rejected_before_container_start(
     smoke, source_root, docker, field, value
 ):
     docker.metadata[field] = value
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError,
+        match=r"fixed image ID|architecture does not match|nonroot user",
+    ):
         smoke.verify("fixture", "linux/amd64", root=source_root)
     assert len(docker.calls) == 1
 
@@ -156,13 +239,13 @@ def test_source_audit_rejects_private_names_without_reading_contents(
 ):
     path = source_root / "src/newsletter" / name
     path.write_text("Synthetic; contents must never be inspected")
-    original = Path.read_bytes
+    original = pathlib.Path.read_bytes
 
     def read_bytes(candidate):
         assert candidate != path
         return original(candidate)
 
-    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    monkeypatch.setattr(pathlib.Path, "read_bytes", read_bytes)
     with pytest.raises(ValueError, match="private-file"):
         smoke.source_hashes(source_root)
 
@@ -187,50 +270,75 @@ def test_source_audit_hashes_package_inputs_but_ignores_bytecode(
     }
 
 
-def test_ci_builds_native_amd64_then_smokes_before_login_and_push_without_rebuild():
-    ci = (ROOT / ".github/workflows/ci.yml").read_text()
-    image = ci.split("\n  image:", 1)[1]
-    assert "runs-on: ubuntu-24.04" in image and "needs: test" in image
-    assert 'test "$(uname -m)" = x86_64' in image
-    assert image.index("--audit-source") < image.index(
-        "docker build --platform linux/amd64"
+def test_ci_smokes_native_amd64_before_login_and_push_without_rebuild():
+    image = workflows.load("ci.yml")["jobs"]["image"]
+    assert image["runs-on"] == "ubuntu-24.04"
+    needs = image["needs"]
+    assert "test" in ([needs] if isinstance(needs, str) else needs)
+    steps = image["steps"]
+    builds = [
+        index
+        for index, step in enumerate(steps)
+        if "docker build" in step.get("run", "")
+    ]
+    assert len(builds) == 1
+    build = builds[0]
+    smoke = next(
+        index
+        for index, step in enumerate(steps)
+        if "scripts/smoke_image.py --image" in step.get("run", "")
     )
-    assert image.index("docker build") < image.index(
-        "scripts/smoke_image.py --image"
+    login = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("uses", "").startswith("docker/login-action@")
     )
-    assert image.index("scripts/smoke_image.py --image") < image.index(
-        "docker/login-action"
+    push = next(
+        index
+        for index, step in enumerate(steps)
+        if "docker push" in step.get("run", "")
     )
-    assert image.index("docker/login-action") < image.index("docker push")
-    assert (
-        image.count("docker build ") == 1
-        and "docker/build-push-action" not in image
+    assert build < smoke < login < push
+    assert all(
+        not step.get("uses", "").startswith("docker/build-push-action@")
+        for step in steps
     )
-    assert 'docker tag "$TESTED_IMAGE"' in image
-    assert "service-${GITHUB_SHA}" in image and ' = "$TESTED_IMAGE"' in image
-    assert (
-        image.count(
-            "if: github.ref == 'refs/heads/main' && github.event_name == 'push'"
-        )
-        == 2
+    build_words = shlex.split(steps[build]["run"])
+    assert build_words[:4] == ["test", "$(uname -m)", "=", "x86_64"]
+    assert build_words.index("--audit-source") < build_words.index("build")
+    assert build_words[build_words.index("--platform") + 1] == "linux/amd64"
+    assert steps[smoke]["env"]["TESTED_IMAGE"] == (
+        "${{ steps.build.outputs.image_id }}"
     )
+    assert steps[push]["env"]["TESTED_IMAGE"] == (
+        "${{ steps.build.outputs.image_id }}"
+    )
+    push_words = shlex.split(steps[push]["run"])
+    assert "service-${GITHUB_SHA}" in push_words
+    tag = next(
+        index
+        for index in range(len(push_words) - 1)
+        if push_words[index : index + 2] == ["docker", "tag"]
+    )
+    assert push_words[tag + 2] == "$TESTED_IMAGE"
+    assert push_words[push_words.index("=") + 1] == "$TESTED_IMAGE"
+    gate = "github.ref == 'refs/heads/main' && github.event_name == 'push'"
+    assert steps[login]["if"] == steps[push]["if"] == gate
 
 
 def test_daily_workflow_never_schedules_or_sends():
-    workflow = (ROOT / ".github/workflows/daily.yml").read_text()
-    assert "schedule:" not in workflow and "cron:" not in workflow
-    assert (
-        "workflow_dispatch:" in workflow and "repository_dispatch:" in workflow
-    )
-    assert "NEWSLETTER_EDITOR_TOKEN" in workflow
+    workflow = workflows.load("daily.yml")
+    assert set(workflow["on"]) == {"workflow_dispatch", "repository_dispatch"}
+    steps = workflow["jobs"]["prepare"]["steps"]
+    trigger = next(step for step in steps if "run" in step)
+    assert trigger["run"] == "python3 scripts/trigger_run.py"
+    assert "NEWSLETTER_EDITOR_TOKEN" in trigger["env"]
     assert all(
-        value not in workflow
-        for value in (
-            "NEWSLETTER_SEND_TOKEN",
-            "RESEND_API_KEY",
-            "latest send",
-            "/send",
-        )
+        not {"NEWSLETTER_SEND_TOKEN", "RESEND_API_KEY"}
+        & step.get("env", {}).keys()
+        and "latest send" not in step.get("run", "")
+        and "/send" not in step.get("run", "")
+        for step in steps
     )
 
 

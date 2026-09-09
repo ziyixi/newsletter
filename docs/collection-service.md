@@ -2,7 +2,11 @@
 
 ## 权限与持久化
 
-运行时只接受日期和幂等键，不接受远程指令文本、路径、URL模板、模型名或发送标志。operator 在服务器修改 Markdown 目录；每个新run保存排序后的原文与hash。相同请求重复提交复用旧快照。HTTP POST /v1/runs 使用editor角色，独立send角色不会隐式出现在pipeline中。
+启动整期时只接受日期和幂等键，不接受远程指令文本、路径、URL模板、模型名或发送标志。内容配置通过已有独立同步器激活；每个新run保存完整原文、版本与hash。相同请求重复提交复用旧快照。HTTP POST /v1/runs 使用editor角色，独立send角色不会隐式出现在pipeline中。
+
+公开业务只有 StartRun/GetRun/GetEdition/SendEdition 4个RPC，以及对应HTTP；另保留
+只读healthz和冻结预览。只有editor/send两个HTTP角色，不再配置ingest token。
+特殊重启和验证投递使用停机、同锁的 `newsletter admin`，详见[维护说明](maintenance.md)。
 
 SQLite是业务状态的权威来源；Notion是单向后台投影。新选题DAG先保存逐题证据与独立审核版本，Notion暂时失败不阻止编排和发送；旧冻结刊期保留原投影确认门槛。写Notion前保存submitting，未知结果不自动重试。未找到任何已核实内容仍blocked，不冒充成功。详见 [选题级DAG](workflow.md)。
 
@@ -10,7 +14,7 @@ run与edition分别有幂等记录，防止在创建edition后、回写run关联
 
 ## 调度与资源
 
-服务没有cron，不根据时间自动创建run，也不依赖Codex app routine。worker的Event只等待外部请求唤醒。默认单进程串行，最多8个pending collection run、8个直接编稿任务。新DAG总研究预算5400秒，节点另有限额；逐题先保存简版再深读，截止/中断时本地拼版可恢复。旧legacy/mock仍使用每方向独立预算。不能把202接受当成完成。
+服务没有cron，不根据时间自动创建run，也不依赖Codex app routine。worker的Event只等待外部请求唤醒。默认单进程串行，默认最多8个pending collection run，内部刊期准备队列仍有独立上限，不再对外提供直接编稿入口。新DAG总研究预算5400秒，节点另有限额；逐题先保存简版再深读，截止/中断时本地拼版可恢复。旧legacy/mock仍使用每方向独立预算。不能把202接受当成完成。
 
 已排队刊期优先；新选题研究优先于Notion后台投影，防止镜像故障耗尽研究期限。低频私人服务不提供多租户公平性/SLA；不要通过增加uvicorn进程绕过目录锁。
 
@@ -41,7 +45,8 @@ live部署需单独配置本地持久data目录与专用可写Codex auth目录�
 
 ## 外部触发器迁移
 
-源码中的daily workflow改为手动或repository_dispatch，仅运行trigger_run.py，且不持有发送权限；无schedule。生产每日投递由self-host-on-vultr的独立cron容器在15:00 UTC触发。迁移新主机时仍须确认旧sender已停，避免新旧重复；不要从本地配置推断线上调度状态。
+源码中的daily workflow改为手动或repository_dispatch，仅运行trigger_run.py，且不持有发送权限；无schedule。生产每日投递由self-host-on-vultr的独立cron容器在 **07:00 America/Los_Angeles** 触发，随夏令时调整，不能固定为15:00 UTC。采编5400秒对应08:30，外部等待7200秒对应09:00，为09:30前到达目标留余量。迁移新主机时仍须确认旧sender已停，避免新旧重复；不要从本地配置推断线上调度状态。升级不新增真实测试邮件；停机备份与回退见[维护说明](maintenance.md)。
+
 ## Current live workflow
 
 Live deployments now default to the versioned DAG described in [workflow.md](workflow.md).
