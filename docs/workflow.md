@@ -1,327 +1,166 @@
-# Editable editorial DAG and measured usage
+# 一期简报是怎样生成的
 
-## Topic-first publication
+服务收到外部请求后，按工作流完成搜集、选题、调查、审校和排版。它不自己定时运行，
+也不依赖 Codex 桌面定时任务。发送是独立步骤：外部触发器等待刊期准备好，再按权限发送。
 
-Live deployments default to `NEWSLETTER_WORKFLOW=dag` and the packaged
-`src/newsletter/workflows/daily.yaml` (`daily-topics`). Eight discovery directions
-remain under `instructions/discovery/`. The service, not an app routine or a
-human watching logs, performs the entire bounded preparation flow:
+## 从线索到成稿
 
 ```text
-public history + unresolved topics + metadata feeds
+历史材料、待跟进问题、公开信息源
                   ↓
-eight-direction discovery → deduplicate → select up to 8 topics
+八个方向搜集线索 → 去重 → 全局选题
                   ↓
-freeze complete topic plan
+逐题调查，先写简讯并分别审校、保存
                   ↓
-each topic: research a brief + independently review → checkpoint
+优先选题继续深读，再次审校、保存
                   ↓
-top topics: deeper investigation + independently review → checkpoint
+采用已通过审校的完整版本，汇编成刊期
                   ↓
-deterministic publication from approved whole versions
-                  ↓
-private Todofy → render + frozen hash → protected external send
+补充 Todofy 个人事件 → 排版并冻结 → 等待发送
 ```
 
-All brief attempts precede deep attempts. Selection compares the supplied pool
-without another research pass; discovery collects bounded leads, not full papers.
+八个搜集方向是 AI/ML、跨学科科学、世界事务、经济、健康、通用技术、搜广推和
+LLM 架构。每个方向最多提供 5 条线索，按方向交错合并后统一去重，候选池最多 30 条。
+同一论文或事件在不同方向出现，不会因此获得多个名额。搜集方向不是必备栏目，
+入库也不等于入选。
 
-The directions are AI/ML, cross-disciplinary science, world events, economy,
-health, general CS/technology, search/advertising/recommendation systems
-(`07-search-ads-recs`), and LLM architectures/training-inference mechanisms
-(`08-llm-architectures`). The last two only broaden retrieval: every direction
-still returns at most five leads; the shared candidate pool remains capped at 30,
-selection at eight topics, deeper investigation at four, and displayed deep pieces
-at two. No extra selection/review pass, final output slot, or larger time budget
-is added. The specialized directions must use the same DOI/arXiv/event identity
-as a duplicate from a broader direction, not multiply one paper across workers.
-Discovery leads are interleaved round-robin in frozen direction order before
-the existing shared deduplication, history filtering and 30-candidate cap. This
-keeps later directions from being crowded out by earlier lists; it does not
-guarantee a candidate from every direction will be selected or published.
+当前仓库的[编辑预算](../content-config/editorial.yaml)为：
 
-## Source-first discovery and reader-first writing
+| 项目 | 上限 |
+| --- | ---: |
+| 公共选题总数 | 6 |
+| 以研究为主体的选题 | 1 |
+| 深读选题 | 1 |
+| 候选池中的研究类线索 | 10 |
 
-AI discovery starts with an editable guide at
-`instructions/discovery/_sources/ai-ml.md`: official proceedings, journals and
-research-group publication directories. It is navigation, not an author/domain
-allowlist. A promising new team can qualify through a specific contribution;
-an established team or important topic does not automatically earn a feature.
-The guide is appended to the AI direction and hashed when a run is accepted,
-never reread midway through a frozen run. It adds no worker or model pass.
-Custom discovery directories without the guide retain their exact old behavior.
+这些是上限，不是必须凑满的篇数；分类不明的内容也占用研究名额。
+新闻可以引用论文作背景，但不能把论文换个新闻标题来绕过限制。
 
-The public proto candidate carries optional author, affiliation, venue,
-publication status, contribution, source rationale and actually consulted public
-URLs. Unknown values stay empty; the old candidate shape and archived hashes
-remain valid. These fields are discovery context, not publication citations or
-proof of correctness. Selection compares the work's specific advance over its
-prior baseline, not only the importance of its topic. A quieter news day can
-justify a clearly dated look back rather than filling space with thin new papers.
+[`workflow.yaml`](../content-config/workflow.yaml) 中较大的 `max_tasks: 8`、
+`max_deep: 4` 是节点容量，实际执行还会受上述编辑预算约束，不能把它们当作当前篇数。
+所有入选题先尝试简讯，之后才进入深读。模型调用串行执行，八个方向不代表八个并发进程。
 
-Writing assumes an interested reader outside the field: explain the background
-and previous approach, what changed, and why that matters. Define useful terms
-on first use and interpret the few quantities that help explain the change.
-Depth means a better explanation, not more statistics or a longer abstract.
-Keep process diagnostics out of reader copy; limitations explain the actual
-boundary, not the mechanics of search/review. Charts must answer a useful reader
-question rather than merely reproduce available numbers. These writing goals
-do not add a publication veto, model loop, or delay to the existing safe tail.
-See [source-first acceptance](../evals/source-first-acceptance.md) for the small
-real-content evaluation, distinct from offline contract and delivery tests.
+## 选什么，怎样讲清楚
 
-### Standalone chart cards
+搜集阶段寻找值得继续核查的变化，不把每条线索都写成论文摘要。
+AI/ML 方向的[信源导航](../content-config/discovery/_sources/ai-ml.md)优先提供正式刊会、
+机构和研究组入口，但它不是白名单：知名机构不自动获得版面，新团队也可以凭具体贡献入选。
+作者、单位、发表状态等元数据帮助判断选题，不能代替原文证据。
 
-An optional chart is a small, self-contained explanation, not a figure that
-requires the article. The existing fields jointly carry its subject and
-comparison question (`question`), measured outcome and readable category labels
-(`metric`, `points`), unit and actual data/experiment period (`unit`, `period`),
-comparison baseline, scale interpretation and one main insight (`caption`),
-image-independent comparison/trend (`alt_text`) and the relevant evidence boundary
-(`limitations`). They need not repeat the same text in every field.
+选题比较的是“原来怎样、这次改变了什么、值得读者花时间了解吗”，而不只是话题是否热门。
+正文面向对领域感兴趣、但不熟悉细节的人：先给背景，再解释变化和影响，
+只保留有助于判断的数字。限制放在相关结论旁，不把搜索记录或审稿笔记塞进邮件。
 
-For example, an effect-size unit alone does not explain what was compared, which
-direction favors which group, or whether the result concerns a laboratory measure
-instead of a real-world outcome. Those explanations must come from the available
-sources; the writer must not invent thresholds, treat an effect size as a percent,
-or assume a larger value is better. Available numbers alone do not justify a chart.
+正文、阅读推荐、图表和观察短讯分别审校。阅读推荐本身应有完整介绍，不要求读者点开才
+知道文章讲什么。图表应独立说明比较对象、指标、单位、时期、主要发现和必要限制；
+没有适合比较的可靠数据，就不画图。图或推荐有问题，只去掉该组件，不牵连已成立的正文。
 
-The existing independent reviewer assesses the complete chart without relying
-on the body for missing context. A materially ambiguous or misleading comparison
-can remove the optional chart, never an otherwise independent body; a wording
-preference adds no veto. No schema, model pass, lexical filter or chart-repair
-loop is added. Offline prompt-routing and component-isolation tests do not prove
-model readability: visual acceptance should also hide the article and check
-whether the image/card and its text alternative explain the comparison alone.
+每篇内容保留自己的分类、标题和段落；简讯不会统一塞进“世界简报”。
+写作和审校使用不同会话，但不等于使用不同模型，也不保证事实一定正确。
+内容质量的评估方法见[质量评测](evaluation.md)，不要用单测通过率代替阅读质量。
 
-## Briefs and deeper explanations
+## 中途失败，已经做好的内容怎么办
 
-Up to four selected topics receive a
-deepening attempt; at most two complete deep pieces are displayed. Other topics
-use their separately researched and approved brief, not a truncated deep piece.
-Discovery and ranking do not count as verified writing. A minimal watch signal
-must independently verify that an event occurred, not merely attach a disclaimer.
+简讯通过审校后立即保存，不等整期完成。深读失败或没有写完时，仍可采用之前完整的简讯，
+不会把未完成的长稿截成短稿。正文遇到实质问题时，最多进行一次针对性修订并重新审校，
+不反复重写整期。若后来确认某个已通过版本有重大事实错误，只撤回有明确证据指向的版本。
 
-Each story has independent body, recommended-reading card, chart and signal
-assessments. The body includes its title, paragraphs and limitations as one
-indivisible version. An optional chart/card problem removes that component, not
-the body or another topic. The body must stand alone without referring to a
-missing graphic/card. A blocked body gets at most one targeted rewrite and a new
-review; there is no whole-issue HOLD/rewrite/review loop. Review sessions search
-and open every cited source. Observed opens and exact hashes are necessary
-provenance, not a guarantee of factual correctness or independent-model review.
+每个入选题都有最终处理记录：
 
-Each published topic retains its own heading, paragraphs, category and local
-limitations in the email. Up to 12 sections are accepted; briefs are not merged
-into a single world section. New writing uses explicit AI/ML, science, world,
-economy, technology or health categories, while legacy feature/context values
-remain readable. Graphs can accompany a brief when verified comparable data
-help explain it; they do not depend on successful deepening. No data means no
-invented graph. Empty drafts do not receive an empty review; malformed components
-receive bounded, specific diagnostics for the existing repair opportunity.
+| 状态 | 含义 |
+| --- | --- |
+| `deep` | 采用完整深读 |
+| `brief` | 采用独立完成的简讯 |
+| `watch` | 只刊出已核实的事件及其边界，结论仍待跟进 |
+| `deferred` | 本期暂不刊出，保留原因和后续问题 |
 
-An approved brief/signal is synchronously checkpointed before further repair or
-deepening. Every selected topic receives an explicit `deep`, `brief`, `watch`
-or `deferred` disposition. Deferred/watch questions and relevant unfinished
-depth remain public follow-up context for future discovery; no reader clicks or
-manual rating workflow is required. This history is a lead, never recycled
-evidence. A later confirmed material factual error can withdraw only the exact
-affected approved version (and exact signal if affected), with a source-backed
-independent receipt. Ordinary deepening failure never retracts a brief.
+待跟进问题会进入以后搜集时的参考材料；它们不是可以直接复用的已核实结论，
+下一次仍要重新打开来源并确认进展。整个过程不要求读者每天点击或打分。
 
-## Deadline and failure behavior
+整期调查预算为 90 分钟，当前节点还分别设置了搜集 150 秒、简讯 300 秒、深读 420 秒
+等上限。完成调查、耗尽时间、遇到认证或额度故障，或恢复结果未知的模型尝试时，
+服务用已经保存的审校结果完成本地汇编，不为收尾再调用模型。
+因此，部分调查失败和最终准备好一份较短的刊期，可以同时成立。
 
-The total elapsed research budget remains 5400 seconds from the accepted run's
-frozen start. Discovery is bounded per direction; brief attempts have 300 seconds,
-deep attempts 420 seconds. Models execute serially against one dedicated login.
-More map items do not imply concurrent model processes. The default pool holds
-30 candidates; selection allows at most eight topics (operator ceiling 12).
+如果没有任何可发布内容，运行停在 `blocked`，原因是 `no_publishable_content`。
+服务不会补假稿、冒充今日重发旧稿，或未经核实发一封“应急简报”。
+数据库损坏、隐私或收件人配置错误、内容 hash 不符，以及上次发送结果未知，仍必须停止。
 
-At completion, deadline, provider fatal failure, or recovery of an unknown model
-attempt, a local deterministic tail freezes the best already approved complete
-units. It performs no model call and changes no completed attempt or review.
-Authentication, configuration and quota failure stop further model work; they
-do not invalidate previously approved unaffected content. A frozen publication
-is immutable and restartable through the local edition/render tail.
+生产调度在每天 **07:00 America/Los_Angeles** 启动，随夏令时变化。
+90 分钟调查预算和两小时触发器等待为 09:30 前到达留出余量，但不是送达保证。
+调度、停机和恢复步骤见[维护说明](maintenance.md)。
 
-If nothing has independently passed, the run remains blocked with
-`no_publishable_content`: no invented article, empty mock issue, old issue
-relabelled as today, or unverified emergency email is sent. Storage corruption,
-privacy/recipient failure, render/hash mismatch and ambiguous previous send
-remain hard stops. Daily delivery is more resilient, not an unconditional
-guarantee during a total source/account/mail outage.
+## 保存在哪里，配置变更会影响旧刊期吗
 
-Use the external `newsletter-trigger --send --timeout 7200` for collection,
-render and delivery headroom. Deployment cron stays external at 07:00
-`America/Los_Angeles` daily, automatically following daylight saving time. This
-targets delivery before 09:30 local time: the 90-minute content budget nominally
-ends at 08:30 and the two-hour client wait at 09:00. The service never schedules
-its own next run; provider or inbox failures can still miss the target, and
-the margin does not authorize blind retries or extend these unchanged deadlines.
+SQLite 保存业务状态。每次新运行冻结日期、模型、工作流、指令、编辑配置、历史线索和
+时间预算；随后修改配置，不会影响正在运行的任务或已经生成的刊期。
+相同幂等键复用同一次运行，不重新搜集。模型请求结果未知时，也不会盲目重放。
 
-## Durable state and the Notion mirror
+主要记录分为三组：
 
-SQLite is authoritative. Frozen run inputs include the DAG, instructions,
-editorial/reader policies, date, model, public history, pending topics and budget.
-`workflow_runs`, `workflow_attempts` and `workflow_artifacts` retain exact
-attempts and outputs. Map identities and priority order freeze once; replaying a
-changed expansion conflicts. Unknown provider requests are not blindly replayed.
+| 记录 | 保存什么 |
+| --- | --- |
+| `workflow_runs`、`workflow_attempts`、`workflow_artifacts` | 冻结输入、各次尝试及输出 |
+| `publication_plans`、`publication_units`、`publication_snapshots` | 入选计划、逐题审校版本、最终汇编及处理记录 |
+| `sends`、`verification_sends` | 正常发送和另行批准的验证发送回执 |
 
-`publication_plans` records all selected tasks; `publication_units` is an
-append-only version/checkpoint ledger; `publication_snapshots` freezes the
-assembled result and coverage. A snapshot must reconstruct exactly from the
-stored validated approvals and evidence. Every cited body, graph and reading
-source remains bound to local packet snapshots; optional supporting references
-are checked just like the primary reading citation.
+汇编只能采用与证据及审校记录匹配的完整版本。首次成功冻结后，不再改写正文、模板或图表；
+预览与发送使用同一份渲染结果和 hash。`GET /v1/runs/{id}` 可以查看进度、用量和
+`publication` 中各选题的处理结果，刊期也带有同一份处理记录。
 
-For new topic editions, `projection_required=False` is an immutable internal
-binding. Notion is a one-way outbox mirror, not a critical publication dependency.
-The worker advances topic research before draining background projections.
-Candidate-index pages are labelled unverified metadata; research pages are
-separate. Failed or ambiguous Notion writes stay explicit and are never blindly
-recreated. A temporary Notion/Todofy startup outage may be reported as degraded;
-invalid credentials, schema or required local/Codex runtime still fail startup.
+Notion 是便于阅读和整理的副本，不是服务的主数据库。候选、研究材料和每日档案分别记录，
+后台同步暂时失败不会阻塞当前工作流发信；不确定是否写入成功时，不自动新建重复页面。
+Todofy 事件放在公共内容之后，不进入公开研究上下文或材料库；只有显式允许时，才写入
+私人简报档案。建库、字段和同步规则见[Notion 说明](notion.md)。
 
-Old frozen editions retain `projection_required=True` and their original
-adopted-material Notion confirmation barrier. The former whole-issue recipe is
-kept as `workflows/legacy-daily.yaml` for compatibility and regression. Selecting
-`NEWSLETTER_WORKFLOW=legacy` is the earlier per-direction adapter, a different
-compatibility path; it is never an automatic fallback from failed live research.
-Old continuations, receipts and deadlines are not rewritten by this upgrade.
+兼容代码仍保留旧冻结刊期的原有规则，包括旧版要求的 Notion 确认。
+`workflows/legacy-daily.yaml` 和 `NEWSLETTER_WORKFLOW=legacy` 是两条不同的历史兼容路径，
+都不是当前采编失败后的自动替代方案；升级不会改写旧回执或延长旧任务期限。
 
-`GET /v1/runs/{id}` exposes the actual graph progress, usage and final
-`publication` coverage. The edition carries the same coverage. A failed research
-graph can therefore coexist honestly with a successfully prepared partial issue.
-No credential or raw model transcript is returned. Todofy remains a private
-bounded tail, never entering public prompts, packets or Notion.
+日常只需修改 `content-config/`，不必重新构建镜像。配置发布、匿名拉取、验证和回退见
+[内容配置说明](content-config.md)。工作流只接受已注册节点、依赖和有界参数；
+不支持任意 Python、shell、环境变量展开或远程提交提示词，也不能通过配置绕开发送权限。
 
-## Editing the recipe safely
+## 邮件底部的 token 数怎样计算
 
-Override `NEWSLETTER_WORKFLOW_FILE` and `NEWSLETTER_DISCOVERY_DIR` only via
-explicit read-only operator mounts. HTTP callers cannot supply local paths,
-prompts, YAML or credentials. Version 1 supports registered types, literal
-bounded parameters, `needs` and bounded direct-dependency maps. The sole run
-map is `run.instructions`. Aliases, tags, duplicate keys, unknown types, cycles,
-shell/Python hooks and environment expansion are rejected.
+服务保存模型每次调用的累计用量最新值，不把同一次调用的多次通知相加。
+同一会话内的有限修正也不会重复计数。邮件页脚拆成互不重叠的三项：
 
-The code validates all required roles and dependency paths, full selected-topic
-brief coverage, bounded deepening and the non-model publication tail. A YAML
-change cannot grant send authority or waive evidence checks. New APIs require a
-reviewed adapter. Public fixed-endpoint Crossref/Nature metadata remain optional
-discovery supplements, not full-text evidence; DOI/version/event deduplication
-and historical dispositions reduce repetitive coverage.
-
-## Token accounting
-
-The pinned Python SDK emits `thread/tokenUsage/updated`. Its `tokenUsage.total`
-is a cumulative thread snapshot. Each `CodexEditor.execute` creates one fresh
-thread; a bounded source-provenance correction reuses that thread. We upsert the
-latest snapshot per invocation in `model_usage`, never add snapshots or correction
-totals again. Input, cached input, output, reasoning output and provider total
-are retained. Cached input and reasoning output are subsets. SDK rounds are not
-counts of underlying API requests.
-
-All DAG stages run within the same durable run usage scope. The ledger preserves
-reports received before failed/cancelled/invalid results; missing reports and
-unfinished invocations mark the summary partial. Provider totals are retained,
-not replaced by estimated context sizes. The frozen edition and HTML/text footer
-include this summary, so changing it changes the approved render hash.
-For upgrade continuations, querying either run includes the original and repair
-usage by unique invocation ID; no ledger rows are copied or counted twice.
-
-The small lower-right footer says **recorded** tokens, with mutually exclusive
-uncached input, cached input and output counts, plus partial/unknown labels
-when necessary. It is not a cost estimate or a ChatGPT plan allowance meter.
-Todofy's current response does not return its upstream Gemini usage: that usage
-is explicitly excluded, not invented from logs or assumed zero. Mock footer text
-is explicitly demonstration-only. Old editions are not retroactively rewritten.
-
-Official reference: [Codex app-server token usage events](https://learn.chatgpt.com/docs/app-server).
-The implementation also checks the installed SDK's pinned event schema; no raw
-account/login or model transcript is persisted for accounting.
-
-## Release checks
-
-After correcting a shared story-writer startup configuration failure, an
-operator may explicitly run the local maintenance command:
-
-```sh
-newsletter admin retry-stories \
-  --parent-run-id '<parent-run-UUID>' \
-  --request-key '<stable-explicit-restart-key>' \
-  --issue-date '<original-YYYY-MM-DD>'
+```text
+非缓存输入 = 总输入 − 缓存输入
+记录到的总量 = 非缓存输入 + 缓存输入 + 输出
 ```
 
-Stop the external trigger, wait for active work to finish, and stop the service
-first. The command takes the same nonblocking `service.lock`, rejects active
-work receipts, and offers no `--force`. It neither starts workers nor runs
-global recovery. Only normal service startup can execute the queued child.
-This creates at most **one new child per parent**, not a reset of the failed run.
-The same key retrieves that child, including after restart; another key or a
-retry of the child is rejected. The command never sends mail. Online
-`newsletter admin status` is a separate read-only count check and does not take
-ownership or mutate state. See [maintenance](maintenance.md) for sequencing.
+失败或取消前收到的用量仍保留；没有收到完整用量时标为部分统计或未知，不按零计算。
+修订子运行按唯一调用 ID 合并父子用量。统计随刊期一起冻结，不回写旧邮件。
 
-Eligibility is deliberately narrow: the parent must be terminal
-`no_publishable_content`, have no edition, frozen publication, approved body or
-signal, and have intact successful history/feed/discovery/selection/plan
-receipts. It accepts either a first-writer `configuration` failure or the older
-all-writer `writer:unavailable` launch-failure shape with one failed completed
-turn per writer and no token-usage report. Authentication, quota, timeout,
-incomplete/unknown turns and editorial-review rejection are not launch retries.
-Missing token reports remain **unknown consumption**, never zero.
+这些数字不是订阅额度百分比，也不是账单估价。Todofy 返回值没有附带上游 Gemini 用量，
+因此页脚明确不含这部分消耗。
 
-The child's SQLite `workflow_story_replays` receipt binds the source definition,
-inputs, selected tasks and every reused artifact hash. Local child attempts
-recheck those hashes and original input/map receipts immediately before reuse;
-they do not rerun feeds, discovery or ranking, nor repeat Notion side effects.
-All story writing and independent review run afresh. The original issue date,
-model, instructions, policy and recipe stay frozen; only the explicitly created
-child gets its own bounded start time. Parent attempts remain unchanged.
-The child's token footer includes parent and child invocation records exactly
-once, including missing/partial parent usage, so reused research cost is visible.
-The ordinary daily-send guard is unchanged; an explicitly authorized corrected
-test still uses the separate stopped-service verification command below.
+<a id="release-checks"></a>
 
-An explicitly requested corrected-email test uses:
+## 维护资格与发布验证
 
-```sh
-newsletter admin send-verification \
-  --edition-id '<new-ready-edition-UUID>' \
-  --request-key '<stable-approval-key>' \
-  --expected-render-hash '<exact-frozen-render-hash>'
-```
+`newsletter admin retry-stories` 仅用于修好写作模块的启动配置后恢复符合条件的任务，
+不是通用重试按钮。
+除[维护说明](maintenance.md)中的停机、持锁要求外，原运行还必须同时满足：
 
-It requires the stopped-service lock, validated private service configuration,
-a distinct ready edition, and a confirmed original delivery for that date.
-Without `--after-verification`, the separate `verification_sends` ledger allows
-only one such attempt per date. If the user explicitly requests another new
-test edition, add `--after-verification '<latest-accepted-verification-UUID>'`
-alongside the new edition's exact render hash and stable request key. The entire
-same-date chain must have confirmed acceptance; a predecessor permits only one
-successor. Stale approvals and any failed/unknown ancestor block a new send.
-A repeated frozen approval never calls the provider again, including after an
-unknown outcome or a later successor. Original daily receipts remain unchanged.
-Cron and the standard trigger never use this command; it is not an automatic
-retry or a way to bypass a failed/unknown daily send.
-No new real test email is part of this refactor or its deployment checks.
+- 已结束并因 `no_publishable_content` 被阻止，没有刊期、冻结汇编、已审正文或观察短讯。
+- 历史、信息源、搜集、去重、选题和计划的成功记录完整，冻结输入与所有复用材料 hash 一致。
+- 属于首个写作节点的 `configuration` 启动失败。另一种兼容情况是旧版所有写作节点
+  统一出现 `writer:unavailable`，且每个写作步骤只有一次已结束的失败调用，没有用量报告。
 
-The public `ziyixi-protos==0.1.0.dev7` service exposes only `StartRun`, `GetRun`,
-`GetEdition`, and `SendEdition`. HTTP health and frozen preview remain separate
-read-only conveniences. Maintenance does not add a remote admin role or reuse
-the retired verification header on the normal daily-send route.
+认证、额度、超时、未完成或结果未知的调用，以及内容审校拒绝，都不符合条件。
+没有用量报告仍表示消耗未知，不表示没有花费 token。
+每个父运行最多创建一个子运行；同键返回已有的子运行，不能再次重启该子运行。
+子运行复用已校验的搜集与选题结果，但重新写作和审校，保留原日期、模型、指令和政策。
+原运行及外部写入回执不变，只有新子运行获得自己的时间预算。
 
-The ledger migration copies existing receipts in one SQLite transaction. Do not
-downgrade to the old one-row-per-date schema after creating successors, or
-restore a pre-send backup after any new delivery: either would discard evidence
-needed to prevent duplicate sends. Code rollback must retain the current ledger
-and its idempotency checks.
+验证邮件另用 `newsletter admin send-verification`，必须有明确授权、精确冻结 hash 和
+同日已确认的原投递；它不属于日常 cron 或发布检查。参数、验证链及未知结果的处理统一见
+[维护说明](maintenance.md)，不提供绕过检查的 `--force`。
 
-Run `make check`, `make smoke`, `make smoke-codex`, `make build` and the installed
-wheel smoke. Tests cover graph validation, stable maps, failure coverage,
-transactional edition bindings, replay conflicts, usage deduplication, partial
-usage, Notion adopted/unused separation, and same-date send idempotency. GitHub
-builds and probes the exact final native Linux/amd64 image before pushing it.
-Update the deployment's immutable digest and trigger timeout together. Preserve
-private env, current Codex login and existing SQLite delivery records; never use
-an empty database or new issue date to bypass a previous delivery attempt.
+发布前运行 `make check`、HTTP/Codex 启动 smoke、包构建及独立安装验证；GitHub 再验证
+原生 Linux/amd64 镜像。具体命令见[开发说明](development.md)。这些离线检查不证明
+模型额度可用、内容准确或邮件已经送达，真实联调需要单独授权。
+回退代码必须保留当前发送账本，不能恢复发送前的数据库或降级到无法保存验证链的旧结构。

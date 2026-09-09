@@ -6,7 +6,7 @@
 
 | 想改什么 | 从哪里开始 | 不该顺带做什么 |
 | --- | --- | --- |
-| 收集题材、信源、读者偏好 | `instructions/`、`policy/` | 不把个性化内容硬编码进路由 |
+| 收集题材、信源、读者偏好 | 仓库根目录的 `content-config/` | 不把个性化内容硬编码进路由 |
 | 接口、鉴权、响应 | `app.py`、`contracts.py` | 路由不创建供应商或持有自己的数据库 |
 | 启动、依赖检查、资源关闭 | `lifecycle.py`、`preflight.py` | 不在 import 时登录、联网或启动 worker |
 | 停机维护与投递账本 | `admin.py`、`ownership.py`、`delivery.py` | 不另建恢复worker、不绕过目录锁或发送审批 |
@@ -18,7 +18,7 @@
 | 邮件、预览、图表 | `rendering.py`、`templates/`、`charts.py` | 不让排版依赖 HTTP app，不执行模型 HTML |
 | 供应商、事务与队列 | `adapters.py`、`todofy.py`、`store.py`、`worker.py` | 不为未来假设的后端建立通用框架 |
 
-路径均相对于 `src/newsletter/`。新增供应商先实现现有 Protocol，再在 `lifecycle.py` 显式选择；同步补 settings 校验、启用时的 preflight 和离线故障测试。新增公开字段先改公共 proto，由公共仓库生成、验证并发布 `ziyixi-protos` GitHub Release wheel，再更新 newsletter 的精确版本/URL/uv 锁；本仓库不生成或复制 protobuf。
+除第一行外，路径均相对于 `src/newsletter/`。包内 `instructions/`、`policy/` 和模板仍用于初始配置、离线演示及旧运行兼容，不是需要删除的重复文件。新增供应商先实现现有 Protocol，再在 `lifecycle.py` 显式选择；同步补 settings 校验、启用时的 preflight 和离线故障测试。新增公开字段先改公共 proto，由公共仓库生成、验证并发布 `ziyixi-protos` GitHub Release wheel，再更新 newsletter 的精确版本/URL/uv 锁；本仓库不生成或复制 protobuf。
 
 `lifecycle.py` 统一拥有目录锁、Store、后端和 worker：先检查，再启动；关闭时先取消并等待 worker，再关闭 Store。它不承载 HTTP 路由。`model_io.py` 仅处理模型数据边界，不成为通用 utils 集合。`charts.py` 仅负责 PNG 与字体；引用编号、正文和冻结 hash 仍由 renderer 管理。
 
@@ -81,4 +81,6 @@ GitHub wheel URL 属于 `tool.uv.sources`，不是 PyPI 索引。只把 newslett
 
 源码与资源在 src/，回归在 tests/，可重复运行的验证工具在 scripts/。本机缓存、dist、demo 和一次性对比证据只进被忽略的 `.artifacts/`；保留一个 `.venv`。凭据、登录缓存、真实服务数据与预览使用仓库和同步盘之外的私有目录。不要把临时调查脚本提升为长期工具，除非确实需要重复运行。
 
-当前操作说明在 docs/，阶段验收快照在 docs/history/；旧快照保留原结论和当时未验范围，不覆盖成“最新通过”。
+现行操作说明放在 `docs/`，提示词回归基准放在 `tests/fixtures/editorial/`。
+旧验收报告和未采用的提示词保留在 Git 历史，不与现行说明混放。
+内容质量对比仍使用 `scripts/evaluate_prompts.py`，方法见 [内容评测](evaluation.md)。

@@ -1,57 +1,79 @@
-# 外部触发采编服务：运行边界
+# HTTP 接口与运行约定
 
-## 权限与持久化
+服务把“准备内容”和“发送邮件”分开。通常由 `newsletter-trigger` 负责调用；需要接入其他系统时，可以直接使用以下 HTTP 接口。
 
-启动整期时只接受日期和幂等键，不接受远程指令文本、路径、URL模板、模型名或发送标志。内容配置通过已有独立同步器激活；每个新run保存完整原文、版本与hash。相同请求重复提交复用旧快照。HTTP POST /v1/runs 使用editor角色，独立send角色不会隐式出现在pipeline中。
+## 地址与权限
 
-公开业务只有 StartRun/GetRun/GetEdition/SendEdition 4个RPC，以及对应HTTP；另保留
-只读healthz和冻结预览。只有editor/send两个HTTP角色，不再配置ingest token。
-特殊重启和验证投递使用停机、同锁的 `newsletter admin`，详见[维护说明](maintenance.md)。
+业务接口的请求体和响应使用 JSON，字段名为 `snake_case`；预览接口返回 HTML。消息定义来自公共 proto，但服务不启动 gRPC 端口。
 
-SQLite是业务状态的权威来源；Notion是单向后台投影。新选题DAG先保存逐题证据与独立审核版本，Notion暂时失败不阻止编排和发送；旧冻结刊期保留原投影确认门槛。写Notion前保存submitting，未知结果不自动重试。未找到任何已核实内容仍blocked，不冒充成功。详见 [选题级DAG](workflow.md)。
-
-run与edition分别有幂等记录，防止在创建edition后、回写run关联前崩溃而重复生成。收集时中断标记failed，不重发模型请求；Notion提交中断变unknown；发送中断同样unknown。需要人工核对供应商状态后决定新的操作，不提供无条件重试按钮。
-
-## 调度与资源
-
-服务没有cron，不根据时间自动创建run，也不依赖Codex app routine。worker的Event只等待外部请求唤醒。默认单进程串行，默认最多8个pending collection run，内部刊期准备队列仍有独立上限，不再对外提供直接编稿入口。新DAG总研究预算5400秒，节点另有限额；逐题先保存简版再深读，截止/中断时本地拼版可恢复。旧legacy/mock仍使用每方向独立预算。不能把202接受当成完成。
-
-已排队刊期优先；新选题研究优先于Notion后台投影，防止镜像故障耗尽研究期限。低频私人服务不提供多租户公平性/SLA；不要通过增加uvicorn进程绕过目录锁。
-
-## 启动检查
-
-lifespan在启动worker、提供health之前执行preflight；没有环境开关跳过：
-
-| 依赖 | 实际检查 | 不代表什么 |
+| 用途 | 请求 | 所需 token |
 | --- | --- | --- |
-| 本地运行环境 | Python、应用直接依赖pin、SQLite WAL/读写/quick_check | 不是远程数据库或备份验收 |
-| 资源 | public proto py/pyi/descriptor hash、policy、模板、真实CJK PNG渲染 | 不证明收件客户端显示 |
-| Codex | 固定SDK和二进制RECORD校验、host启动、专用账号refresh、禁用skills、model/list | 未执行生成；不保证后续额度或搜索工具可用 |
-| Notion | HTTPS固定origin的数据源只读GET、权限及title schema | 不制造测试页；不证明Insert content权限 |
-| Todofy | origin/凭据语法及无副作用public /health | 不证明BasicAuth有效、Gemini可用或推荐质量 |
-| Resend | 发送配置合法性 | sending-only key无通用读接口；未发送测试邮件、未证明域名/投递 |
+| 启动一期采编 | `POST /v1/runs` | editor |
+| 查询进度 | `GET /v1/runs/{id}` | editor |
+| 获取已经生成的简报 | `GET /v1/editions/{id}` | editor 或 send |
+| 查看该期 HTML 预览 | `GET /v1/editions/{id}/preview` | editor 或 send |
+| 发送该期简报 | `POST /v1/editions/{id}/send` | send |
+| 健康检查 | `GET /healthz` | 无需鉴权 |
 
-只检查已启用的供应商；核心条件、授权与schema错误拒绝启动。Notion/Todofy的临时网络、限流或服务端故障允许degraded启动并记录稳定安全warning；不把该降级用于Codex运行时或本地证据。网络检查有限时、不跟随重定向、不使用继承代理，错误不泄露供应商响应。正式任务仍须处理过期登录、网络中断和配额错误。不能用付费生成或发邮件来伪装安全的启动检查。
+除健康检查外，请在请求头中携带 `Authorization: Bearer <token>`。两个 token 必须不同，且各至少 24 个字符；只负责生成内容的调用方不应持有 send token。
 
-Codex uses isolated ChatGPT auth and the pinned Python SDK/runtime; account/read can refresh managed tokens and model/list lists available models. These checks do not initiate a thread or model turn. [Official app-server documentation](https://learn.chatgpt.com/docs/app-server)
+生产 Compose 不开放宿主机端口，触发器通过私有 Docker 网络访问 `http://newsletter:8080`。标准客户端仅在显式设置 `NEWSLETTER_ALLOW_INTERNAL_HTTP=1` 时接受这个内部地址；访问公网服务须使用固定 HTTPS 地址，不跟随重定向。不要把 token 放进 URL 或日志。
 
-## 镜像与本机文件
+## 生成一期
 
-Docker构建只输入源码与唯一uv.lock；依赖构建层可缓存，最终层只复制安装环境，不复制个人配置/缓存/构建工具。不在启动时下载或升级Codex。默认非root；Compose有init、只读根fs、no-new-privileges、cap_drop、内存/CPU/pids限制。
+例如，为某一天创建一个固定的请求键：
 
-live部署需单独配置本地持久data目录与专用可写Codex auth目录；初始化登录由运营者正规登录完成。新主机不直接复制个人~/.codex或共享同一份刷新缓存。自定义指令目录用只读挂载，auth/data用最小权限可写挂载。示例Compose是mock，不能只设一个MODE就声称live部署完成。
+```http
+POST /v1/runs
+Authorization: Bearer <editor-token>
+Content-Type: application/json
 
-开发产物统一到.artifacts/，.venv保留为唯一当前开发环境。过去的.demo目录、旧Node/Go构建残留、废弃Python环境与过时多服务设计已移到仓库外可恢复归档；真实预览和私人数据仍只在私有临时目录，不能提交。
+{"request_key":"daily-2026-09-09","issue_date":"2026-09-09"}
+```
 
-## 外部触发器迁移
+服务返回 `202` 和运行 `id`，表示任务已被接受，尚未完成。之后用这个 ID 查询：
 
-源码中的daily workflow改为手动或repository_dispatch，仅运行trigger_run.py，且不持有发送权限；无schedule。生产每日投递由self-host-on-vultr的独立cron容器在 **07:00 America/Los_Angeles** 触发，随夏令时调整，不能固定为15:00 UTC。采编5400秒对应08:30，外部等待7200秒对应09:00，为09:30前到达目标留余量。迁移新主机时仍须确认旧sender已停，避免新旧重复；不要从本地配置推断线上调度状态。升级不新增真实测试邮件；停机备份与回退见[维护说明](maintenance.md)。
+```http
+GET /v1/runs/<run-id>
+Authorization: Bearer <editor-token>
+```
 
-## Current live workflow
+当 `state` 为 `ready` 时，用返回的 `edition_id` 获取简报和预览。`blocked` 或 `failed` 表示本次未正常完成，应先查看状态和诊断，不要直接请求发送。处理步骤和失败后的行为见 [工作流说明](workflow.md)。
 
-Live deployments now default to the versioned DAG described in [workflow.md](workflow.md).
-The per-direction serial flow remains the explicit legacy/mock path. DAG
-collection has a 5400-second total budget, a 7200-second external trigger wait,
-and topic-level durable approval checkpoints. New publications do not wait for
-Notion; old immutable bindings keep their original gate. Consult the DAG guide
-for candidate preparation, deadline publication and token usage.
+调用方只提交日期和请求键，不能通过这个接口替换指令、模型、文件路径或收件人。服务会保存本次使用的配置快照，后续配置更新不影响已经开始的运行。
+
+同一日期、同一请求键重复提交会返回原运行。网络超时不等于任务失败：先查询已有状态，必要时仍使用原键重试，不要换键重新搜集。
+
+## 查看预览并发送
+
+用 `GET /v1/editions/<edition-id>` 获取该期数据，其中 `rendered.render_hash` 对应已经生成并保存的邮件内容。发送请求需要带上这个值：
+
+```http
+POST /v1/editions/<edition-id>/send
+Authorization: Bearer <send-token>
+Content-Type: application/json
+
+{
+  "id": "<edition-id>",
+  "request_key": "<本次发送的固定请求键>",
+  "expected_render_hash": "<rendered.render_hash>"
+}
+```
+
+请求路径与正文中的 ID 必须一致。发送给谁、用什么发件地址由服务端配置决定，调用方不能覆盖。真实邮件投递还需开启 `NEWSLETTER_ALLOW_SEND=true` 并配置 Resend；持有 token 本身不代表可以绕过这些限制。
+
+普通投递每天最多尝试一次，重复请求不会再次调用邮件服务。结果不明时会保留 `unknown` 状态，不能通过换键、删记录或重启服务重发。邮件服务接受请求，也不等于邮件已经到达收件箱。
+
+逐题恢复和修订验证邮件属于管理员操作，不提供 HTTP 入口，参见 [维护指南](maintenance.md)。
+
+## 调度、存储与启动检查
+
+- 服务不自带 cron。现有部署的外部触发器每天按洛杉矶时间 07:00 启动，运行预算 90 分钟，客户端最多等待两小时。
+- 同一个 SQLite 数据目录只能由一个服务进程占用。不要启动多个 Uvicorn worker，也不要把真实数据放在云同步目录。
+- SQLite 保存运行、内容和发送记录；Notion 在后台同步材料与简报。Notion 暂时不可用不会阻塞新流程的邮件投递，旧刊期仍遵循其保存时的规则。
+- 启动前检查本地存储、依赖、proto、模板和中文绘图资源；真实模式还检查专用 Codex 登录、模型目录及已启用的 Notion、Todofy 连接。
+- 本地运行条件或授权配置错误会使启动失败。Notion、Todofy 的临时网络故障可以降级运行并记录诊断，详情见 [接入指南](live-acceptance.md)。
+
+健康检查通过只说明服务可以接收任务，不证明后续模型额度充足、来源可读或邮件一定送达。需要实际调用模型检查输出格式时，使用另行授权的 [供应商兼容检查](provider-acceptance.md)，不把它当作普通启动步骤。
+
+GitHub 的 [手动触发工作流](../.github/workflows/daily.yml) 是另一种可选调用端：仅准备内容，不定时运行，也没有发信权限。使用它之前需要服务具有可访问的 HTTPS 地址；私有 Docker 部署无需启用它。

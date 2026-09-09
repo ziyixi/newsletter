@@ -471,7 +471,7 @@ async def test_shortlist_accepts_12_cap_empty_candidates_never_invoke_model(
 
 def test_promoted_selection_keeps_evaluated_text_and_public_safety_boundary():
     directory = pathlib.Path(__file__).resolve().parents[1]
-    evaluated = (directory / "evals/prompts/v3-selection.md").read_text(
+    evaluated = (directory / "tests/fixtures/editorial/selection.md").read_text(
         encoding="utf-8"
     )
     assert evaluated.strip() in content._SELECTION
@@ -486,8 +486,8 @@ def test_promoted_selection_keeps_evaluated_text_and_public_safety_boundary():
 @pytest.mark.parametrize(
     "production,evaluated",
     [
-        ("04-economy.md", "v2-discovery-economy.md"),
-        ("06-technology.md", "v2-discovery-technology.md"),
+        ("04-economy.md", "discovery-economy.md"),
+        ("06-technology.md", "discovery-technology.md"),
     ],
 )
 def test_current_discovery_instructions_match_versioned_evaluation_inputs(
@@ -495,7 +495,7 @@ def test_current_discovery_instructions_match_versioned_evaluation_inputs(
 ):
     directory = pathlib.Path(__file__).resolve().parents[1]
     actual = directory / "src/newsletter/instructions/discovery" / production
-    expected = directory / "evals/prompts" / evaluated
+    expected = directory / "tests/fixtures/editorial" / evaluated
     assert actual.read_text(encoding="utf-8") == expected.read_text(
         encoding="utf-8"
     )
