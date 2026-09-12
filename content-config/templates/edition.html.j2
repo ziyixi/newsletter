@@ -29,7 +29,6 @@
       .muted { color:#bac4b9 !important; }
       .accent { color:#b8d8bc !important; }
       .personal-panel,.reading-panel { background-color:#2b382d !important; }
-      .story-note { background-color:#29332b !important; }
       .fixture { background-color:#3b3428 !important; color:#ecd4a1 !important; }
       a { color:#b8d8bc !important; }
     }
@@ -72,14 +71,9 @@
    <p class="body-copy ink" style="font-family:{{ sans }};font-size:16px;line-height:1.9;margin:0 0 15px;color:#334037;word-wrap:break-word;overflow-wrap:anywhere;">{{ lines(paragraph.text) }}{% for ref in paragraph.references %}<sup class="muted" style="font-family:{{ sans }};font-size:11px;line-height:0;color:#697669;margin-left:3px;">[{{ ref.number }}]</sup>{% endfor %}</p>
 {% endfor %}
 {% if section.limitations %}
-   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f5f7f2" class="story-note" style="width:100%;table-layout:fixed;background-color:#f5f7f2;border-left:2px solid #c5d0bd;">
-    <tr><td style="padding:11px 14px;">
-     <p class="muted" style="font-family:{{ sans }};font-size:11px;line-height:1.7;font-weight:700;color:#61705d;letter-spacing:0.5px;margin:0 0 4px;">阅读边界</p>
 {% for limitation in section.limitations %}
-     <p class="muted" style="font-family:{{ sans }};font-size:12px;line-height:1.8;color:#61705d;margin:0;word-wrap:break-word;overflow-wrap:anywhere;">{{ lines(limitation) }}</p>
+   <p class="story-context ink" style="font-family:{{ sans }};font-size:15px;line-height:1.9;color:#334037;margin:0 0 15px;word-wrap:break-word;overflow-wrap:anywhere;">{{ lines(limitation) }}</p>
 {% endfor %}
-    </td></tr>
-   </table>
 {% endif %}
     </td></tr>
    </table>
@@ -100,7 +94,7 @@
 {% endfor %}
    </table>
 {% for limitation in chart.limitations %}
-   <p class="muted" style="font-family:{{ sans }};font-size:12px;line-height:1.8;color:#697669;margin:12px 0 0;">阅读边界：{{ limitation }}</p>
+   <p class="muted" style="font-family:{{ sans }};font-size:12px;line-height:1.8;color:#697669;margin:12px 0 0;">图表说明：{{ limitation }}</p>
 {% endfor %}
   </td></tr>
 {% endif %}
