@@ -1,6 +1,6 @@
 """Provider-reported usage, isolated from model content and durable via a sink.
 
-Codex 0.147 emits cumulative thread/tokenUsage/updated snapshots. Each execute
+Codex emits cumulative thread/tokenUsage/updated snapshots. Each execute
 starts a new thread; correction turns reuse it. Replace its total, never add
 snapshots or add cached/reasoning subsets again. SDK turn counts are not counts
 of underlying model requests. Missing or interrupted reports are not zero.

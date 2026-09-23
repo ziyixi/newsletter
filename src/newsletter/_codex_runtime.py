@@ -1,6 +1,6 @@
 """Exec the SDK's pinned runtime with an exact environment, not an env overlay.
 
-Invoked as an isolated Python script (-I). SDK 0.147 merges config.env with the
+Invoked as an isolated Python script (-I). The SDK merges config.env with the
 service environment, so omission cannot unset a variable and empty values can
 change runtime behavior. This final exec boundary actually removes those keys.
 No credentials are opened, copied, or passed as command-line arguments.
