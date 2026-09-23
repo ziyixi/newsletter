@@ -1,6 +1,6 @@
 """ChatGPT-authenticated Codex editor, and an explicitly fake offline editor.
 
-SDK surface verified against openai-codex 0.147.0. No SDK client is started at
+SDK surface verified against openai-codex 0.156.1. No SDK client is started at
 import or construction time. The application, not the model, writes artifacts.
 """
 
@@ -591,7 +591,7 @@ class CodexEditor:
     def __init__(
         self,
         codex_home: pathlib.Path,
-        model: str = "gpt-5.6-sol",
+        model: str = "gpt-6-sol",
         *,
         timeout_seconds: float = 840,
     ) -> None:

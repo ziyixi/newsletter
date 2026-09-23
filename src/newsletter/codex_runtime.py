@@ -21,7 +21,7 @@ import newsletter.errors as errors
 if TYPE_CHECKING:
     import openai_codex
 
-SDK_VERSION = "0.147.0"
+SDK_VERSION = "0.156.1"
 
 
 SYSTEM_SKILLS = (
@@ -77,7 +77,7 @@ def skill_paths(codex_home: pathlib.Path) -> set[str]:
 
 def runtime_overrides(codex_home: pathlib.Path) -> tuple[str, ...]:
     """Disable local tools and skills in the dedicated research runtime."""
-    # Pinned 0.147 requires SKILL.md paths (not skill directories). This also
+    # Pinned 0.156.1 requires SKILL.md paths (not skill directories). This also
     # covers a fresh home, before the runtime auto-installs its system skills.
     entries = [
         "{path=" + json.dumps(path, ensure_ascii=False) + ",enabled=false}"
@@ -95,7 +95,7 @@ async def assert_no_skills(
     # Keep the optional SDK out of offline command imports.
     import openai_codex.generated.v2_all as v2_all  # noqa: PLC0415
 
-    # High-level 0.147 has no skills-list convenience method; use its typed
+    # High-level 0.156.1 has no skills-list convenience method; use its typed
     # transport. This read cannot invoke a skill or change its configuration.
     result = await client._client.request(  # noqa: SLF001
         "skills/list",
