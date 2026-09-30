@@ -13,7 +13,7 @@ nodes:
     on_error: continue
     needs: [history, feeds]
     map: {from: run.instructions, max_items: 8}
-    params: {timeout_seconds: 150}
+    params: {timeout_seconds: 240}
   - id: candidates
     type: deduplicate
     needs: [history, feeds, discovery]
