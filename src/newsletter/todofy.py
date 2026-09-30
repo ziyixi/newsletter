@@ -248,6 +248,23 @@ def _decode(data: bytes, fetched_at: str, mode: str, top: int) -> types.Payload:
     return result
 
 
+def _carryover(body: types.Payload) -> tuple[str, str]:
+    """Name the window, including older mail tasks Todofy says are still open.
+
+    Their reasons then usually start with "（N 天前）".
+    """
+    carried = body.get("carryover_count", 0)
+    if type(carried) is not int or not 0 <= carried <= 1_000_000:
+        raise ValueError
+    if not carried:
+        return "近 24 小时", ""
+    return f"近 24 小时及 {carried} 条仍未完成的旧任务", (
+        f" 另带入 {carried} 条此前入库、Todofy 取数时在 Todoist 中"
+        "仍未完成的邮件任务，其说明通常以“（N 天前）”开头；"
+        "之后是否已完成请以 Todoist 为准。"
+    )
+
+
 def _decode_recommendation(
     body: types.Payload, fetched_at: str, top: int
 ) -> types.Payload:
@@ -260,6 +277,7 @@ def _decode_recommendation(
         raise ValueError
     if count == 0 and tasks:
         raise ValueError
+    window, carried_note = _carryover(body)
     items: list[types.PersonalItem] = []
     ranks = set()
     for index, task in enumerate(tasks, 1):
@@ -317,9 +335,11 @@ def _decode_recommendation(
     result.update(
         items=selection.items,
         summary=summary,
-        source_label=f"Todofy · 近 24 小时候选本地精选（最多 {top} 条）",
+        source_label=f"Todofy · {window}候选本地精选（最多 {top} 条）",
         limitations=(
-            _LIMITATIONS + " 本栏目为上游候选的本地保守筛选，并非全部事件。"
+            _LIMITATIONS
+            + carried_note
+            + " 本栏目为上游候选的本地保守筛选，并非全部事件。"
             "没有原始账单或真实 autopay 状态，不推断所有账户自动还款；"
             "例行账单可查看通知不会被改写成还款指令。未知事项保留，"
             "但无法恢复上游遗漏的异常或保证没有重要遗漏。"

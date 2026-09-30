@@ -155,6 +155,34 @@ async def test_recommendation_known_empty_zero():
     assert result["task_count"] == 0
 
 
+async def test_plain_24_hour_recommendation_keeps_its_caption():
+    for extra in ({}, {"new_count": 7, "carryover_count": 0}):
+        result = await adapter(
+            lambda _, extra=extra: httpx.Response(
+                200, json=recommendation() | extra
+            )
+        ).fetch(TODAY)
+        assert result["state"] == "current"
+        assert result["source_label"].startswith("Todofy · 近 24 小时候选")
+        assert "仍未完成" not in result["source_label"]
+        assert "天前" not in result["limitations"]
+
+
+async def test_carried_over_tasks_are_named_in_caption_and_limitations():
+    payload = recommendation() | {"new_count": 4, "carryover_count": 3}
+    result = await adapter(lambda _: httpx.Response(200, json=payload)).fetch(
+        TODAY
+    )
+    assert result["state"] == "current"
+    assert result["task_count"] == 7
+    assert result["source_label"] == (
+        "Todofy · 近 24 小时及 3 条仍未完成的旧任务候选本地精选（最多 5 条）"
+    )
+    assert "另带入 3 条此前入库" in result["limitations"]
+    assert "（N 天前）" in result["limitations"]
+    assert "最近 24 小时" in result["limitations"]
+
+
 async def test_missing_rank_is_stable_position_and_response_order_by_rank():
     payload = recommendation()
     payload["tasks"][0].pop("rank")
@@ -203,6 +231,9 @@ async def test_failures_have_one_attempt_no_body_leak_or_redirect(status, code):
         {"tasks": [{}]},
         {"tasks": [], "task_count": True},
         {"tasks": [], "task_count": -1},
+        {"tasks": [], "carryover_count": True},
+        {"tasks": [], "carryover_count": -1},
+        {"tasks": [], "carryover_count": "3"},
         {"tasks": [{"title": "Title only", "reason": ""}]},
         {"tasks": [{"rank": True, "title": "title", "reason": "detail"}]},
         {"tasks": [{"title": "t", "reason": "d"}] * 11},
