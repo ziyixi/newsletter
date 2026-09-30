@@ -167,11 +167,14 @@ def config_only_difference(
 
 def compatible_engine(api: GitHub, revision: str) -> str | None:
     """Find a successful main-branch image compatible with the revision."""
+    # No status=success filter: GitHub's filtered run listing can lag by
+    # months and omit recent successes (on 2026-09-30 it began at February),
+    # which left every config-only push unpublishable. The unfiltered listing
+    # is newest-first; the loop below keeps only successful main pushes.
     for page in range(1, 4):
         result = api.request(
             "GET",
-            "/actions/workflows/ci.yml/runs?branch=main&event=push&status=success"
-            f"&per_page=100&page={page}",
+            f"/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100&page={page}",
         )
         runs = result.get("workflow_runs", [])
         for run in runs:

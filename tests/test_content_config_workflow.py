@@ -201,6 +201,17 @@ def test_same_engine_needs_no_diff_request_and_empty_tree_diff_is_safe(release):
     assert release.compatible_engine(api, NEW) == OLD
 
 
+def test_engine_lookup_does_not_trust_the_status_filtered_listing(release):
+    # The status=success listing lagged by months on 2026-09-30; the unfiltered
+    # listing is newest-first, so success is checked per run instead.
+    api = api_fixture(
+        runs=[run_record(NEW, conclusion="failure"), run_record(OLD)]
+    )
+    assert release.compatible_engine(api, NEW) == OLD
+    paths = [path for _, path, *_ in api.calls if path.startswith("/actions/")]
+    assert paths and all("status=" not in path for path in paths)
+
+
 @pytest.mark.parametrize(
     "files", [None, "not-list", [{"filename": "content-config/a"}] * 300]
 )
